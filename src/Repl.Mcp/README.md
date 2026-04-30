@@ -62,8 +62,9 @@ Claude Desktop, Claude Code, VS Code Copilot, Cursor, and any MCP-compatible age
 
 MCP Apps host support varies. VS Code currently renders MCP Apps inline; hosts that support display mode requests can honor `preferredDisplayMode`.
 
-## Learn more
+## Docs
 
-- [Getting started](https://github.com/yllibed/repl/blob/main/docs/mcp-overview.md) — quick start, annotations, mental model
-- [Full reference](https://github.com/yllibed/repl/blob/main/docs/mcp-reference.md) — interaction degradation, client compatibility, agent configuration, NuGet publishing
-- [Sample app](https://github.com/yllibed/repl/tree/main/samples/08-mcp-server) — resources, tools, prompts, annotations, and a minimal MCP Apps UI in action
+- [MCP Mode](https://repl.yllibed.org/getting-started/mcp-mode/) — quick start, annotations, mental model
+- [MCP In Depth](https://repl.yllibed.org/reference/mcp-concepts/) — interaction degradation, client compatibility, agent configuration
+- [Agent-Native Development](https://repl.yllibed.org/reference/agent-native/) — designing commands for AI consumption
+- [Cookbook: MCP Server](https://repl.yllibed.org/cookbook/mcp-server/) — resources, tools, prompts, annotations, and MCP Apps UI in action

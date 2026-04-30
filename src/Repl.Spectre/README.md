@@ -137,6 +137,12 @@ app.WithBanner((IAnsiConsole console) =>
 When `Unicode` is enabled, `UseSpectreConsole()` sets `Console.OutputEncoding` to UTF-8 to ensure
 Unicode characters (progress bars, spinners, box-drawing) render correctly on Windows.
 
+## Docs
+
+- [Cookbook: Spectre.Console](https://repl.yllibed.org/cookbook/spectre/) — setup, prompts, renderables, capture, banners
+- [Interactivity](https://repl.yllibed.org/reference/interactivity/) — IReplInteractionChannel, prompt contracts, progress
+- [Best Practices](https://repl.yllibed.org/reference/best-practices/) — static lambdas, test patterns, DI composition
+
 ## Sample
 
 See [**sample 07-spectre**](../../samples/07-spectre/) for a comprehensive demo covering

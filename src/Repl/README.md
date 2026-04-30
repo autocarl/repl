@@ -1,7 +1,5 @@
 # Repl (meta-package)
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/yllibed/repl)
-
 **Repl Toolkit** is a **foundational building block** for .NET applications that need a serious command surface.
 
 ---
@@ -25,8 +23,9 @@ return app.Run(args);
 
 ## Docs
 
-- Architecture blueprint: [docs/architecture.md](https://github.com/yllibed/repl/blob/main/docs/architecture.md)
-- Terminal/session metadata: [docs/terminal-metadata.md](https://github.com/yllibed/repl/blob/main/docs/terminal-metadata.md)
-- Testing toolkit: [docs/testing-toolkit.md](https://github.com/yllibed/repl/blob/main/docs/testing-toolkit.md)
-- Samples (recommended learning path): [samples/README.md](https://github.com/yllibed/repl/blob/main/samples/README.md)
-- Community DeepWiki (unofficial): [deepwiki.com/yllibed/repl](https://deepwiki.com/yllibed/repl)
+Full documentation at **[repl.yllibed.org](https://repl.yllibed.org/)**:
+
+- [Installation & first app](https://repl.yllibed.org/getting-started/installation/)
+- [Cookbook](https://repl.yllibed.org/cookbook/core-basics/) — guided examples from basics to MCP
+- [Reference](https://repl.yllibed.org/reference/routes-and-parameters/) — routes, DI, modules, interactivity, MCP, and more
+- [API reference](https://repl.yllibed.org/api/index.html)

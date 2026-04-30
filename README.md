@@ -5,6 +5,7 @@
 [![CI](https://github.com/yllibed/repl/actions/workflows/ci.yml/badge.svg)](https://github.com/yllibed/repl/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/yllibed/repl)
+[![Docs](https://img.shields.io/badge/docs-repl.yllibed.org-blue)](https://repl.yllibed.org/)
 
 **A .NET framework for building composable command surfaces.**
 
@@ -12,7 +13,7 @@
 - host them in session-based terminals, expose them as MCP servers and MCP Apps for AI agents,
 - or drive them from automation scripts.
 
-> **New here?** The [DeepWiki](https://deepwiki.com/yllibed/repl) has full architecture docs, diagrams, and an AI assistant you can ask questions about the toolkit.
+> **New here?** Start at **[repl.yllibed.org](https://repl.yllibed.org/)** — installation, your first app, guides, cookbook, and API reference.
 
 ## Quick start
 
@@ -95,43 +96,47 @@ One command graph. CLI, REPL, remote sessions, and AI agents — all from the sa
 
 ## What's included
 
-| Feature | Package | Guides |
-|---------|---------|--------|
-| Unified command graph — routing, constraints, binding | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Route system](docs/route-system.md)</li><li>[Execution pipeline](docs/execution-pipeline.md)</li><li>[Commands](docs/commands.md)</li></ul> |
-| Interactive REPL — scopes, history, autocomplete | [![Repl.Defaults](https://img.shields.io/nuget/vpre/Repl.Defaults?logo=nuget&label=Repl.Defaults)](https://www.nuget.org/packages/Repl.Defaults) | <ul><li>[Interactive loop](docs/interactive-loop.md)</li><li>[Configuration](docs/configuration-reference.md)</li></ul> |
-| Parameters & options — typed binding, options groups, response files | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Parameter system](docs/parameter-system.md)</li><li>[Route system](docs/route-system.md)</li></ul> |
-| Multiple output formats — JSON, XML, YAML, Markdown | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Output system](docs/output-system.md)</li></ul> |
-| MCP server + MCP Apps — expose commands as agent tools, resources, prompts, and UI | [![Repl.Mcp](https://img.shields.io/nuget/vpre/Repl.Mcp?logo=nuget&label=Repl.Mcp)](https://www.nuget.org/packages/Repl.Mcp) | <ul><li>[MCP overview](docs/mcp-overview.md)</li><li>[MCP reference](docs/mcp-reference.md)</li><li>[MCP advanced](docs/mcp-advanced.md)</li><li>[MCP sample](samples/08-mcp-server/)</li></ul> |
-| Typed results & interactions — prompts, progress, cancellation | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Interaction channel](docs/interaction.md)</li></ul> |
-| Session hosting — WebSocket, Telnet, remote terminals | [![Repl.WebSocket](https://img.shields.io/nuget/vpre/Repl.WebSocket?logo=nuget&label=Repl.WebSocket)](https://www.nuget.org/packages/Repl.WebSocket) [![Repl.Telnet](https://img.shields.io/nuget/vpre/Repl.Telnet?logo=nuget&label=Repl.Telnet)](https://www.nuget.org/packages/Repl.Telnet) | <ul><li>[Runtime channels](docs/runtime-channels.md)</li><li>[Terminal metadata](docs/terminal-metadata.md)</li></ul> |
-| Shell completion — Bash, PowerShell, Zsh, Fish, Nushell | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Shell completion](docs/shell-completion.md)</li></ul> |
-| Spectre.Console — rich prompts, tables, charts | [![Repl.Spectre](https://img.shields.io/nuget/vpre/Repl.Spectre?logo=nuget&label=Repl.Spectre)](https://www.nuget.org/packages/Repl.Spectre) | <ul><li>[Interaction channel](docs/interaction.md)</li><li>[Sample](samples/07-spectre/)</li></ul> |
-| Testing toolkit — in-memory multi-session harness | [![Repl.Testing](https://img.shields.io/nuget/vpre/Repl.Testing?logo=nuget&label=Repl.Testing)](https://www.nuget.org/packages/Repl.Testing) | <ul><li>[Testing toolkit](docs/testing-toolkit.md)</li></ul> |
-| Machine-readable contracts — help schemas, error contracts | [![Repl.Protocol](https://img.shields.io/nuget/vpre/Repl.Protocol?logo=nuget&label=Repl.Protocol)](https://www.nuget.org/packages/Repl.Protocol) | <ul><li>[Help system](docs/help-system.md)</li></ul> |
-| Conditional modules — channel-aware, feature-gated commands | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Module presence](docs/module-presence.md)</li></ul> |
+| Feature | Package | Docs |
+|---------|---------|------|
+| Unified command graph — routing, constraints, binding | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Routes & Parameters](https://repl.yllibed.org/reference/routes-and-parameters/)</li><li>[Pipelining & Integration](https://repl.yllibed.org/reference/pipelining/)</li><li>[Cookbook: Core Basics](https://repl.yllibed.org/cookbook/core-basics/)</li></ul> |
+| Interactive REPL — scopes, history, autocomplete | [![Repl.Defaults](https://img.shields.io/nuget/vpre/Repl.Defaults?logo=nuget&label=Repl.Defaults)](https://www.nuget.org/packages/Repl.Defaults) | <ul><li>[REPL Mode](https://repl.yllibed.org/getting-started/repl-mode/)</li><li>[Configuration](https://repl.yllibed.org/reference/configuration/)</li><li>[Cookbook: Scoped Contexts](https://repl.yllibed.org/cookbook/scoped-contexts/)</li></ul> |
+| Parameters & options — typed binding, options groups, response files | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Routes & Parameters](https://repl.yllibed.org/reference/routes-and-parameters/)</li><li>[Built-in Types & Formats](https://repl.yllibed.org/reference/data-types/)</li></ul> |
+| Multiple output formats — JSON, XML, YAML, Markdown | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Customization & Output](https://repl.yllibed.org/reference/customization/)</li></ul> |
+| MCP server + MCP Apps — expose commands as agent tools, resources, prompts, and UI | [![Repl.Mcp](https://img.shields.io/nuget/vpre/Repl.Mcp?logo=nuget&label=Repl.Mcp)](https://www.nuget.org/packages/Repl.Mcp) | <ul><li>[MCP Mode](https://repl.yllibed.org/getting-started/mcp-mode/)</li><li>[MCP In Depth](https://repl.yllibed.org/reference/mcp-concepts/)</li><li>[Agent-Native Development](https://repl.yllibed.org/reference/agent-native/)</li><li>[Cookbook: MCP Server](https://repl.yllibed.org/cookbook/mcp-server/)</li></ul> |
+| Typed results & interactions — prompts, progress, cancellation | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Interactivity](https://repl.yllibed.org/reference/interactivity/)</li><li>[Cookbook: Interactive Prompts](https://repl.yllibed.org/cookbook/interactive-prompts/)</li></ul> |
+| Session hosting — WebSocket, Telnet, remote terminals | [![Repl.WebSocket](https://img.shields.io/nuget/vpre/Repl.WebSocket?logo=nuget&label=Repl.WebSocket)](https://www.nuget.org/packages/Repl.WebSocket) [![Repl.Telnet](https://img.shields.io/nuget/vpre/Repl.Telnet?logo=nuget&label=Repl.Telnet)](https://www.nuget.org/packages/Repl.Telnet) | <ul><li>[Cookbook: Hosting Remote Sessions](https://repl.yllibed.org/cookbook/hosting-remote/)</li><li>[Terminal Integration](https://repl.yllibed.org/reference/terminal-integration/)</li></ul> |
+| Shell completion — Bash, PowerShell, Zsh, Fish, Nushell | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[CLI Mode](https://repl.yllibed.org/getting-started/cli-mode/)</li></ul> |
+| Spectre.Console — rich prompts, tables, charts | [![Repl.Spectre](https://img.shields.io/nuget/vpre/Repl.Spectre?logo=nuget&label=Repl.Spectre)](https://www.nuget.org/packages/Repl.Spectre) | <ul><li>[Cookbook: Spectre.Console](https://repl.yllibed.org/cookbook/spectre/)</li><li>[Interactivity](https://repl.yllibed.org/reference/interactivity/)</li></ul> |
+| Testing toolkit — in-memory multi-session harness | [![Repl.Testing](https://img.shields.io/nuget/vpre/Repl.Testing?logo=nuget&label=Repl.Testing)](https://www.nuget.org/packages/Repl.Testing) | <ul><li>[Cookbook: Testing](https://repl.yllibed.org/cookbook/testing/)</li></ul> |
+| Machine-readable contracts — help schemas, error contracts | [![Repl.Protocol](https://img.shields.io/nuget/vpre/Repl.Protocol?logo=nuget&label=Repl.Protocol)](https://www.nuget.org/packages/Repl.Protocol) | <ul><li>[Best Practices & FAQ](https://repl.yllibed.org/reference/best-practices/)</li></ul> |
+| Conditional modules — channel-aware, feature-gated commands | [![Repl.Core](https://img.shields.io/nuget/vpre/Repl.Core?logo=nuget&label=Repl.Core)](https://www.nuget.org/packages/Repl.Core) | <ul><li>[Modules](https://repl.yllibed.org/reference/modules/)</li><li>[Cookbook: Modular Ops](https://repl.yllibed.org/cookbook/modular-ops/)</li></ul> |
 
 [**`Repl`**](https://www.nuget.org/packages/Repl) is the meta-package that bundles Core + Defaults + Protocol — **start here**.
 
 ## Learn by example
 
-Progressive learning path — each sample builds on the previous:
+Progressive learning path — each sample builds on the previous.
+Each sample has a companion cookbook page with explanations and patterns.
 
-1. **[Core Basics](samples/01-core-basics/)** — routing, constraints, help, output modes
-2. **[Scoped Contacts](samples/02-scoped-contacts/)** — dynamic scoping, `..` navigation
-3. **[Modular Ops](samples/03-modular-ops/)** — composable modules, generic CRUD
-4. **[Interactive Ops](samples/04-interactive-ops/)** — prompts, progress, timeouts, cancellation
-5. **[Hosting Remote](samples/05-hosting-remote/)** — WebSocket / Telnet session hosting
-6. **[Testing](samples/06-testing/)** — multi-session typed assertions
-7. **[Spectre](samples/07-spectre/)** — Spectre.Console renderables, visualizations, rich prompts
-8. **[MCP Server](samples/08-mcp-server/)** — expose commands as MCP tools, resources, prompts, and a minimal MCP Apps UI
+| Sample | Cookbook |
+|--------|---------|
+| **[Core Basics](samples/01-core-basics/)** — routing, constraints, help, output modes | [repl.yllibed.org/cookbook/core-basics/](https://repl.yllibed.org/cookbook/core-basics/) |
+| **[Scoped Contacts](samples/02-scoped-contacts/)** — dynamic scoping, `..` navigation | [repl.yllibed.org/cookbook/scoped-contexts/](https://repl.yllibed.org/cookbook/scoped-contexts/) |
+| **[Modular Ops](samples/03-modular-ops/)** — composable modules, generic CRUD | [repl.yllibed.org/cookbook/modular-ops/](https://repl.yllibed.org/cookbook/modular-ops/) |
+| **[Interactive Ops](samples/04-interactive-ops/)** — prompts, progress, timeouts, cancellation | [repl.yllibed.org/cookbook/interactive-prompts/](https://repl.yllibed.org/cookbook/interactive-prompts/) |
+| **[Hosting Remote](samples/05-hosting-remote/)** — WebSocket / Telnet session hosting | [repl.yllibed.org/cookbook/hosting-remote/](https://repl.yllibed.org/cookbook/hosting-remote/) |
+| **[Testing](samples/06-testing/)** — multi-session typed assertions | [repl.yllibed.org/cookbook/testing/](https://repl.yllibed.org/cookbook/testing/) |
+| **[Spectre](samples/07-spectre/)** — Spectre.Console renderables, visualizations, rich prompts | [repl.yllibed.org/cookbook/spectre/](https://repl.yllibed.org/cookbook/spectre/) |
+| **[MCP Server](samples/08-mcp-server/)** — MCP tools, resources, prompts, and MCP Apps UI | [repl.yllibed.org/cookbook/mcp-server/](https://repl.yllibed.org/cookbook/mcp-server/) |
 
 ## More documentation
 
 | | |
 |---|---|
-| [Architecture blueprint](docs/architecture.md) | [Best practices](docs/best-practices.md) |
-| [Comparison & migration](docs/comparison.md) | [Publishing & deployment](docs/publishing.md) |
-| [Glossary](docs/glossary.md) | [Interactive docs & AI Q&A](https://deepwiki.com/yllibed/repl) |
+| [Architecture](https://repl.yllibed.org/reference/architecture/) | [Best Practices & FAQ](https://repl.yllibed.org/reference/best-practices/) |
+| [Coming from CLI frameworks](https://repl.yllibed.org/getting-started/migrating/) | [Packaging & Distribution](https://repl.yllibed.org/reference/packaging/) |
+| [Packages overview](https://repl.yllibed.org/reference/packages/) | [API Reference](https://repl.yllibed.org/api/index.html) |
+| [Glossary](docs/glossary.md) | [Dependency Injection](https://repl.yllibed.org/reference/dependency-injection/) |
 
 ## AI-assisted development
 
@@ -140,8 +145,6 @@ If you use an AI coding agent (Claude Code, Cursor, Windsurf, Copilot, Codex, Op
 **Library ID:** `/yllibed/repl`
 
 Most agents that support [MCP](https://modelcontextprotocol.io/) can use Context7 directly. Refer to your agent's documentation for MCP server configuration.
-
-> You can also explore the toolkit architecture and ask questions on [DeepWiki](https://deepwiki.com/yllibed/repl).
 
 ## Contributing
 

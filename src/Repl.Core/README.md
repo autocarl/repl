@@ -1,7 +1,5 @@
 # Repl.Core
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/yllibed/repl)
-
 `Repl.Core` is the **dependency-free** runtime core of Repl Toolkit (no `Microsoft.Extensions.*` runtime dependencies).
 
 It contains the fundamentals: route templates + constraints, option/argument binding, typed results, help/discovery, and middleware.
@@ -30,5 +28,7 @@ return app.Run(args);
 
 ## Docs
 
-- Project overview: [README.md](https://github.com/yllibed/repl/blob/main/README.md)
-- Community DeepWiki (unofficial): [deepwiki.com/yllibed/repl](https://deepwiki.com/yllibed/repl)
+- [Routes & Parameters](https://repl.yllibed.org/reference/routes-and-parameters/) — route templates, constraints, typed binding
+- [Built-in Types & Formats](https://repl.yllibed.org/reference/data-types/) — scalar and temporal range types
+- [Pipelining & Integration](https://repl.yllibed.org/reference/pipelining/) — execution pipeline, exit codes
+- [Full documentation](https://repl.yllibed.org/)

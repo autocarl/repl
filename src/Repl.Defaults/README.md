@@ -1,7 +1,5 @@
 # Repl.Defaults
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/yllibed/repl)
-
 `Repl.Defaults` layers DI and “batteries included” composition on top of `Repl.Core`.
 
 It provides:
@@ -29,6 +27,7 @@ return app.Run(args);
 
 ## Docs
 
-- Architecture blueprint: [docs/architecture.md](https://github.com/yllibed/repl/blob/main/docs/architecture.md)
-- Terminal metadata model: [docs/terminal-metadata.md](https://github.com/yllibed/repl/blob/main/docs/terminal-metadata.md)
-- Community DeepWiki (unofficial): [deepwiki.com/yllibed/repl](https://deepwiki.com/yllibed/repl)
+- [REPL Mode](https://repl.yllibed.org/getting-started/repl-mode/) — interactive session, scopes, history
+- [Configuration](https://repl.yllibed.org/reference/configuration/) — `ReplRunOptions`, profiles
+- [Architecture](https://repl.yllibed.org/reference/architecture/) — how the layers fit together
+- [Dependency Injection](https://repl.yllibed.org/reference/dependency-injection/) — DI patterns for handlers
