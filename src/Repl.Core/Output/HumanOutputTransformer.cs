@@ -33,6 +33,11 @@ internal sealed class HumanOutputTransformer : IOutputTransformer
 			return ValueTask.FromResult(string.Empty);
 		}
 
+		if (value is IReplPage page)
+		{
+			return ValueTask.FromResult(RenderPage(page, settings));
+		}
+
 		if (value is IReplResult replResult)
 		{
 			return ValueTask.FromResult(RenderReplResult(replResult, settings));
@@ -78,6 +83,37 @@ internal sealed class HumanOutputTransformer : IOutputTransformer
 
 		return ValueTask.FromResult(
 			Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty);
+	}
+
+	private static string RenderPage(IReplPage page, HumanRenderSettings settings)
+	{
+		var body = page.UntypedItems.Count == 0
+			? "No results."
+			: RenderCollection(page.UntypedItems, depth: 0, settings);
+		var footer = RenderPageFooter(page);
+		return string.IsNullOrWhiteSpace(footer)
+			? body
+			: string.Concat(body, Environment.NewLine, footer);
+	}
+
+	private static string RenderPageFooter(IReplPage page)
+	{
+		var info = page.PageInfo;
+		var count = page.UntypedItems.Count;
+		if (info.TotalCount is { } total)
+		{
+			var prefix = $"Showing {count.ToString(CultureInfo.InvariantCulture)} of {total.ToString(CultureInfo.InvariantCulture)}.";
+			return info.HasMore
+				? $"{prefix} Continue with --result:cursor {info.NextCursor}."
+				: prefix;
+		}
+
+		if (!info.HasMore)
+		{
+			return string.Empty;
+		}
+
+		return $"Showing {count.ToString(CultureInfo.InvariantCulture)} result(s). Continue with --result:cursor {info.NextCursor}.";
 	}
 
 	private static bool TryRenderObject(object value, HumanRenderSettings settings, out string text)
@@ -361,6 +397,11 @@ internal sealed class HumanOutputTransformer : IOutputTransformer
 		if (result.Details is null)
 		{
 			return message;
+		}
+
+		if (result.Details is IReplPage page)
+		{
+			return $"{message}{Environment.NewLine}{RenderPage(page, settings)}";
 		}
 
 		if (TryRenderDictionary(result.Details, settings, out var dictionaryText))

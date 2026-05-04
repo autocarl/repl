@@ -31,6 +31,11 @@ internal sealed class MarkdownOutputTransformer : IOutputTransformer
 			return ValueTask.FromResult(text);
 		}
 
+		if (value is IReplPage page)
+		{
+			return ValueTask.FromResult(RenderPage(page));
+		}
+
 		if (value is IReplResult result)
 		{
 			return ValueTask.FromResult(RenderReplResult(result));
@@ -68,6 +73,8 @@ internal sealed class MarkdownOutputTransformer : IOutputTransformer
 
 		var details = result.Details is string detailsText
 			? detailsText
+			: result.Details is IReplPage page
+				? RenderPage(page)
 			: result.Details is System.Collections.IEnumerable enumerable && result.Details is not string
 				? RenderEnumerable(enumerable)
 				: RenderObject(result.Details);
@@ -78,6 +85,37 @@ internal sealed class MarkdownOutputTransformer : IOutputTransformer
 		}
 
 		return string.Concat(message, Environment.NewLine, Environment.NewLine, details);
+	}
+
+	private static string RenderPage(IReplPage page)
+	{
+		var body = page.UntypedItems.Count == 0
+			? "No results."
+			: RenderEnumerable(page.UntypedItems);
+		var footer = RenderPageFooter(page);
+		return string.IsNullOrWhiteSpace(footer)
+			? body
+			: string.Concat(body, Environment.NewLine, Environment.NewLine, footer);
+	}
+
+	private static string RenderPageFooter(IReplPage page)
+	{
+		var info = page.PageInfo;
+		var count = page.UntypedItems.Count;
+		if (info.TotalCount is { } total)
+		{
+			var prefix = $"Showing {count} of {total}.";
+			return info.HasMore
+				? $"{prefix} Continue with `--result:cursor {info.NextCursor}`."
+				: prefix;
+		}
+
+		if (!info.HasMore)
+		{
+			return string.Empty;
+		}
+
+		return $"Showing {count} result(s). Continue with `--result:cursor {info.NextCursor}`.";
 	}
 
 	private static string RenderEnumerable(System.Collections.IEnumerable enumerable)

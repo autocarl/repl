@@ -197,6 +197,80 @@ public sealed class Given_OutputFormatting
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies paged results render their current page and continuation hint in human output.")]
+	public void When_RenderingPagedResultInHuman_Then_ItemsAndContinuationAreRendered()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("contact list", (IReplPagingContext paging) =>
+			paging.Page(
+				new[]
+				{
+					new ContactRow("Alice Martin", "alice@example.com"),
+					new ContactRow("Bob Tremblay", "bob@example.com"),
+				},
+				nextCursor: "page-2",
+				totalCount: 3));
+
+		var output = ConsoleCaptureHelper.Capture(() =>
+			sut.Run(["contact", "list", "--result:page-size=2", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("Alice Martin");
+		output.Text.Should().Contain("Bob Tremblay");
+		output.Text.Should().Contain("Showing 2 of 3.");
+		output.Text.Should().Contain("--result:cursor page-2");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies paged results serialize to a clean JSON envelope for automation.")]
+	public void When_RenderingPagedResultInJson_Then_ItemsAndPageInfoAreSerialized()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("contact list", (IReplPagingContext paging) =>
+			paging.Page(
+				new[]
+				{
+					new Contact(1, "Alice"),
+				},
+				nextCursor: "page-2",
+				totalCount: 2));
+
+		var output = ConsoleCaptureHelper.Capture(() =>
+			sut.Run(["contact", "list", "--json", "--result:page-size=1", "--result:cursor=start", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("\"items\"");
+		output.Text.Should().Contain("\"pageInfo\"");
+		output.Text.Should().Contain("\"nextCursor\": \"page-2\"");
+		output.Text.Should().Contain("\"cursor\": \"start\"");
+		output.Text.Should().Contain("\"totalCount\": 2");
+		output.Text.Should().NotContain("itemType");
+		output.Text.Should().NotContain("untypedItems");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies paged results render their current page in markdown output.")]
+	public void When_RenderingPagedResultInMarkdown_Then_ItemsAndContinuationAreRendered()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("contact list", (IReplPagingContext paging) =>
+			paging.Page(
+				new[]
+				{
+					new ContactMarkdownRow(1, "Alice Martin", "alice@example.com"),
+				},
+				nextCursor: "page-2"));
+
+		var output = ConsoleCaptureHelper.Capture(() =>
+			sut.Run(["contact", "list", "--markdown", "--result:page-size=1", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("| Id | Name | Email |");
+		output.Text.Should().Contain("| 1 | Alice Martin | alice@example.com |");
+		output.Text.Should().Contain("`--result:cursor page-2`");
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies requesting unknown output format so that user gets a clear error and non-zero exit code.")]
 	public void When_RenderingWithUnknownFormat_Then_ClearErrorIsShownAndExitCodeIsNonZero()
 	{

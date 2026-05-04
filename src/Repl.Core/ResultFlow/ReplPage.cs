@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Repl;
 
 /// <summary>
@@ -25,11 +27,13 @@ public sealed class ReplPage<T> : IReplPage
 	public IReadOnlyList<T> Items { get; }
 
 	/// <inheritdoc />
+	[JsonIgnore]
 	public Type ItemType => typeof(T);
 
 	/// <inheritdoc />
 	public ReplPageInfo PageInfo { get; }
 
 	/// <inheritdoc />
+	[JsonIgnore]
 	public IReadOnlyList<object?> UntypedItems => _untypedItems ??= Items.Cast<object?>().ToArray();
 }
