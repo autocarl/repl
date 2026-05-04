@@ -35,6 +35,7 @@ Commands:
   add {name} {email}
   show {id}
   count
+  activity
 ```
 
 **Same commands, interactive**
@@ -87,7 +88,8 @@ myapp
 ├── list
 ├── add {name} {email}
 ├── show {id:int}
-└── count
+├── count
+└── activity
 ```
 
 - There is **no** `help` node in the graph.
@@ -120,6 +122,7 @@ app.Map("list", commands.List);
 app.Map("add {name} {email:email}", commands.Add);
 app.Map("show {id:int}", commands.Show);
 app.Map("count", commands.Count);
+app.Map("activity", commands.Activity);
 app.Map("report period", commands.ReportPeriod);
 app.Map("error", ErrorCommand);
 app.Map("debug reset", commands.Reset);
@@ -139,6 +142,7 @@ return app.Run(args);
   - `[Browsable(false)]` hides a command from discovery.
 - **Return values are semantic**:
   - `IEnumerable<Contact>` → table
+  - `ReplPage<ActivityEvent>` → paged table with continuation metadata
   - `Contact` → structured output (or JSON with `--json`)
   - `string` → plain text.
 
@@ -155,6 +159,7 @@ Commands:
   add {name} {email}
   show {id}
   count
+  activity
 ```
 
 ```text
@@ -197,6 +202,21 @@ Expected behavior:
 - `--format` and `--no-verbose` are provided by a shared options-group object.
 - `report period` accepts `start..end` and `start@duration`.
 - `ReplDateRange` accepts whole-day durations only.
+
+## Result-flow paging
+
+The `activity` command returns a synthetic long data source through
+`IReplPagingContext` and `ReplPage<T>`. The handler only returns the requested
+page, plus a continuation cursor when more rows exist.
+
+```text
+myapp activity --result:page-size=5
+myapp activity --result:page-size=5 --result:cursor=5
+myapp activity --json --result:page-size=2
+```
+
+Human output renders a compact table and a continuation hint. JSON output returns
+an `{ items, pageInfo }` envelope for automation.
 
 Validation example:
 

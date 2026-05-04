@@ -194,6 +194,9 @@ app.Options(options =>
 
 ## See Also
 
+- [Core Basics sample](../samples/01-core-basics/README.md#result-flow-paging)
+- [Spectre sample](../samples/07-spectre/README.md#activity--paged-long-data-source)
+- [MCP Server sample](../samples/08-mcp-server/README.md#demo-workflow)
 - [Output System](output-system.md)
 - [Command Reference](commands.md)
 - [MCP Reference](mcp-reference.md)
