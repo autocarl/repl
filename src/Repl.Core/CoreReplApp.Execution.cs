@@ -743,7 +743,9 @@ public sealed partial class CoreReplApp
 				resultFlow,
 				page.PageInfo.HasMore,
 				out var keyReader,
-				out var visibleRows))
+				out var visibleRows,
+				out var pagerMode,
+				out var ansiEnabled))
 		{
 			if (!string.IsNullOrEmpty(payload))
 			{
@@ -762,6 +764,8 @@ public sealed partial class CoreReplApp
 				ReplSessionIO.Output,
 				keyReader,
 				visibleRows,
+				pagerMode,
+				ansiEnabled,
 				page.PageInfo.HasMore,
 				FetchNextPayloadAsync,
 				cancellationToken)
@@ -791,13 +795,22 @@ public sealed partial class CoreReplApp
 		ResultFlowInvocationOptions? resultFlow,
 		CancellationToken cancellationToken)
 	{
-		if (TryCreatePager(payload, format, resultFlow, out var keyReader, out var visibleRows))
+		if (TryCreatePager(
+				payload,
+				format,
+				resultFlow,
+				out var keyReader,
+				out var visibleRows,
+				out var pagerMode,
+				out var ansiEnabled))
 		{
 			await ResultFlowPager.WriteAsync(
 					payload,
 					ReplSessionIO.Output,
 					keyReader,
 					visibleRows,
+					pagerMode,
+					ansiEnabled,
 					cancellationToken)
 				.ConfigureAwait(false);
 			return;
@@ -811,14 +824,18 @@ public sealed partial class CoreReplApp
 		string format,
 		ResultFlowInvocationOptions? resultFlow,
 		[NotNullWhen(true)] out IReplKeyReader? keyReader,
-		out int visibleRows)
+		out int visibleRows,
+		out ReplPagerMode pagerMode,
+		out bool ansiEnabled)
 		=> TryCreatePager(
 			payload,
 			format,
 			resultFlow,
 			hasMorePayload: false,
 			out keyReader,
-			out visibleRows);
+			out visibleRows,
+			out pagerMode,
+			out ansiEnabled);
 
 	private bool TryCreatePager(
 		string payload,
@@ -826,12 +843,15 @@ public sealed partial class CoreReplApp
 		ResultFlowInvocationOptions? resultFlow,
 		bool hasMorePayload,
 		[NotNullWhen(true)] out IReplKeyReader? keyReader,
-		out int visibleRows)
+		out int visibleRows,
+		out ReplPagerMode pagerMode,
+		out bool ansiEnabled)
 	{
 		keyReader = null;
 		visibleRows = 0;
+		ansiEnabled = false;
 
-		var pagerMode = resultFlow?.PagerMode ?? _options.Output.ResultFlow.DefaultPagerMode;
+		pagerMode = resultFlow?.PagerMode ?? _options.Output.ResultFlow.DefaultPagerMode;
 		if (pagerMode == ReplPagerMode.Off
 			|| ReplSessionIO.IsProgrammatic
 			|| ReplSessionIO.IsProtocolPassthrough
@@ -847,6 +867,7 @@ public sealed partial class CoreReplApp
 			return false;
 		}
 
+		ansiEnabled = _options.Output.IsAnsiEnabled();
 		return true;
 	}
 

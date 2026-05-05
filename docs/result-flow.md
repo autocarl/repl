@@ -383,7 +383,10 @@ Result-flow flags are global and use the `--result:` prefix so they do not colli
 | `--result:all` | Signals that the caller wants all rows. Bounded helpers such as `FromItems` can honor it; unbounded helpers such as `FromOffset` and `FromAsyncEnumerable` reject it by default. |
 | `--result:pager=auto|off|more|scroll|external` | Pager preference for human formats. |
 
-Current pager behavior is implemented by the integrated pager. `external` is accepted as a forward-compatible mode and currently falls back to the integrated pager.
+`auto` uses a `less`-style alternate-screen viewport when ANSI rendering and key
+input are available, then falls back to the simple `more` behavior in limited
+terminals. `external` is accepted as a forward-compatible mode and currently
+falls back to the integrated pager.
 
 ## CLI And Pipe Behavior
 
@@ -432,14 +435,17 @@ Supported keys:
 | `PageUp` | Re-display previous page window. |
 | `q` / `Esc` | Quit paging. |
 
-The v1 pager is intentionally conservative. It is closer to `more` than a full-screen `less`: it does not own an alternate screen, does not search, and does not launch external processes.
+The integrated pager has two render paths:
 
-`less` feels different because it owns an interactive viewport over the already
-rendered stream. Repl's integrated pager currently writes through the normal
-scrollback buffer so the output remains copyable and pipe-friendly. A future
-full-screen pager can be layered on top of the same `IReplPageSource<T>` contract,
-but it should remain opt-in because alternate-screen behavior is surprising in
-automation, logs, and hosted transports.
+- `more` fallback: writes page by page in the normal terminal buffer and never
+  uses cursor movement.
+- `scroll` viewport: enters the terminal alternate screen, keeps an internal
+  line buffer, redraws a viewport explicitly, and leaves the original scrollback
+  untouched when the user exits.
+
+The scroll viewport is inspired by `less`: it does not depend on terminal
+scrollback. It renders from an internal buffer and fetches additional
+`IReplPageSource<T>` payloads as the user pages past the buffered end.
 
 ## Testing Result Flow
 

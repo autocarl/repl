@@ -3,6 +3,12 @@ namespace Repl;
 internal static class ResultFlowPager
 {
 	private const string MorePrompt = "--More-- Space/PageDown: continue, Enter/Down: line, Up/PageUp: back, q/Esc: stop";
+	private const string EnterAlternateScreen = "\u001b[?1049h";
+	private const string LeaveAlternateScreen = "\u001b[?1049l";
+	private const string HideCursor = "\u001b[?25l";
+	private const string ShowCursor = "\u001b[?25h";
+	private const string CursorHome = "\u001b[H";
+	private const string ClearToEndOfScreen = "\u001b[J";
 
 	public static int CountLines(string payload) => SplitLines(payload).Length;
 
@@ -29,6 +35,52 @@ internal static class ResultFlowPager
 		TextWriter output,
 		IReplKeyReader keyReader,
 		int visibleRows,
+		ReplPagerMode pagerMode,
+		bool ansiEnabled,
+		CancellationToken cancellationToken = default)
+	{
+		await WriteAsync(
+				payload,
+				output,
+				keyReader,
+				visibleRows,
+				pagerMode,
+				ansiEnabled,
+				hasMorePayload: false,
+				fetchNextPayload: null,
+				cancellationToken)
+			.ConfigureAwait(false);
+	}
+
+	public static async ValueTask WriteAsync(
+		string payload,
+		TextWriter output,
+		IReplKeyReader keyReader,
+		int visibleRows,
+		bool hasMorePayload,
+		Func<CancellationToken, ValueTask<ResultFlowPagerPage?>>? fetchNextPayload,
+		CancellationToken cancellationToken = default)
+	{
+		await WriteAsync(
+				payload,
+				output,
+				keyReader,
+				visibleRows,
+				ReplPagerMode.More,
+				ansiEnabled: false,
+				hasMorePayload,
+				fetchNextPayload,
+				cancellationToken)
+			.ConfigureAwait(false);
+	}
+
+	public static async ValueTask WriteAsync(
+		string payload,
+		TextWriter output,
+		IReplKeyReader keyReader,
+		int visibleRows,
+		ReplPagerMode pagerMode,
+		bool ansiEnabled,
 		bool hasMorePayload,
 		Func<CancellationToken, ValueTask<ResultFlowPagerPage?>>? fetchNextPayload,
 		CancellationToken cancellationToken = default)
@@ -36,6 +88,40 @@ internal static class ResultFlowPager
 		ArgumentNullException.ThrowIfNull(output);
 		ArgumentNullException.ThrowIfNull(keyReader);
 
+		if (ShouldUseScrollPager(pagerMode, ansiEnabled))
+		{
+			await WriteScrollAsync(
+					payload,
+					output,
+					keyReader,
+					visibleRows,
+					hasMorePayload,
+					fetchNextPayload,
+					cancellationToken)
+				.ConfigureAwait(false);
+			return;
+		}
+
+		await WriteMoreAsync(
+				payload,
+				output,
+				keyReader,
+				visibleRows,
+				hasMorePayload,
+				fetchNextPayload,
+				cancellationToken)
+			.ConfigureAwait(false);
+	}
+
+	private static async ValueTask WriteMoreAsync(
+		string payload,
+		TextWriter output,
+		IReplKeyReader keyReader,
+		int visibleRows,
+		bool hasMorePayload,
+		Func<CancellationToken, ValueTask<ResultFlowPagerPage?>>? fetchNextPayload,
+		CancellationToken cancellationToken)
+	{
 		var state = new PagerState(SplitLines(payload), Math.Max(1, visibleRows), hasMorePayload);
 		if (state.Lines.Length == 0 && !state.HasMorePayload)
 		{
@@ -84,6 +170,54 @@ internal static class ResultFlowPager
 			}
 
 			state.Reset(SplitLines(nextPayload.Payload), nextPayload.HasMore);
+		}
+	}
+
+	private static async ValueTask WriteScrollAsync(
+		string payload,
+		TextWriter output,
+		IReplKeyReader keyReader,
+		int visibleRows,
+		bool hasMorePayload,
+		Func<CancellationToken, ValueTask<ResultFlowPagerPage?>>? fetchNextPayload,
+		CancellationToken cancellationToken)
+	{
+		var state = new ScrollPagerState(SplitLines(payload), Math.Max(2, visibleRows), hasMorePayload);
+		if (state.Buffer.Count == 0 && !state.HasMorePayload)
+		{
+			return;
+		}
+
+		await output.WriteAsync(EnterAlternateScreen).ConfigureAwait(false);
+		await output.WriteAsync(HideCursor).ConfigureAwait(false);
+		try
+		{
+			await EnsureScrollBufferAsync(state, fetchNextPayload, cancellationToken).ConfigureAwait(false);
+			while (true)
+			{
+				await RenderScrollAsync(state, output, cancellationToken).ConfigureAwait(false);
+				var key = await keyReader.ReadKeyAsync(cancellationToken).ConfigureAwait(false);
+				if (ApplyScrollKey(state, key))
+				{
+					return;
+				}
+
+				if (state.TopLine >= state.MaxTopLine && state.HasMorePayload && fetchNextPayload is not null)
+				{
+					var before = state.Buffer.Count;
+					await FetchIntoScrollBufferAsync(state, fetchNextPayload, cancellationToken).ConfigureAwait(false);
+					if (state.Buffer.Count > before)
+					{
+						state.TopLine = Math.Min(state.TopLine + state.ViewportHeight, state.MaxTopLine);
+					}
+				}
+			}
+		}
+		finally
+		{
+			await output.WriteAsync(ShowCursor).ConfigureAwait(false);
+			await output.WriteAsync(LeaveAlternateScreen).ConfigureAwait(false);
+			await output.FlushAsync(cancellationToken).ConfigureAwait(false);
 		}
 	}
 
@@ -181,6 +315,92 @@ internal static class ResultFlowPager
 		return key;
 	}
 
+	private static async ValueTask EnsureScrollBufferAsync(
+		ScrollPagerState state,
+		Func<CancellationToken, ValueTask<ResultFlowPagerPage?>>? fetchNextPayload,
+		CancellationToken cancellationToken)
+	{
+		while (state.Buffer.Count == 0 && state.HasMorePayload && fetchNextPayload is not null)
+		{
+			await FetchIntoScrollBufferAsync(state, fetchNextPayload, cancellationToken).ConfigureAwait(false);
+		}
+	}
+
+	private static async ValueTask FetchIntoScrollBufferAsync(
+		ScrollPagerState state,
+		Func<CancellationToken, ValueTask<ResultFlowPagerPage?>> fetchNextPayload,
+		CancellationToken cancellationToken)
+	{
+		var nextPayload = await fetchNextPayload(cancellationToken).ConfigureAwait(false);
+		if (nextPayload is null)
+		{
+			state.HasMorePayload = false;
+			return;
+		}
+
+		state.Append(SplitLines(nextPayload.Payload), nextPayload.HasMore);
+	}
+
+	private static async ValueTask RenderScrollAsync(
+		ScrollPagerState state,
+		TextWriter output,
+		CancellationToken cancellationToken)
+	{
+		await output.WriteAsync(CursorHome).ConfigureAwait(false);
+		await output.WriteAsync(ClearToEndOfScreen).ConfigureAwait(false);
+		var take = Math.Min(state.ViewportHeight, Math.Max(0, state.Buffer.Count - state.TopLine));
+		for (var i = 0; i < take; i++)
+		{
+			await output.WriteLineAsync(state.Buffer[state.TopLine + i]).ConfigureAwait(false);
+		}
+
+		for (var i = take; i < state.ViewportHeight; i++)
+		{
+			await output.WriteLineAsync().ConfigureAwait(false);
+		}
+
+		var lastLine = state.Buffer.Count == 0
+			? 0
+			: Math.Min(state.Buffer.Count, state.TopLine + state.ViewportHeight);
+		var status = state.Buffer.Count == 0
+			? "-- result-flow: loading --"
+			: $"-- result-flow {state.TopLine + 1}-{lastLine}/{state.Buffer.Count}{(state.HasMorePayload ? "+" : string.Empty)}  Space: next  Up/Down: scroll  q: quit --";
+		await output.WriteAsync(status).ConfigureAwait(false);
+		await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	private static bool ApplyScrollKey(ScrollPagerState state, ConsoleKeyInfo key)
+	{
+		switch (key.Key)
+		{
+			case ConsoleKey.Q:
+			case ConsoleKey.Escape:
+				return true;
+			case ConsoleKey.DownArrow:
+			case ConsoleKey.J:
+				state.TopLine = Math.Min(state.TopLine + 1, state.MaxTopLine);
+				return false;
+			case ConsoleKey.UpArrow:
+			case ConsoleKey.K:
+				state.TopLine = Math.Max(0, state.TopLine - 1);
+				return false;
+			case ConsoleKey.PageUp:
+			case ConsoleKey.B:
+				state.TopLine = Math.Max(0, state.TopLine - state.ViewportHeight);
+				return false;
+			case ConsoleKey.Home:
+			case ConsoleKey.G when key.Modifiers.HasFlag(ConsoleModifiers.Shift):
+				state.TopLine = 0;
+				return false;
+			default:
+				state.TopLine = Math.Min(state.TopLine + state.ViewportHeight, state.MaxTopLine);
+				return false;
+		}
+	}
+
+	private static bool ShouldUseScrollPager(ReplPagerMode pagerMode, bool ansiEnabled) =>
+		ansiEnabled && pagerMode is ReplPagerMode.Auto or ReplPagerMode.Scroll;
+
 	private static string[] SplitLines(string payload) =>
 		string.IsNullOrEmpty(payload)
 			? []
@@ -205,6 +425,25 @@ internal static class ResultFlowPager
 		{
 			Lines = lines;
 			Index = 0;
+			HasMorePayload = hasMorePayload;
+		}
+	}
+
+	private sealed class ScrollPagerState(string[] lines, int visibleRows, bool hasMorePayload)
+	{
+		public List<string> Buffer { get; } = [.. lines];
+
+		public int ViewportHeight { get; } = Math.Max(1, visibleRows - 1);
+
+		public int TopLine { get; set; }
+
+		public bool HasMorePayload { get; set; } = hasMorePayload;
+
+		public int MaxTopLine => Math.Max(0, Buffer.Count - ViewportHeight);
+
+		public void Append(string[] lines, bool hasMorePayload)
+		{
+			Buffer.AddRange(lines);
 			HasMorePayload = hasMorePayload;
 		}
 	}

@@ -209,6 +209,71 @@ public sealed class Given_ResultFlowPager
 		output.Split("four", StringSplitOptions.None).Should().HaveCount(3);
 	}
 
+	[TestMethod]
+	[Description("Result-flow scroll pager owns an alternate-screen viewport instead of relying on terminal scrollback.")]
+	public async Task When_ScrollPagerRunsWithAnsi_Then_UsesAlternateScreenViewport()
+	{
+		var writer = new StringWriter();
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			CancellationToken.None);
+
+		var output = writer.ToString();
+		output.Should().Contain("\u001b[?1049h");
+		output.Should().Contain("\u001b[?1049l");
+		output.Should().Contain("\u001b[H\u001b[J");
+		output.Should().Contain("one");
+		output.Should().Contain("three");
+		output.Should().Contain("q: quit");
+		output.Should().NotContain("--More--");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager fetches additional payloads into the same viewport when the user pages past the buffered end.")]
+	public async Task When_ScrollPagerReachesBufferedEnd_Then_FetchesNextPayload()
+	{
+		var writer = new StringWriter();
+		var fetches = 0;
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.Spacebar, ' '),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			hasMorePayload: true,
+			fetchNextPayload: _ =>
+			{
+				fetches++;
+				return ValueTask.FromResult<ResultFlowPagerPage?>(
+					new ResultFlowPagerPage("three\nfour", HasMore: false));
+			},
+			CancellationToken.None);
+
+		fetches.Should().Be(1);
+		var output = writer.ToString();
+		output.Should().Contain("one");
+		output.Should().Contain("four");
+		output.Should().Contain("\u001b[?1049h");
+	}
+
 	private static ConsoleKeyInfo MakeKey(ConsoleKey key, char keyChar) =>
 		new(keyChar, key, shift: false, alt: false, control: false);
 }
