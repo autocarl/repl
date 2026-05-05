@@ -30,6 +30,9 @@ internal sealed class SpectreHumanOutputTransformer : IOutputTransformer
 	public string Name => "spectre";
 
 	/// <inheritdoc />
+	public bool SupportsInteractivePaging => true;
+
+	/// <inheritdoc />
 	public ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default)
 	{
 		cancellationToken.ThrowIfCancellationRequested();

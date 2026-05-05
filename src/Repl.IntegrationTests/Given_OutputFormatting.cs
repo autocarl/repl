@@ -249,8 +249,7 @@ public sealed partial class Given_OutputFormatting
 						request.Cursor,
 						nextCursor,
 						contacts.Length,
-						request.PageSize,
-						nextCursor is not null)));
+						request.PageSize)));
 			}));
 
 		using var output = new StringWriter();

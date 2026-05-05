@@ -705,12 +705,11 @@ public sealed partial class CoreReplApp
 		if (result is IReplPageSource pageSource)
 		{
 			return await RenderPageSourceAsync(
-					pageSource,
-					transformer,
-					format,
-					isInteractive,
-					resultFlow,
-					cancellationToken)
+				pageSource,
+				transformer,
+				isInteractive,
+				resultFlow,
+				cancellationToken)
 				.ConfigureAwait(false);
 		}
 
@@ -718,7 +717,7 @@ public sealed partial class CoreReplApp
 		payload = TryColorizeStructuredPayload(payload, format, isInteractive);
 		if (!string.IsNullOrEmpty(payload))
 		{
-			await WritePayloadAsync(payload, format, resultFlow, cancellationToken).ConfigureAwait(false);
+			await WritePayloadAsync(payload, transformer, resultFlow, cancellationToken).ConfigureAwait(false);
 		}
 
 		return true;
@@ -727,7 +726,6 @@ public sealed partial class CoreReplApp
 	private async ValueTask<bool> RenderPageSourceAsync(
 		IReplPageSource source,
 		IOutputTransformer transformer,
-		string format,
 		bool isInteractive,
 		ResultFlowInvocationOptions? resultFlow,
 		CancellationToken cancellationToken)
@@ -735,11 +733,11 @@ public sealed partial class CoreReplApp
 		var request = CreatePageSourceRequest(resultFlow);
 		var page = await FetchPageSourceAsync(source, request, cancellationToken).ConfigureAwait(false);
 		var payload = await transformer.TransformAsync(page, cancellationToken).ConfigureAwait(false);
-		payload = TryColorizeStructuredPayload(payload, format, isInteractive);
+		payload = TryColorizeStructuredPayload(payload, transformer.Name, isInteractive);
 
 		if (!TryCreatePager(
 				payload,
-				format,
+				transformer,
 				resultFlow,
 				page.PageInfo.HasMore,
 				out var keyReader,
@@ -749,7 +747,7 @@ public sealed partial class CoreReplApp
 		{
 			if (!string.IsNullOrEmpty(payload))
 			{
-				await WritePayloadAsync(payload, format, resultFlow, cancellationToken).ConfigureAwait(false);
+				await ReplSessionIO.Output.WriteLineAsync(payload).ConfigureAwait(false);
 			}
 
 			return true;
@@ -758,7 +756,7 @@ public sealed partial class CoreReplApp
 		var nextCursor = page.PageInfo.NextCursor;
 		var pagerPayload = await transformer.TransformAsync(CreatePagerDisplayPage(page), cancellationToken)
 			.ConfigureAwait(false);
-		pagerPayload = TryColorizeStructuredPayload(pagerPayload, format, isInteractive);
+		pagerPayload = TryColorizeStructuredPayload(pagerPayload, transformer.Name, isInteractive);
 		await ResultFlowPager.WriteAsync(
 				pagerPayload,
 				ReplSessionIO.Output,
@@ -784,20 +782,20 @@ public sealed partial class CoreReplApp
 			nextCursor = nextPage.PageInfo.NextCursor;
 			var nextPayload = await transformer.TransformAsync(CreatePagerDisplayPage(nextPage), token)
 				.ConfigureAwait(false);
-			nextPayload = TryColorizeStructuredPayload(nextPayload, format, isInteractive);
+			nextPayload = TryColorizeStructuredPayload(nextPayload, transformer.Name, isInteractive);
 			return new ResultFlowPagerPage(nextPayload, nextPage.PageInfo.HasMore);
 		}
 	}
 
 	private async ValueTask WritePayloadAsync(
 		string payload,
-		string format,
+		IOutputTransformer transformer,
 		ResultFlowInvocationOptions? resultFlow,
 		CancellationToken cancellationToken)
 	{
 		if (TryCreatePager(
 				payload,
-				format,
+				transformer,
 				resultFlow,
 				out var keyReader,
 				out var visibleRows,
@@ -821,7 +819,7 @@ public sealed partial class CoreReplApp
 
 	private bool TryCreatePager(
 		string payload,
-		string format,
+		IOutputTransformer transformer,
 		ResultFlowInvocationOptions? resultFlow,
 		[NotNullWhen(true)] out IReplKeyReader? keyReader,
 		out int visibleRows,
@@ -829,7 +827,7 @@ public sealed partial class CoreReplApp
 		out bool ansiEnabled)
 		=> TryCreatePager(
 			payload,
-			format,
+			transformer,
 			resultFlow,
 			hasMorePayload: false,
 			out keyReader,
@@ -839,7 +837,7 @@ public sealed partial class CoreReplApp
 
 	private bool TryCreatePager(
 		string payload,
-		string format,
+		IOutputTransformer transformer,
 		ResultFlowInvocationOptions? resultFlow,
 		bool hasMorePayload,
 		[NotNullWhen(true)] out IReplKeyReader? keyReader,
@@ -855,7 +853,7 @@ public sealed partial class CoreReplApp
 		if (pagerMode == ReplPagerMode.Off
 			|| ReplSessionIO.IsProgrammatic
 			|| ReplSessionIO.IsProtocolPassthrough
-			|| !IsPagedHumanFormat(format))
+			|| !transformer.SupportsInteractivePaging)
 		{
 			return false;
 		}
@@ -899,10 +897,6 @@ public sealed partial class CoreReplApp
 		return false;
 	}
 
-	private static bool IsPagedHumanFormat(string format) =>
-		string.Equals(format, "human", StringComparison.OrdinalIgnoreCase)
-		|| string.Equals(format, "spectre", StringComparison.OrdinalIgnoreCase);
-
 	private ReplPageRequest CreatePageSourceRequest(ResultFlowInvocationOptions? resultFlow)
 	{
 		var surface = ResolveResultSurface();
@@ -924,7 +918,6 @@ public sealed partial class CoreReplApp
 		var pageInfo = page.PageInfo with
 		{
 			NextCursor = null,
-			HasMore = false,
 		};
 		return new ReplPageDisplaySnapshot(page, pageInfo);
 	}

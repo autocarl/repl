@@ -531,8 +531,7 @@ public sealed class Given_HelpDiscovery
 					Cursor: request.Cursor,
 					NextCursor: null,
 					TotalCount: 0,
-					PageSize: request.PageSize,
-					HasMore: false)));
+					PageSize: request.PageSize)));
 	}
 
 	[TestMethod]

@@ -29,7 +29,6 @@ public static class ReplPageRequestExtensions
 				Cursor: request.Cursor,
 				NextCursor: nextCursor,
 				TotalCount: totalCount,
-				PageSize: request.PageSize,
-				HasMore: !string.IsNullOrWhiteSpace(nextCursor)));
+				PageSize: request.PageSize));
 	}
 }

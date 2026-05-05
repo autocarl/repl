@@ -274,6 +274,19 @@ public sealed class Given_ReplPageSource
 		page.PageInfo.HasMore.Should().BeTrue();
 	}
 
+	[TestMethod]
+	[Description("ReplPageInfo derives HasMore from NextCursor so manual construction cannot create divergent page metadata.")]
+	public void When_PageInfoHasNoNextCursor_Then_HasMoreIsFalse()
+	{
+		var pageInfo = new ReplPageInfo(
+			Cursor: "current",
+			NextCursor: null,
+			TotalCount: null,
+			PageSize: 10);
+
+		pageInfo.HasMore.Should().BeFalse();
+	}
+
 	private static async IAsyncEnumerable<string> ReadItemsAsync(IEnumerable<string> items)
 	{
 		foreach (var item in items)

@@ -45,8 +45,7 @@ internal sealed class ReplPagingContext : IReplPagingContext
 			Cursor,
 			nextCursor,
 			totalCount,
-			SuggestedPageSize,
-			HasMore: !string.IsNullOrWhiteSpace(nextCursor));
+			SuggestedPageSize);
 		return new ReplPage<T>(items, pageInfo);
 	}
 

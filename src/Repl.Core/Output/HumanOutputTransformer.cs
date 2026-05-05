@@ -23,6 +23,8 @@ internal sealed class HumanOutputTransformer : IOutputTransformer
 
 	public string Name => "human";
 
+	public bool SupportsInteractivePaging => true;
+
 	public ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default)
 	{
 		cancellationToken.ThrowIfCancellationRequested();
