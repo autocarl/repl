@@ -38,7 +38,7 @@ internal sealed class ActivityFeed
 
 				return new ActivityEvent(
 					i,
-					start.AddMinutes(i * 7).ToString("yyyy-MM-dd HH:mm'Z'", CultureInfo.InvariantCulture),
+					start.AddMinutes(i * 7d).ToString("yyyy-MM-dd HH:mm'Z'", CultureInfo.InvariantCulture),
 					area,
 					eventName,
 					$"{area} batch {((i - 1) / 5) + 1} {eventName} successfully");

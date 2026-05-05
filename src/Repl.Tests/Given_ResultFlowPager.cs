@@ -9,7 +9,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow pager advances by page on Space and stops on Q.")]
 	public async Task When_PagingWithSpaceAndQuit_Then_WritesOnlyRequestedPages()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
 		[
 			MakeKey(ConsoleKey.Spacebar, ' '),
@@ -40,7 +40,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow pager advances by one line on Enter.")]
 	public async Task When_PagingWithEnter_Then_AdvancesSingleLine()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
 		[
 			MakeKey(ConsoleKey.Enter, '\r'),
@@ -65,7 +65,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow pager UpArrow moves back one line instead of jumping to the header.")]
 	public async Task When_PagingBackWithUpArrow_Then_DoesNotRepeatHeader()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
 		[
 			MakeKey(ConsoleKey.Spacebar, ' '),
@@ -92,7 +92,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow pager fetches the next data page in the same interactive run.")]
 	public async Task When_CurrentPayloadEndsAndMoreDataExists_Then_SpaceFetchesNextPayload()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var fetches = 0;
 		var keys = new FakeKeyReader(
 		[
@@ -125,7 +125,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow pager stops at a data-page boundary without fetching more data when the user quits.")]
 	public async Task When_CurrentPayloadEndsAndUserQuits_Then_DoesNotFetchNextPayload()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var fetches = 0;
 		var keys = new FakeKeyReader(
 		[
@@ -158,7 +158,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow pager fetches the next data page instead of showing an empty --More-- prompt when a payload has no content.")]
 	public async Task When_CurrentPayloadIsEmptyAndMoreDataExists_Then_FetchesNextPayload()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var fetches = 0;
 		var keys = new FakeKeyReader([]);
 
@@ -187,7 +187,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow pager replays the previous full window when the user presses UpArrow at a data-page boundary.")]
 	public async Task When_AtPayloadBoundaryAndUserPressesUpArrow_Then_ReplaysPreviousWindow()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
 		[
 			MakeKey(ConsoleKey.Spacebar, ' '),
@@ -213,7 +213,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow scroll pager owns an alternate-screen viewport instead of relying on terminal scrollback.")]
 	public async Task When_ScrollPagerRunsWithAnsi_Then_UsesAlternateScreenViewport()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
 		[
 			MakeKey(ConsoleKey.DownArrow, '\0'),
@@ -243,7 +243,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow scroll pager fetches additional payloads into the same viewport when the user pages past the buffered end.")]
 	public async Task When_ScrollPagerReachesBufferedEnd_Then_FetchesNextPayload()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var fetches = 0;
 		var keys = new FakeKeyReader(
 		[
@@ -278,7 +278,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow scroll pager advances to the new buffered end when a fetch returns fewer lines than one viewport.")]
 	public async Task When_ScrollPagerFetchesShortPayload_Then_ViewportAdvances()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
 		[
 			MakeKey(ConsoleKey.Spacebar, ' '),
@@ -306,7 +306,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow scroll pager does not fetch another payload when the current payload is exactly visible and the user presses Space once.")]
 	public async Task When_ScrollPagerContentExactlyFitsViewport_Then_SpaceDoesNotFetchImmediately()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var fetches = 0;
 		var keys = new FakeKeyReader(
 		[
@@ -338,7 +338,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow pager does not add a phantom empty line when a payload ends with a newline.")]
 	public async Task When_PayloadEndsWithNewline_Then_LineCountExcludesTrailingEmptyLine()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
 		[
 			MakeKey(ConsoleKey.Q, 'q'),
@@ -360,7 +360,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow scroll pager treats unrecognized keys as no-ops and does not advance the viewport or trigger a fetch.")]
 	public async Task When_ScrollPagerUnknownKeyPressed_Then_ViewportDoesNotAdvanceAndNoFetch()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var fetches = 0;
 		var keys = new FakeKeyReader(
 		[
@@ -392,7 +392,7 @@ public sealed class Given_ResultFlowPager
 	[Description("Result-flow scroll pager advances the viewport only on Space/PageDown, not on Enter or other keys.")]
 	public async Task When_ScrollPagerEnterKeyPressed_Then_ViewportAdvancesByOneLine()
 	{
-		var writer = new StringWriter();
+		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
 		[
 			MakeKey(ConsoleKey.Enter, '\r'),

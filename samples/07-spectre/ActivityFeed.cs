@@ -38,7 +38,7 @@ internal sealed class ActivityFeed
 
 				return new ActivityEvent(
 					i,
-					start.AddMinutes(i * 11).ToString("yyyy-MM-dd HH:mm'Z'", CultureInfo.InvariantCulture),
+					start.AddMinutes(i * 11d).ToString("yyyy-MM-dd HH:mm'Z'", CultureInfo.InvariantCulture),
 					team,
 					status,
 					$"{team}-{i:0000} {status}");
