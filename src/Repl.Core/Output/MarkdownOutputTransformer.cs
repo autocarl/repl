@@ -125,7 +125,7 @@ internal sealed class MarkdownOutputTransformer : IOutputTransformer
 
 	private static string RenderEnumerable(System.Collections.IEnumerable enumerable)
 	{
-		var items = enumerable.Cast<object?>().ToArray();
+		var items = ToObjectArray(enumerable);
 		if (items.Length == 0)
 		{
 			return "No results.";
@@ -226,7 +226,7 @@ internal sealed class MarkdownOutputTransformer : IOutputTransformer
 
 		if (value is System.Collections.IEnumerable enumerable)
 		{
-			var count = enumerable.Cast<object?>().Count();
+			var count = CountEnumerable(enumerable);
 			return count.ToString(System.Globalization.CultureInfo.InvariantCulture);
 		}
 
@@ -254,6 +254,36 @@ internal sealed class MarkdownOutputTransformer : IOutputTransformer
 
 	private static string EscapeCell(string value) =>
 		value.Replace("|", "\\|", StringComparison.Ordinal);
+
+	private static object?[] ToObjectArray(System.Collections.IEnumerable enumerable)
+	{
+		if (enumerable is object?[] array)
+		{
+			return array;
+		}
+
+		if (enumerable is IReplPage page)
+		{
+			return page.UntypedItems as object?[] ?? [.. page.UntypedItems];
+		}
+
+		return enumerable.Cast<object?>().ToArray();
+	}
+
+	private static int CountEnumerable(System.Collections.IEnumerable enumerable)
+	{
+		if (enumerable is System.Collections.ICollection collection)
+		{
+			return collection.Count;
+		}
+
+		if (enumerable is IReadOnlyCollection<object?> readonlyCollection)
+		{
+			return readonlyCollection.Count;
+		}
+
+		return enumerable.Cast<object?>().Count();
+	}
 
 	private static string RenderHelp(HelpRenderDocument help)
 	{

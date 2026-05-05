@@ -343,6 +343,22 @@ public sealed class Given_ReplPageSource
 		pageInfo.HasMore.Should().BeFalse();
 	}
 
+	[TestMethod]
+	[Description("ReplPage reuses object arrays for UntypedItems instead of allocating another array.")]
+	public void When_ReplPageItemsAreObjectArray_Then_UntypedItemsReusesArray()
+	{
+		object?[] items = ["one", 2];
+		var page = new ReplPage<object?>(
+			items,
+			new ReplPageInfo(
+				Cursor: null,
+				NextCursor: null,
+				TotalCount: items.Length,
+				PageSize: items.Length));
+
+		page.UntypedItems.Should().BeSameAs(items);
+	}
+
 	private static async IAsyncEnumerable<string> ReadItemsAsync(IEnumerable<string> items)
 	{
 		foreach (var item in items)

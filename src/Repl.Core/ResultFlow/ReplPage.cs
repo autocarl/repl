@@ -8,7 +8,7 @@ namespace Repl;
 /// <typeparam name="T">Item type.</typeparam>
 public sealed record ReplPage<T> : IReplPage
 {
-	private object?[]? _untypedItems;
+	private IReadOnlyList<object?>? _untypedItems;
 
 	/// <summary>
 	/// Initializes a new instance of the <see cref="ReplPage{T}"/> record.
@@ -38,5 +38,10 @@ public sealed record ReplPage<T> : IReplPage
 
 	/// <inheritdoc />
 	[JsonIgnore]
-	public IReadOnlyList<object?> UntypedItems => _untypedItems ??= Items.Cast<object?>().ToArray();
+	public IReadOnlyList<object?> UntypedItems => _untypedItems ??= Items switch
+	{
+		object?[] array => array,
+		IReadOnlyList<object?> list => list,
+		_ => Items.Cast<object?>().ToArray(),
+	};
 }
