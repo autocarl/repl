@@ -152,6 +152,8 @@ internal sealed class MarkdownOutputTransformer : IOutputTransformer
 				items.Select(item => $"- {item?.ToString() ?? string.Empty}"));
 		}
 
+		var emptyRow = new string[members.Length];
+		Array.Fill(emptyRow, string.Empty);
 		var rows = new List<string[]>(items.Length + 1)
 		{
 			members.Select(member => EscapeCell(member.Label)).ToArray(),
@@ -161,7 +163,7 @@ internal sealed class MarkdownOutputTransformer : IOutputTransformer
 		{
 			if (item is null)
 			{
-				rows.Add(members.Select(_ => string.Empty).ToArray());
+				rows.Add(emptyRow);
 				continue;
 			}
 

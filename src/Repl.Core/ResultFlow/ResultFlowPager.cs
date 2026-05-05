@@ -424,27 +424,16 @@ internal static class ResultFlowPager
 	private static string[] SplitNonEmptyPayloadLines(string payload)
 	{
 		var lines = new List<string>();
-		var start = 0;
-		for (var index = 0; index < payload.Length; index++)
+		foreach (var line in payload.AsSpan().EnumerateLines())
 		{
-			var current = payload[index];
-			if (current is not '\r' and not '\n')
-			{
-				continue;
-			}
-
-			lines.Add(payload[start..index]);
-			if (current == '\r' && index + 1 < payload.Length && payload[index + 1] == '\n')
-			{
-				index++;
-			}
-
-			start = index + 1;
+			lines.Add(line.ToString());
 		}
 
-		if (start < payload.Length)
+		// EnumerateLines adds a trailing empty entry when the payload ends with a newline;
+		// strip it to stay consistent with how the pager counts visible lines.
+		if (lines.Count > 0 && lines[^1].Length == 0)
 		{
-			lines.Add(payload[start..]);
+			lines.RemoveAt(lines.Count - 1);
 		}
 
 		return [.. lines];
@@ -452,7 +441,9 @@ internal static class ResultFlowPager
 
 	private sealed class PagerState(string[] lines, int pageSize, bool hasMorePayload)
 	{
-		public string[] Lines { get; private set; } = lines;
+		private string[] _lines = lines;
+
+		public string[] Lines => _lines;
 
 		public int PageSize { get; } = pageSize;
 
@@ -464,7 +455,7 @@ internal static class ResultFlowPager
 
 		public void Reset(string[] lines, bool hasMorePayload)
 		{
-			Lines = lines;
+			_lines = lines;
 			Index = 0;
 			HasMorePayload = hasMorePayload;
 		}
