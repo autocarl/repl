@@ -221,7 +221,7 @@ internal sealed partial class McpToolAdapter
 		return summary;
 	}
 
-	private static (List<string> Tokens, Dictionary<string, string> Prefills) PrepareExecution(
+	internal static (List<string> Tokens, Dictionary<string, string> Prefills) PrepareExecution(
 		string routePath,
 		IDictionary<string, JsonElement> arguments)
 	{
@@ -241,6 +241,7 @@ internal sealed partial class McpToolAdapter
 			}
 			else if (string.Equals(key, McpResultFlowArgumentNames.Cursor, StringComparison.Ordinal))
 			{
+				ValidateResultCursor(strValue);
 				resultFlowTokens.Add("--result:cursor");
 				resultFlowTokens.Add(strValue);
 			}
@@ -258,6 +259,24 @@ internal sealed partial class McpToolAdapter
 		var tokens = ReconstructTokens(routePath, stringArgs);
 		tokens.InsertRange(0, resultFlowTokens);
 		return (tokens, prefills);
+	}
+
+	private static void ValidateResultCursor(string cursor)
+	{
+		if (cursor.Length > 512)
+		{
+			throw new InvalidOperationException("The MCP result cursor cannot exceed 512 characters.");
+		}
+
+		if (cursor.Length > 0 && cursor[0] == '-')
+		{
+			throw new InvalidOperationException("The MCP result cursor cannot start like a CLI option.");
+		}
+
+		if (cursor.Any(char.IsWhiteSpace))
+		{
+			throw new InvalidOperationException("The MCP result cursor cannot contain whitespace.");
+		}
 	}
 
 	/// <summary>

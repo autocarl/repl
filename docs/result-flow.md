@@ -589,6 +589,10 @@ MCP tools expose two reserved input properties on every tool schema:
 | `_replPageSize` | Requested page size for the tool call. |
 
 These properties are consumed by the Repl MCP adapter and mapped to `IReplPagingContext`. They are not forwarded as command business options.
+MCP cursors are expected to be compact opaque values, for example base64url or
+another whitespace-free token. Repl rejects cursors that contain whitespace,
+start with `-`, or exceed 512 characters before they can be converted to CLI
+tokens.
 
 When a handler returns `ReplPage<T>`, MCP returns:
 

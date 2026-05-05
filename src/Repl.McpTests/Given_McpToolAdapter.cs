@@ -1,4 +1,5 @@
 using Repl.Mcp;
+using System.Text.Json;
 
 namespace Repl.McpTests;
 
@@ -86,5 +87,64 @@ public sealed class Given_McpToolAdapter
 		var tokens = McpToolAdapter.ReconstructTokens("contact {id:int} delete", args);
 
 		tokens.Should().BeEquivalentTo(["contact", "42", "delete", "--verbose", "true"]);
+	}
+
+	[TestMethod]
+	[Description("PrepareExecution accepts compact opaque result cursors and emits them as result-flow tokens.")]
+	public void When_ResultCursorIsValid_Then_ResultFlowTokenIsEmitted()
+	{
+		var (tokens, _) = McpToolAdapter.PrepareExecution(
+			"contacts",
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				[McpResultFlowArgumentNames.Cursor] = JsonSerializer.SerializeToElement("abc_DEF-123"),
+			});
+
+		tokens.Should().ContainInOrder("--result:cursor", "abc_DEF-123", "contacts");
+	}
+
+	[TestMethod]
+	[Description("PrepareExecution rejects result cursors that could be confused with CLI token boundaries.")]
+	public void When_ResultCursorContainsWhitespace_Then_Rejected()
+	{
+		var action = () => McpToolAdapter.PrepareExecution(
+			"contacts",
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				[McpResultFlowArgumentNames.Cursor] = JsonSerializer.SerializeToElement("abc def"),
+			});
+
+		action.Should().Throw<InvalidOperationException>()
+			.WithMessage("*cursor*whitespace*");
+	}
+
+	[TestMethod]
+	[Description("PrepareExecution rejects result cursors that start like CLI options.")]
+	public void When_ResultCursorStartsWithDash_Then_Rejected()
+	{
+		var action = () => McpToolAdapter.PrepareExecution(
+			"contacts",
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				[McpResultFlowArgumentNames.Cursor] = JsonSerializer.SerializeToElement("--result:all"),
+			});
+
+		action.Should().Throw<InvalidOperationException>()
+			.WithMessage("*cursor*option*");
+	}
+
+	[TestMethod]
+	[Description("PrepareExecution rejects overly large result cursors.")]
+	public void When_ResultCursorIsTooLong_Then_Rejected()
+	{
+		var action = () => McpToolAdapter.PrepareExecution(
+			"contacts",
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				[McpResultFlowArgumentNames.Cursor] = JsonSerializer.SerializeToElement(new string('a', 513)),
+			});
+
+		action.Should().Throw<InvalidOperationException>()
+			.WithMessage("*cursor*512*");
 	}
 }
