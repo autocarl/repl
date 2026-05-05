@@ -137,6 +137,12 @@ public static class ReplPageSource
 	/// mutable files, channels, network cursors, or shared enumerator instances. For
 	/// those sources, use <see cref="Create{T}(Func{ReplPageRequest, CancellationToken, ValueTask{ReplPage{T}}})"/>
 	/// with an opaque cursor owned by the source.
+	/// <para>
+	/// <b>Performance note:</b> fetching page N re-streams from the beginning and skips
+	/// <c>(N-1) × pageSize</c> items; cost is O(offset) per page. For large or expensive
+	/// sources prefer <see cref="Create{T}(Func{ReplPageRequest, CancellationToken, ValueTask{ReplPage{T}}})"/>
+	/// with a source-native cursor so each page starts directly at the right position.
+	/// </para>
 	/// </remarks>
 	public static IReplPageSource<T> FromAsyncEnumerable<T>(
 		Func<CancellationToken, IAsyncEnumerable<T>> createItems,
@@ -165,6 +171,12 @@ public static class ReplPageSource
 	/// mutable files, channels, network cursors, or shared enumerator instances. For
 	/// those sources, use <see cref="Create{T,TState}(TState, Func{TState, ReplPageRequest, CancellationToken, ValueTask{ReplPage{T}}})"/>
 	/// with an opaque cursor owned by the source.
+	/// <para>
+	/// <b>Performance note:</b> fetching page N re-streams from the beginning and skips
+	/// <c>(N-1) × pageSize</c> items; cost is O(offset) per page. For large or expensive
+	/// sources prefer the stateful <see cref="Create{T,TState}"/> overload with a
+	/// source-native cursor so each page starts directly at the right position.
+	/// </para>
 	/// </remarks>
 	public static IReplPageSource<T> FromAsyncEnumerable<T, TState>(
 		TState state,

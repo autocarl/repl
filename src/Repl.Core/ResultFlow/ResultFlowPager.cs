@@ -386,6 +386,12 @@ internal static class ResultFlowPager
 			case ConsoleKey.Q:
 			case ConsoleKey.Escape:
 				return true;
+			case ConsoleKey.Spacebar:
+			case ConsoleKey.PageDown:
+			case ConsoleKey.F:
+				state.TopLine = Math.Min(state.TopLine + state.ViewportHeight, state.MaxTopLine);
+				return false;
+			case ConsoleKey.Enter:
 			case ConsoleKey.DownArrow:
 			case ConsoleKey.J:
 				state.TopLine = Math.Min(state.TopLine + 1, state.MaxTopLine);
@@ -403,7 +409,6 @@ internal static class ResultFlowPager
 				state.TopLine = 0;
 				return false;
 			default:
-				state.TopLine = Math.Min(state.TopLine + state.ViewportHeight, state.MaxTopLine);
 				return false;
 		}
 	}

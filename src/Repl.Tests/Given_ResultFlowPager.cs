@@ -356,6 +356,62 @@ public sealed class Given_ResultFlowPager
 		writer.ToString().Should().Contain("1-2/2");
 	}
 
+	[TestMethod]
+	[Description("Result-flow scroll pager treats unrecognized keys as no-ops and does not advance the viewport or trigger a fetch.")]
+	public async Task When_ScrollPagerUnknownKeyPressed_Then_ViewportDoesNotAdvanceAndNoFetch()
+	{
+		var writer = new StringWriter();
+		var fetches = 0;
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.F1, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree\nfour",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			hasMorePayload: true,
+			fetchNextPayload: _ =>
+			{
+				fetches++;
+				return ValueTask.FromResult<ResultFlowPagerPage?>(
+					new ResultFlowPagerPage("five", HasMore: false));
+			},
+			CancellationToken.None);
+
+		fetches.Should().Be(0);
+		writer.ToString().Should().NotContain("five");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager advances the viewport only on Space/PageDown, not on Enter or other keys.")]
+	public async Task When_ScrollPagerEnterKeyPressed_Then_ViewportAdvancesByOneLine()
+	{
+		var writer = new StringWriter();
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.Enter, '\r'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree\nfour",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			CancellationToken.None);
+
+		// Enter maps to DownArrow (one line); status bar should show 2-3/4, not 3-4/4
+		writer.ToString().Should().Contain("2-3/4");
+	}
+
 	private static ConsoleKeyInfo MakeKey(ConsoleKey key, char keyChar) =>
 		new(keyChar, key, shift: false, alt: false, control: false);
 }
