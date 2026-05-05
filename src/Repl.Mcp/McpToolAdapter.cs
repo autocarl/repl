@@ -180,6 +180,9 @@ internal sealed partial class McpToolAdapter
 			using var document = JsonDocument.Parse(output);
 			var root = document.RootElement;
 			if (root.ValueKind != JsonValueKind.Object
+				|| !root.TryGetProperty("$type", out var type)
+				|| type.ValueKind != JsonValueKind.String
+				|| !string.Equals(type.GetString(), "page", StringComparison.Ordinal)
 				|| !root.TryGetProperty("items", out var items)
 				|| items.ValueKind != JsonValueKind.Array
 				|| !root.TryGetProperty("pageInfo", out var pageInfo)
@@ -212,7 +215,7 @@ internal sealed partial class McpToolAdapter
 			&& nextCursor.ValueKind == JsonValueKind.String
 			&& !string.IsNullOrWhiteSpace(nextCursor.GetString()))
 		{
-			summary += $" Continue with {McpResultFlowArgumentNames.Cursor}={nextCursor.GetString()}.";
+			summary += $" Continue with {McpResultFlowArgumentNames.Cursor}; cursor available in structured content.";
 		}
 
 		return summary;

@@ -113,7 +113,70 @@ public sealed class Given_McpServerEndToEnd
 		var text = result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text;
 		text.Should().NotBeNull();
 		text!.Should().Contain("Returned 1 item(s).");
-		text.Should().Contain("_replCursor=page-2");
+		text.Should().Contain("cursor available");
+		text.Should().NotContain("page-2");
+	}
+
+	[TestMethod]
+	[Description("tools/call does not treat arbitrary JSON objects with items and pageInfo properties as paged results.")]
+	public async Task When_ToolsCallReturnsPageShapedObject_Then_ResultIsPlainText()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Map(
+					"shape",
+					() => new
+					{
+						Items = PageShapedItems,
+						PageInfo = new { NextCursor = "raw-cursor" },
+					})
+				.ReadOnly();
+		});
+
+		var result = await fixture.Client.CallToolAsync(
+			"shape",
+			new Dictionary<string, object?>(StringComparer.Ordinal));
+
+		result.StructuredContent.Should().BeNull();
+		result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("not-a-page");
+	}
+
+	[TestMethod]
+	[Description("tools/call returns page-source results as structured pages and consumes MCP cursor arguments.")]
+	public async Task When_ToolsCallReturnsPageSource_Then_CursorFetchesNextPage()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Map("contacts", () => ReplPageSource.FromItems(
+				[
+					new ContactDto(1, "Alice"),
+					new ContactDto(2, "Bob"),
+				]))
+				.ReadOnly();
+		});
+
+		var first = await fixture.Client.CallToolAsync(
+			"contacts",
+			new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["_replPageSize"] = 1,
+			});
+		var firstRoot = first.StructuredContent!.Value;
+		var nextCursor = firstRoot.GetProperty("pageInfo").GetProperty("nextCursor").GetString();
+
+		var second = await fixture.Client.CallToolAsync(
+			"contacts",
+			new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["_replPageSize"] = 1,
+				["_replCursor"] = nextCursor,
+			});
+
+		second.IsError.Should().NotBeTrue();
+		var secondRoot = second.StructuredContent!.Value;
+		secondRoot.GetProperty("items")[0].GetProperty("name").GetString().Should().Be("Bob");
+		secondRoot.GetProperty("pageInfo").GetProperty("cursor").GetString().Should().Be(nextCursor);
+		secondRoot.GetProperty("pageInfo").GetProperty("hasMore").GetBoolean().Should().BeFalse();
 	}
 
 	[TestMethod]
@@ -347,6 +410,8 @@ public sealed class Given_McpServerEndToEnd
 	private sealed class AnotherService;
 
 	private sealed record ContactDto(int Id, string Name);
+
+	private static readonly string[] PageShapedItems = ["not-a-page"];
 
 	// ── Prompts ────────────────────────────────────────────────────────
 

@@ -122,4 +122,19 @@ public sealed class Given_GlobalOptionParser
 		parsed.ResultFlow.AllRequested.Should().BeTrue();
 		parsed.ResultFlow.PagerMode.Should().Be(ReplPagerMode.Off);
 	}
+
+	[TestMethod]
+	[Description("Result-flow page size is clamped during global option parsing before it reaches handlers or page sources.")]
+	public void When_ResultFlowPageSizeExceedsMaximum_Then_ParserClampsIt()
+	{
+		var outputOptions = new OutputOptions();
+		outputOptions.ResultFlow.MaxPageSize = 50;
+
+		var parsed = GlobalOptionParser.Parse(
+			["users", "list", "--result:page-size=2147483647"],
+			outputOptions,
+			new ParsingOptions());
+
+		parsed.ResultFlow.PageSize.Should().Be(50);
+	}
 }

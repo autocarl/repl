@@ -68,7 +68,14 @@ internal static class GlobalOptionParser
 				continue;
 			}
 
-			if (TryParseResultFlowOption(args, ref index, argument, optionComparison, options.ResultFlow, out var resultFlow))
+			if (TryParseResultFlowOption(
+					args,
+					ref index,
+					argument,
+					optionComparison,
+					options.ResultFlow,
+					outputOptions.ResultFlow.MaxPageSize,
+					out var resultFlow))
 			{
 				options = options with { ResultFlow = resultFlow };
 				continue;
@@ -155,6 +162,7 @@ internal static class GlobalOptionParser
 		string argument,
 		StringComparison comparison,
 		ResultFlowInvocationOptions current,
+		int maxPageSize,
 		out ResultFlowInvocationOptions resultFlow)
 	{
 		const string prefix = "--result:";
@@ -168,7 +176,7 @@ internal static class GlobalOptionParser
 		if (TrySplitToken(token, '=', out var name, out var inlineValue)
 			|| TrySplitToken(token, ':', out name, out inlineValue))
 		{
-			return ApplyResultFlowOption(name, inlineValue, current, out resultFlow);
+			return ApplyResultFlowOption(name, inlineValue, current, maxPageSize, out resultFlow);
 		}
 
 		if (string.Equals(token, "all", comparison))
@@ -182,16 +190,17 @@ internal static class GlobalOptionParser
 			&& !args[index + 1].StartsWith('-'))
 		{
 			index++;
-			return ApplyResultFlowOption(token, args[index], current, out resultFlow);
+			return ApplyResultFlowOption(token, args[index], current, maxPageSize, out resultFlow);
 		}
 
-		return ApplyResultFlowOption(token, "true", current, out resultFlow);
+		return ApplyResultFlowOption(token, "true", current, maxPageSize, out resultFlow);
 	}
 
 	private static bool ApplyResultFlowOption(
 		string name,
 		string value,
 		ResultFlowInvocationOptions current,
+		int maxPageSize,
 		out ResultFlowInvocationOptions resultFlow)
 	{
 		resultFlow = current;
@@ -203,7 +212,7 @@ internal static class GlobalOptionParser
 				System.Globalization.CultureInfo.InvariantCulture,
 				out var pageSize))
 			{
-				resultFlow = current with { PageSize = pageSize };
+				resultFlow = current with { PageSize = ClampPageSize(pageSize, maxPageSize) };
 			}
 
 			return true;
@@ -238,6 +247,9 @@ internal static class GlobalOptionParser
 		string.Equals(token, "page-size", comparison)
 		|| string.Equals(token, "cursor", comparison)
 		|| string.Equals(token, "pager", comparison);
+
+	private static int ClampPageSize(int pageSize, int maxPageSize) =>
+		Math.Clamp(pageSize, 1, Math.Max(1, maxPageSize));
 
 	private static Dictionary<string, string> BuildCustomTokenMap(
 		IReadOnlyDictionary<string, GlobalOptionDefinition> definitions,

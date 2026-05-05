@@ -356,6 +356,7 @@ JSON output uses a clean automation envelope:
 
 ```json
 {
+  "$type": "page",
   "items": [
     { "id": 1, "name": "Alice" }
   ],
@@ -581,8 +582,8 @@ These properties are consumed by the Repl MCP adapter and mapped to `IReplPaging
 
 When a handler returns `ReplPage<T>`, MCP returns:
 
-- `StructuredContent`: the full `{ items, pageInfo }` envelope.
-- `Content`: a short text summary such as `Returned 1 item(s). Total: 2. Continue with _replCursor=page-2.`
+- `StructuredContent`: the full `{ "$type": "page", items, pageInfo }` envelope.
+- `Content`: a short text summary such as `Returned 1 item(s). Total: 2. Continue with _replCursor; cursor available in structured content.`
 
 This keeps agents from receiving a giant JSON string in `TextContentBlock` while still preserving structured data for clients that support it.
 
