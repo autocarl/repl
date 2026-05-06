@@ -467,7 +467,7 @@ public sealed class Given_ResultFlowPager
 			CancellationToken.None);
 
 		var output = writer.ToString();
-		output.Should().Contain($"{header}\r\n\u001b[2Kthree\r\n\u001b[2Kfour");
+		output.Should().Contain($"{header}\r\nthree\r\nfour");
 		output.Should().Contain("3-4/5");
 	}
 
@@ -493,6 +493,100 @@ public sealed class Given_ResultFlowPager
 			CancellationToken.None);
 
 		writer.ToString().Split("\u001b[J").Length.Should().Be(2);
+		writer.ToString().Should().NotContain("\u001b[2K");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager strips page footer hints already represented by its own status bar.")]
+	public async Task When_ScrollPagerReceivesPageFooterLines_Then_FooterLinesAreNotRendered()
+	{
+		using var writer = new StringWriter();
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nShowing 2 of 5. Next data page: rerun with --result:cursor page-2.",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			hasMorePayload: true,
+			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
+				new ResultFlowPagerPage("three\nShowing 1 of 5.", HasMore: false)),
+			CancellationToken.None);
+
+		var output = writer.ToString();
+		output.Should().Contain("one");
+		output.Should().Contain("three");
+		output.Should().NotContain("Showing 2 of 5");
+		output.Should().NotContain("Showing 1 of 5");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager End moves to the end of the currently buffered content.")]
+	public async Task When_ScrollPagerEndPressed_Then_MovesToKnownEndWithoutFetching()
+	{
+		using var writer = new StringWriter();
+		var fetches = 0;
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.End, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree\nfour\nfive",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			hasMorePayload: true,
+			fetchNextPayload: _ =>
+			{
+				fetches++;
+				return ValueTask.FromResult<ResultFlowPagerPage?>(
+					new ResultFlowPagerPage("six", HasMore: false));
+			},
+			CancellationToken.None);
+
+		fetches.Should().Be(0);
+		writer.ToString().Should().Contain("4-5/5+");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager recalculates viewport height between redraws.")]
+	public async Task When_ScrollPagerHeightChanges_Then_ViewportUsesCurrentHeight()
+	{
+		using var writer = new StringWriter();
+		var visibleRows = 5;
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+		var reads = 0;
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree\nfour\nfive",
+			writer,
+			keys,
+			visibleRows,
+			visibleRowsProvider: () => reads++ == 0 ? visibleRows : 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			hasMorePayload: false,
+			fetchNextPayload: null,
+			CancellationToken.None);
+
+		var output = writer.ToString();
+		output.Should().Contain("1-4/5");
+		output.Should().Contain("2-3/5");
+		output.Should().Contain("\u001b[H\u001b[J");
 	}
 
 	private static ConsoleKeyInfo MakeKey(ConsoleKey key, char keyChar) =>

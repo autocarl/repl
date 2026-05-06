@@ -762,6 +762,7 @@ public sealed partial class CoreReplApp
 				ReplSessionIO.Output,
 				keyReader,
 				visibleRows,
+				ResolvePagerVisibleRows,
 				pagerMode,
 				ansiEnabled,
 				page.PageInfo.HasMore,
@@ -871,12 +872,17 @@ public sealed partial class CoreReplApp
 
 	private bool TryResolvePagerVisibleRows(out int visibleRows)
 	{
+		visibleRows = ResolvePagerVisibleRows();
+		return visibleRows > 0;
+	}
+
+	private int ResolvePagerVisibleRows()
+	{
 		var height = ReplSessionIO.WindowSize?.Height ?? TryGetConsoleWindowHeight();
 		var reservedRows = Math.Max(0, _options.Output.ResultFlow.ReservedVisibleRows);
-		visibleRows = height is > 0
+		return height is > 0
 			? Math.Max(1, height.Value - reservedRows)
 			: Math.Max(1, _options.Output.ResultFlow.DefaultPageSize);
-		return visibleRows > 0;
 	}
 
 	private static bool TryResolvePagerKeyReader([NotNullWhen(true)] out IReplKeyReader? keyReader)
