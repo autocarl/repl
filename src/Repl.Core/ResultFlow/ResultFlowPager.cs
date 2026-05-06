@@ -9,6 +9,7 @@ internal static class ResultFlowPager
 	private const string ShowCursor = "\u001b[?25h";
 	private const string CursorHome = "\u001b[H";
 	private const string ClearToEndOfScreen = "\u001b[J";
+	private const string ClearLine = "\u001b[2K";
 
 	public static int CountLines(string payload) => SplitLines(payload).Length;
 
@@ -197,6 +198,8 @@ internal static class ResultFlowPager
 
 		await output.WriteAsync(EnterAlternateScreen).ConfigureAwait(false);
 		await output.WriteAsync(HideCursor).ConfigureAwait(false);
+		await output.WriteAsync(CursorHome).ConfigureAwait(false);
+		await output.WriteAsync(ClearToEndOfScreen).ConfigureAwait(false);
 		try
 		{
 			await EnsureScrollBufferAsync(state, fetchNextPayload, cancellationToken).ConfigureAwait(false);
@@ -204,22 +207,19 @@ internal static class ResultFlowPager
 			{
 				await RenderScrollAsync(state, output, cancellationToken).ConfigureAwait(false);
 				var key = await keyReader.ReadKeyAsync(cancellationToken).ConfigureAwait(false);
-				if (ApplyScrollKey(state, key))
+				var beforeTopLine = state.TopLine;
+				var action = ApplyScrollKey(state, key);
+				if (action == ScrollKeyAction.Quit)
 				{
 					return;
 				}
 
-				if (state.HasReachedBottom
-					&& state.Buffer.Count > state.ViewportHeight
+				if (ShouldFetchForScrollKey(state, action, beforeTopLine)
 					&& state.HasMorePayload
 					&& fetchNextPayload is not null)
 				{
-					var before = state.Buffer.Count;
 					await FetchIntoScrollBufferAsync(state, fetchNextPayload, cancellationToken).ConfigureAwait(false);
-					if (state.Buffer.Count > before)
-					{
-						state.TopLine = Math.Min(state.TopLine + state.ViewportHeight, state.MaxTopLine);
-					}
+					state.TopLine = Math.Min(beforeTopLine + GetScrollDelta(action, state.ViewportHeight), state.MaxTopLine);
 				}
 			}
 		}
@@ -357,15 +357,22 @@ internal static class ResultFlowPager
 		CancellationToken cancellationToken)
 	{
 		await output.WriteAsync(CursorHome).ConfigureAwait(false);
-		await output.WriteAsync(ClearToEndOfScreen).ConfigureAwait(false);
+		if (state.StickyHeader is { } header)
+		{
+			await output.WriteAsync(ClearLine).ConfigureAwait(false);
+			await output.WriteLineAsync(header).ConfigureAwait(false);
+		}
+
 		var take = Math.Min(state.ViewportHeight, Math.Max(0, state.Buffer.Count - state.TopLine));
 		for (var i = 0; i < take; i++)
 		{
+			await output.WriteAsync(ClearLine).ConfigureAwait(false);
 			await output.WriteLineAsync(state.Buffer[state.TopLine + i]).ConfigureAwait(false);
 		}
 
 		for (var i = take; i < state.ViewportHeight; i++)
 		{
+			await output.WriteAsync(ClearLine).ConfigureAwait(false);
 			await output.WriteLineAsync().ConfigureAwait(false);
 		}
 
@@ -375,43 +382,55 @@ internal static class ResultFlowPager
 		var status = state.Buffer.Count == 0
 			? "-- result-flow: loading --"
 			: $"-- result-flow {state.TopLine + 1}-{lastLine}/{state.Buffer.Count}{(state.HasMorePayload ? "+" : string.Empty)}  Space: next  Up/Down: scroll  q: quit --";
+		await output.WriteAsync(ClearLine).ConfigureAwait(false);
 		await output.WriteAsync(status).ConfigureAwait(false);
 		await output.FlushAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private static bool ApplyScrollKey(ScrollPagerState state, ConsoleKeyInfo key)
+	private static ScrollKeyAction ApplyScrollKey(ScrollPagerState state, ConsoleKeyInfo key)
 	{
 		switch (key.Key)
 		{
 			case ConsoleKey.Q:
 			case ConsoleKey.Escape:
-				return true;
+				return ScrollKeyAction.Quit;
 			case ConsoleKey.Spacebar:
 			case ConsoleKey.PageDown:
 			case ConsoleKey.F:
 				state.TopLine = Math.Min(state.TopLine + state.ViewportHeight, state.MaxTopLine);
-				return false;
+				return ScrollKeyAction.PageDown;
 			case ConsoleKey.Enter:
 			case ConsoleKey.DownArrow:
 			case ConsoleKey.J:
 				state.TopLine = Math.Min(state.TopLine + 1, state.MaxTopLine);
-				return false;
+				return ScrollKeyAction.LineDown;
 			case ConsoleKey.UpArrow:
 			case ConsoleKey.K:
 				state.TopLine = Math.Max(0, state.TopLine - 1);
-				return false;
+				return ScrollKeyAction.Other;
 			case ConsoleKey.PageUp:
 			case ConsoleKey.B:
 				state.TopLine = Math.Max(0, state.TopLine - state.ViewportHeight);
-				return false;
+				return ScrollKeyAction.Other;
 			case ConsoleKey.Home:
 			case ConsoleKey.G when key.Modifiers.HasFlag(ConsoleModifiers.Shift):
 				state.TopLine = 0;
-				return false;
+				return ScrollKeyAction.Other;
 			default:
-				return false;
+				return ScrollKeyAction.Other;
 		}
 	}
+
+	private static bool ShouldFetchForScrollKey(ScrollPagerState state, ScrollKeyAction action, int beforeTopLine) =>
+		action switch
+		{
+			ScrollKeyAction.PageDown => state.HasReachedBottom && state.Buffer.Count > state.ViewportHeight,
+			ScrollKeyAction.LineDown => beforeTopLine == state.TopLine && state.HasReachedBottom,
+			_ => false,
+		};
+
+	private static int GetScrollDelta(ScrollKeyAction action, int viewportHeight) =>
+		action == ScrollKeyAction.PageDown ? viewportHeight : 1;
 
 	private static bool ShouldUseScrollPager(ReplPagerMode pagerMode, bool ansiEnabled) =>
 		ansiEnabled && pagerMode is ReplPagerMode.Auto or ReplPagerMode.Scroll;
@@ -461,15 +480,33 @@ internal static class ResultFlowPager
 		}
 	}
 
-	private sealed class ScrollPagerState(string[] lines, int visibleRows, bool hasMorePayload)
+	private enum ScrollKeyAction
 	{
-		public List<string> Buffer { get; } = [.. lines];
+		Other,
+		LineDown,
+		PageDown,
+		Quit,
+	}
 
-		public int ViewportHeight { get; } = Math.Max(1, visibleRows - 1);
+	private sealed class ScrollPagerState
+	{
+		public ScrollPagerState(string[] lines, int visibleRows, bool hasMorePayload)
+		{
+			StickyHeader = TryGetStickyHeader(lines);
+			Buffer = [.. GetContentLines(lines, StickyHeader)];
+			ViewportHeight = Math.Max(1, visibleRows - (StickyHeader is null ? 1 : 2));
+			HasMorePayload = hasMorePayload;
+		}
+
+		public List<string> Buffer { get; }
+
+		public string? StickyHeader { get; }
+
+		public int ViewportHeight { get; }
 
 		public int TopLine { get; set; }
 
-		public bool HasMorePayload { get; set; } = hasMorePayload;
+		public bool HasMorePayload { get; set; }
 
 		public int MaxTopLine => Math.Max(0, Buffer.Count - ViewportHeight);
 
@@ -477,8 +514,18 @@ internal static class ResultFlowPager
 
 		public void Append(string[] lines, bool hasMorePayload)
 		{
-			Buffer.AddRange(lines);
+			Buffer.AddRange(GetContentLines(lines, StickyHeader));
 			HasMorePayload = hasMorePayload;
 		}
+
+		private static string? TryGetStickyHeader(string[] lines) =>
+			lines.Length > 1 && lines[0].Contains("\u001b[1m", StringComparison.Ordinal)
+				? lines[0]
+				: null;
+
+		private static IEnumerable<string> GetContentLines(string[] lines, string? stickyHeader) =>
+			stickyHeader is not null && lines.Length > 0 && string.Equals(lines[0], stickyHeader, StringComparison.Ordinal)
+				? lines.Skip(1)
+				: lines;
 	}
 }

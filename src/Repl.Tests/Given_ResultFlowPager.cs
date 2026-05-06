@@ -263,7 +263,7 @@ public sealed class Given_ResultFlowPager
 			{
 				fetches++;
 				return ValueTask.FromResult<ResultFlowPagerPage?>(
-					new ResultFlowPagerPage("three\nfour", HasMore: false));
+					new ResultFlowPagerPage("four\nfive", HasMore: false));
 			},
 			CancellationToken.None);
 
@@ -410,6 +410,89 @@ public sealed class Given_ResultFlowPager
 
 		// Enter maps to DownArrow (one line); status bar should show 2-3/4, not 3-4/4
 		writer.ToString().Should().Contain("2-3/4");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager advances by one line when Down fetches the next payload at a boundary.")]
+	public async Task When_ScrollPagerDownFetchesNextPayload_Then_ViewportAdvancesOneLine()
+	{
+		using var writer = new StringWriter();
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			hasMorePayload: true,
+			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
+				new ResultFlowPagerPage("four\nfive", HasMore: false)),
+			CancellationToken.None);
+
+		var output = writer.ToString();
+		output.Should().Contain("2-3/3+");
+		output.Should().Contain("3-4/5");
+		output.Should().NotContain("4-5/5");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager keeps a rich table header pinned and skips duplicate headers from later payloads.")]
+	public async Task When_ScrollPagerHasRichTableHeader_Then_HeaderStaysPinned()
+	{
+		using var writer = new StringWriter();
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.Spacebar, ' '),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+		var header = "\u001b[1m#\u001b[0m  \u001b[1mAt\u001b[0m";
+
+		await ResultFlowPager.WriteAsync(
+			$"{header}\none\ntwo\nthree",
+			writer,
+			keys,
+			visibleRows: 4,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			hasMorePayload: true,
+			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
+				new ResultFlowPagerPage($"{header}\nfour\nfive", HasMore: false)),
+			CancellationToken.None);
+
+		var output = writer.ToString();
+		output.Should().Contain($"{header}\r\n\u001b[2Kthree\r\n\u001b[2Kfour");
+		output.Should().Contain("3-4/5");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager does not clear the whole viewport on every redraw.")]
+	public async Task When_ScrollPagerRedraws_Then_DoesNotClearScreenEveryTime()
+	{
+		using var writer = new StringWriter();
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree\nfour",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			CancellationToken.None);
+
+		writer.ToString().Split("\u001b[J").Length.Should().Be(2);
 	}
 
 	private static ConsoleKeyInfo MakeKey(ConsoleKey key, char keyChar) =>
