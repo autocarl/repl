@@ -504,6 +504,7 @@ public sealed class Given_ResultFlowPager
 		var keys = new FakeKeyReader(
 		[
 			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.DownArrow, '\0'),
 			MakeKey(ConsoleKey.Q, 'q'),
 		]);
 
@@ -524,6 +525,35 @@ public sealed class Given_ResultFlowPager
 		output.Should().Contain("three");
 		output.Should().NotContain("Showing 2 of 5");
 		output.Should().NotContain("Showing 1 of 5");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager skips duplicate rich table headers even when they are not the first line in a fetched payload.")]
+	public async Task When_ScrollPagerReceivesIndentedDuplicateHeader_Then_HeaderIsNotBuffered()
+	{
+		using var writer = new StringWriter();
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+		var header = "\u001b[1m#\u001b[0m   \u001b[1mAt\u001b[0m";
+
+		await ResultFlowPager.WriteAsync(
+			$"{header}\none\ntwo\nShowing 2 of 5.",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			hasMorePayload: true,
+			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
+				new ResultFlowPagerPage($"Showing 1 of 5.\n{header}\nthree", HasMore: false)),
+			CancellationToken.None);
+
+		writer.ToString().Should().Contain($"{header}\r\nthree");
+		writer.ToString().Split(header).Length.Should().Be(4);
 	}
 
 	[TestMethod]
@@ -587,6 +617,32 @@ public sealed class Given_ResultFlowPager
 		output.Should().Contain("1-4/5");
 		output.Should().Contain("2-3/5");
 		output.Should().Contain("\u001b[H\u001b[J");
+	}
+
+	[TestMethod]
+	[Description("Result-flow scroll pager disables terminal line wrapping while the alternate screen is active.")]
+	public async Task When_ScrollPagerRuns_Then_LineWrappingIsDisabledDuringAlternateScreen()
+	{
+		using var writer = new StringWriter();
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Scroll,
+			ansiEnabled: true,
+			CancellationToken.None);
+
+		var output = writer.ToString();
+		output.Should().Contain("\u001b[?7l");
+		output.Should().Contain("\u001b[?7h");
+		output.IndexOf("\u001b[?7l", StringComparison.Ordinal)
+			.Should().BeLessThan(output.IndexOf("\u001b[?7h", StringComparison.Ordinal));
 	}
 
 	private static ConsoleKeyInfo MakeKey(ConsoleKey key, char keyChar) =>

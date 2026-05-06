@@ -9,6 +9,8 @@ internal static class ResultFlowPager
 	private const string ShowCursor = "\u001b[?25h";
 	private const string CursorHome = "\u001b[H";
 	private const string ClearToEndOfScreen = "\u001b[J";
+	private const string DisableLineWrap = "\u001b[?7l";
+	private const string EnableLineWrap = "\u001b[?7h";
 
 	public static int CountLines(string payload) => SplitLines(payload).Length;
 
@@ -254,6 +256,7 @@ internal static class ResultFlowPager
 
 		await output.WriteAsync(EnterAlternateScreen).ConfigureAwait(false);
 		await output.WriteAsync(HideCursor).ConfigureAwait(false);
+		await output.WriteAsync(DisableLineWrap).ConfigureAwait(false);
 		await output.WriteAsync(CursorHome).ConfigureAwait(false);
 		await output.WriteAsync(ClearToEndOfScreen).ConfigureAwait(false);
 		try
@@ -288,6 +291,7 @@ internal static class ResultFlowPager
 		}
 		finally
 		{
+			await output.WriteAsync(EnableLineWrap).ConfigureAwait(false);
 			await output.WriteAsync(ShowCursor).ConfigureAwait(false);
 			await output.WriteAsync(LeaveAlternateScreen).ConfigureAwait(false);
 			await output.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -679,7 +683,8 @@ internal static class ResultFlowPager
 					: 0;
 			for (var i = start; i < lines.Length; i++)
 			{
-				if (!IsPageFooterLine(lines[i]))
+				if ((stickyHeader is null || !AreSameHeaderLine(lines[i], stickyHeader))
+					&& !IsPageFooterLine(lines[i]))
 				{
 					yield return lines[i];
 				}
