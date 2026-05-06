@@ -32,7 +32,7 @@ public sealed class Given_ResultFlowPager
 		output.Should().Contain("--More--");
 		output.Should().Contain("Space/PageDown: continue");
 		output.Should().Contain("Enter/Down: line");
-		output.Should().Contain("Up/PageUp: back");
+		output.Should().Contain("Up/PageUp: ignored");
 		output.Should().Contain("q/Esc: stop");
 	}
 
@@ -62,30 +62,28 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow pager UpArrow moves back one line instead of jumping to the header.")]
-	public async Task When_PagingBackWithUpArrow_Then_DoesNotRepeatHeader()
+	[Description("Result-flow more pager ignores UpArrow because append-only output cannot redraw previous lines cleanly.")]
+	public async Task When_MorePagerReceivesUpArrow_Then_DoesNotReplayOrAdvance()
 	{
 		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
 		[
-			MakeKey(ConsoleKey.Spacebar, ' '),
 			MakeKey(ConsoleKey.UpArrow, '\0'),
 			MakeKey(ConsoleKey.Q, 'q'),
 		]);
 
 		await ResultFlowPager.WriteAsync(
-			"# At Area Event Summary\nr1\nr2\nr3\nr4\nr5",
+			"# At Area Event Summary\n---\nr1\nr2\nr3\nr4\nr5",
 			writer,
 			keys,
 			visibleRows: 2,
 			CancellationToken.None);
 
 		var output = writer.ToString();
-		output.Split("# At Area Event Summary", StringSplitOptions.None)
-			.Should().HaveCount(2);
+		output.Split("# At Area Event Summary", StringSplitOptions.None).Should().HaveCount(2);
 		output.Should().Contain("r1");
 		output.Should().Contain("r2");
-		output.Should().Contain("r3");
+		output.Should().NotContain("r3");
 	}
 
 	[TestMethod]
@@ -184,8 +182,8 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow pager replays the previous full window when the user presses UpArrow at a data-page boundary.")]
-	public async Task When_AtPayloadBoundaryAndUserPressesUpArrow_Then_ReplaysPreviousWindow()
+	[Description("Result-flow more pager ignores UpArrow at a payload boundary instead of replaying previous lines.")]
+	public async Task When_MorePagerAtPayloadBoundaryReceivesUpArrow_Then_DoesNotReplayOrFetch()
 	{
 		using var writer = new StringWriter();
 		var keys = new FakeKeyReader(
@@ -205,12 +203,40 @@ public sealed class Given_ResultFlowPager
 			CancellationToken.None);
 
 		var output = writer.ToString();
-		output.Split("three", StringSplitOptions.None).Should().HaveCount(3);
-		output.Split("four", StringSplitOptions.None).Should().HaveCount(3);
+		output.Split("three", StringSplitOptions.None).Should().HaveCount(2);
+		output.Split("four", StringSplitOptions.None).Should().HaveCount(2);
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager owns an alternate-screen viewport instead of relying on terminal scrollback.")]
+	[Description("Result-flow more pager strips duplicate page headers and page footers from fetched payloads.")]
+	public async Task When_MorePagerFetchesNextPayload_Then_DuplicateHeadersAndFootersAreSkipped()
+	{
+		using var writer = new StringWriter();
+		var header = "#    At";
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.Spacebar, ' '),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			$"{header}\none\ntwo\nShowing 2 of 5.",
+			writer,
+			keys,
+			visibleRows: 4,
+			hasMorePayload: true,
+			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
+				new ResultFlowPagerPage($"{header}\nthree\nShowing 1 of 5.", HasMore: false)),
+			CancellationToken.None);
+
+		var output = writer.ToString();
+		output.Split(header, StringSplitOptions.None).Should().HaveCount(3);
+		output.Should().Contain("three");
+		output.Should().NotContain("Showing 2 of 5");
+		output.Should().NotContain("Showing 1 of 5");
+	}
+
+	[TestMethod]
+	[Description("Result-flow full pager owns an alternate-screen viewport instead of relying on terminal scrollback.")]
 	public async Task When_ScrollPagerRunsWithAnsi_Then_UsesAlternateScreenViewport()
 	{
 		using var writer = new StringWriter();
@@ -225,7 +251,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			CancellationToken.None);
 
@@ -240,7 +266,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager fetches additional payloads into the same viewport when the user pages past the buffered end.")]
+	[Description("Result-flow full pager fetches additional payloads into the same viewport when the user pages past the buffered end.")]
 	public async Task When_ScrollPagerReachesBufferedEnd_Then_FetchesNextPayload()
 	{
 		using var writer = new StringWriter();
@@ -256,7 +282,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: true,
 			fetchNextPayload: _ =>
@@ -275,7 +301,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager advances to the new buffered end when a fetch returns fewer lines than one viewport.")]
+	[Description("Result-flow full pager advances to the new buffered end when a fetch returns fewer lines than one viewport.")]
 	public async Task When_ScrollPagerFetchesShortPayload_Then_ViewportAdvances()
 	{
 		using var writer = new StringWriter();
@@ -290,7 +316,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 4,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: true,
 			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
@@ -303,7 +329,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager does not fetch another payload when the current payload is exactly visible and the user presses Space once.")]
+	[Description("Result-flow full pager does not fetch another payload when the current payload is exactly visible and the user presses Space once.")]
 	public async Task When_ScrollPagerContentExactlyFitsViewport_Then_SpaceDoesNotFetchImmediately()
 	{
 		using var writer = new StringWriter();
@@ -319,7 +345,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 4,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: true,
 			fetchNextPayload: _ =>
@@ -349,7 +375,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			CancellationToken.None);
 
@@ -357,7 +383,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager treats unrecognized keys as no-ops and does not advance the viewport or trigger a fetch.")]
+	[Description("Result-flow full pager treats unrecognized keys as no-ops and does not advance the viewport or trigger a fetch.")]
 	public async Task When_ScrollPagerUnknownKeyPressed_Then_ViewportDoesNotAdvanceAndNoFetch()
 	{
 		using var writer = new StringWriter();
@@ -373,7 +399,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: true,
 			fetchNextPayload: _ =>
@@ -389,7 +415,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager advances the viewport only on Space/PageDown, not on Enter or other keys.")]
+	[Description("Result-flow full pager advances the viewport only on Space/PageDown, not on Enter or other keys.")]
 	public async Task When_ScrollPagerEnterKeyPressed_Then_ViewportAdvancesByOneLine()
 	{
 		using var writer = new StringWriter();
@@ -404,7 +430,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			CancellationToken.None);
 
@@ -413,7 +439,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager advances by one line when Down fetches the next payload at a boundary.")]
+	[Description("Result-flow full pager advances by one line when Down fetches the next payload at a boundary.")]
 	public async Task When_ScrollPagerDownFetchesNextPayload_Then_ViewportAdvancesOneLine()
 	{
 		using var writer = new StringWriter();
@@ -429,7 +455,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: true,
 			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
@@ -443,7 +469,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager keeps a rich table header pinned and skips duplicate headers from later payloads.")]
+	[Description("Result-flow full pager keeps a rich table header pinned and skips duplicate headers from later payloads.")]
 	public async Task When_ScrollPagerHasRichTableHeader_Then_HeaderStaysPinned()
 	{
 		using var writer = new StringWriter();
@@ -459,7 +485,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 4,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: true,
 			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
@@ -472,7 +498,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager does not clear the whole viewport on every redraw.")]
+	[Description("Result-flow full pager does not clear the whole viewport on every redraw.")]
 	public async Task When_ScrollPagerRedraws_Then_DoesNotClearScreenEveryTime()
 	{
 		using var writer = new StringWriter();
@@ -488,7 +514,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			CancellationToken.None);
 
@@ -497,7 +523,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager strips page footer hints already represented by its own status bar.")]
+	[Description("Result-flow full pager strips page footer hints already represented by its own status bar.")]
 	public async Task When_ScrollPagerReceivesPageFooterLines_Then_FooterLinesAreNotRendered()
 	{
 		using var writer = new StringWriter();
@@ -513,7 +539,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: true,
 			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
@@ -528,7 +554,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager skips duplicate rich table headers even when they are not the first line in a fetched payload.")]
+	[Description("Result-flow full pager skips duplicate rich table headers even when they are not the first line in a fetched payload.")]
 	public async Task When_ScrollPagerReceivesIndentedDuplicateHeader_Then_HeaderIsNotBuffered()
 	{
 		using var writer = new StringWriter();
@@ -545,7 +571,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: true,
 			fetchNextPayload: _ => ValueTask.FromResult<ResultFlowPagerPage?>(
@@ -557,7 +583,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager End moves to the end of the currently buffered content.")]
+	[Description("Result-flow full pager End moves to the end of the currently buffered content.")]
 	public async Task When_ScrollPagerEndPressed_Then_MovesToKnownEndWithoutFetching()
 	{
 		using var writer = new StringWriter();
@@ -573,7 +599,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: true,
 			fetchNextPayload: _ =>
@@ -589,7 +615,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager recalculates viewport height between redraws.")]
+	[Description("Result-flow full pager recalculates viewport height between redraws.")]
 	public async Task When_ScrollPagerHeightChanges_Then_ViewportUsesCurrentHeight()
 	{
 		using var writer = new StringWriter();
@@ -607,7 +633,7 @@ public sealed class Given_ResultFlowPager
 			keys,
 			visibleRows,
 			visibleRowsProvider: () => reads++ == 0 ? visibleRows : 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			hasMorePayload: false,
 			fetchNextPayload: null,
@@ -620,7 +646,7 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
-	[Description("Result-flow scroll pager disables terminal line wrapping while the alternate screen is active.")]
+	[Description("Result-flow full pager disables terminal line wrapping while the alternate screen is active.")]
 	public async Task When_ScrollPagerRuns_Then_LineWrappingIsDisabledDuringAlternateScreen()
 	{
 		using var writer = new StringWriter();
@@ -634,7 +660,7 @@ public sealed class Given_ResultFlowPager
 			writer,
 			keys,
 			visibleRows: 3,
-			pagerMode: ReplPagerMode.Scroll,
+			pagerMode: ReplPagerMode.Full,
 			ansiEnabled: true,
 			CancellationToken.None);
 
@@ -645,6 +671,71 @@ public sealed class Given_ResultFlowPager
 			.Should().BeLessThan(output.IndexOf("\u001b[?7h", StringComparison.Ordinal));
 	}
 
+	[TestMethod]
+	[Description("Result-flow inline pager redraws in the main terminal buffer without entering the alternate screen.")]
+	public async Task When_InlinePagerRuns_Then_RedrawsWithoutAlternateScreen()
+	{
+		using var writer = new StringWriter();
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.UpArrow, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree\nfour",
+			writer,
+			keys,
+			visibleRows: 3,
+			pagerMode: ReplPagerMode.Inline,
+			ansiEnabled: true,
+			CancellationToken.None);
+
+		var output = writer.ToString();
+		output.Should().Contain("\u001b[3A");
+		output.Should().Contain("\u001b[J");
+		output.Should().NotContain("\u001b[?1049h");
+		output.Should().NotContain("\u001b[?1049l");
+	}
+
+	[TestMethod]
+	[Description("Result-flow pager uses a configured custom renderer for the requested mode.")]
+	public async Task When_CustomPagerRendererIsConfigured_Then_ItHandlesTheMatchingMode()
+	{
+		using var writer = new StringWriter();
+		var renderer = new RecordingPagerRenderer(ReplPagerMode.Inline);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo",
+			writer,
+			new FakeKeyReader([]),
+			visibleRows: 3,
+			visibleRowsProvider: null,
+			pagerMode: ReplPagerMode.Inline,
+			ansiEnabled: true,
+			hasMorePayload: false,
+			fetchNextPayload: null,
+			pagerRenderers: [renderer],
+			CancellationToken.None);
+
+		renderer.Payloads.Should().Equal("one\ntwo");
+		writer.ToString().Should().Be("custom");
+	}
+
 	private static ConsoleKeyInfo MakeKey(ConsoleKey key, char keyChar) =>
 		new(keyChar, key, shift: false, alt: false, control: false);
+
+	private sealed class RecordingPagerRenderer(ReplPagerMode mode) : IReplPagerRenderer
+	{
+		public List<string> Payloads { get; } = [];
+
+		public ReplPagerMode Mode { get; } = mode;
+
+		public async ValueTask RenderAsync(ReplPagerRenderContext context, CancellationToken cancellationToken = default)
+		{
+			Payloads.Add(context.InitialPayload);
+			await context.Output.WriteAsync("custom").ConfigureAwait(false);
+		}
+	}
 }

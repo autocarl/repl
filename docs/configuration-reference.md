@@ -108,6 +108,7 @@ Accessed via `ReplOptions.Output.ResultFlow`.
 - `MaxPageSize` (`int`, default: `1000`) - Maximum accepted page size.
 - `ReservedVisibleRows` (`int`, default: `2`) - Rows reserved when computing terminal-visible data rows.
 - `DefaultPagerMode` (`ReplPagerMode`, default: `Auto`) - Pager behavior for human formats.
+- `PagerRenderers` (`IList<IReplPagerRenderer>`) - Custom interactive pager renderers keyed by pager mode.
 - `ProgrammaticMaxInlineBytes` (`int`, default: `65536`) - Reserved for programmatic inline payload policy.
 
 ### OutputOptions Methods

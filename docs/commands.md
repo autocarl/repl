@@ -21,7 +21,7 @@ These flags are parsed before route execution:
 - `--result:page-size <n>` / `--result:page-size=<n>`
 - `--result:cursor <value>` / `--result:cursor=<value>`
 - `--result:all`
-- `--result:pager=auto|off|more|scroll|external`
+- `--result:pager=auto|off|more|inline|full`
 - output aliases mapped by `OutputOptions.Aliases` (defaults include `--json`, `--xml`, `--yaml`, `--yml`, `--markdown`)
 - `--answer:<name>[=value]` for non-interactive prompt answers
 - custom global options registered via `options.Parsing.AddGlobalOption<T>(...)`

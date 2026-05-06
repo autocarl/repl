@@ -12,7 +12,7 @@ internal static partial class HelpTextBuilder
 		new("--result:page-size <n>", "Request a page size for paged handlers."),
 		new("--result:cursor <value>", "Continue from a cursor returned by a previous page."),
 		new("--result:all", "Request all rows when the handler supports it."),
-		new("--result:pager=auto|off|more|scroll|external", "Control the integrated pager for human output."),
+		new("--result:pager=auto|off|more|inline|full", "Control the integrated pager for human output."),
 	];
 
 	private static string BuildCommandHelp(RouteDefinition[] routes, bool useAnsi, AnsiPalette palette)

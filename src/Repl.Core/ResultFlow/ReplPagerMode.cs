@@ -21,12 +21,12 @@ public enum ReplPagerMode
 	More,
 
 	/// <summary>
-	/// Use an interactive scrolling pager.
+	/// Use an inline pager that redraws in the main terminal buffer.
 	/// </summary>
-	Scroll,
+	Inline,
 
 	/// <summary>
-	/// Use an external pager process when available.
+	/// Use a full-screen alternate-buffer pager.
 	/// </summary>
-	External,
+	Full,
 }

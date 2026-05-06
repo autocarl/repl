@@ -767,6 +767,7 @@ public sealed partial class CoreReplApp
 				ansiEnabled,
 				page.PageInfo.HasMore,
 				FetchNextPayloadAsync,
+				_options.Output.ResultFlow.PagerRenderers,
 				cancellationToken)
 			.ConfigureAwait(false);
 		return true;
@@ -808,8 +809,12 @@ public sealed partial class CoreReplApp
 					ReplSessionIO.Output,
 					keyReader,
 					visibleRows,
+					visibleRowsProvider: null,
 					pagerMode,
 					ansiEnabled,
+					hasMorePayload: false,
+					fetchNextPayload: null,
+					_options.Output.ResultFlow.PagerRenderers,
 					cancellationToken)
 				.ConfigureAwait(false);
 			return;

@@ -26,6 +26,11 @@ public sealed class ResultFlowOptions
 	public ReplPagerMode DefaultPagerMode { get; set; } = ReplPagerMode.Auto;
 
 	/// <summary>
+	/// Gets custom pager renderers keyed by <see cref="IReplPagerRenderer.Mode"/>.
+	/// </summary>
+	public IList<IReplPagerRenderer> PagerRenderers { get; } = [];
+
+	/// <summary>
 	/// Gets or sets the maximum inline payload size for programmatic clients.
 	/// </summary>
 	public int ProgrammaticMaxInlineBytes { get; set; } = 64 * 1024;

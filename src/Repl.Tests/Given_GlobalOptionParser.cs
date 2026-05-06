@@ -124,6 +124,23 @@ public sealed class Given_GlobalOptionParser
 	}
 
 	[TestMethod]
+	[Description("Result-flow pager modes parse the current public mode names.")]
+	public void When_ResultFlowPagerModeIsFullOrInline_Then_ParserStoresMode()
+	{
+		var full = GlobalOptionParser.Parse(
+			["users", "list", "--result:pager=full"],
+			new OutputOptions(),
+			new ParsingOptions());
+		var inline = GlobalOptionParser.Parse(
+			["users", "list", "--result:pager=inline"],
+			new OutputOptions(),
+			new ParsingOptions());
+
+		full.ResultFlow.PagerMode.Should().Be(ReplPagerMode.Full);
+		inline.ResultFlow.PagerMode.Should().Be(ReplPagerMode.Inline);
+	}
+
+	[TestMethod]
 	[Description("Result-flow page size is clamped during global option parsing before it reaches handlers or page sources.")]
 	public void When_ResultFlowPageSizeExceedsMaximum_Then_ParserClampsIt()
 	{

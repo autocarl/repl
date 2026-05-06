@@ -386,12 +386,11 @@ Result-flow flags are global and use the `--result:` prefix so they do not colli
 | `--result:page-size <n>` or `--result:page-size=<n>` | Requested page size. Clamped to `ResultFlowOptions.MaxPageSize`. |
 | `--result:cursor <value>` or `--result:cursor=<value>` | Opaque continuation cursor. |
 | `--result:all` | Signals that the caller wants all rows. Bounded helpers such as `FromItems` can honor it; unbounded helpers such as `FromOffset` and `FromAsyncEnumerable` reject it by default. |
-| `--result:pager=auto\|off\|more\|scroll\|external` | Pager preference for human formats. |
+| `--result:pager=auto\|off\|more\|inline\|full` | Pager preference for human formats. |
 
-`auto` uses a `less`-style alternate-screen viewport when ANSI rendering and key
+`auto` uses the full-screen alternate-buffer pager when ANSI rendering and key
 input are available, then falls back to the simple `more` behavior in limited
-terminals. `external` is accepted as a forward-compatible mode and currently
-falls back to the integrated pager.
+terminals.
 
 ## CLI And Pipe Behavior
 
@@ -436,21 +435,29 @@ Supported keys:
 |---|---|
 | `Space` / `PageDown` / any unhandled key | Continue to the next screen, fetching the next data page when needed. |
 | `Enter` / `DownArrow` | Next line. |
-| `UpArrow` | Re-display one previous line window. |
-| `PageUp` | Re-display previous page window. |
+| `UpArrow` | Move up in `full` and `inline`; ignored by `more`. |
+| `PageUp` | Move up one page in `full` and `inline`; ignored by `more`. |
 | `q` / `Esc` | Quit paging. |
 
 The integrated pager has two render paths:
 
-- `more` fallback: writes page by page in the normal terminal buffer and never
-  uses cursor movement.
-- `scroll` viewport: enters the terminal alternate screen, keeps an internal
-  line buffer, redraws a viewport explicitly, and leaves the original scrollback
+- `more` fallback: writes page by page in the normal terminal buffer, never
+  uses cursor movement, and only moves forward.
+- `inline` viewport: redraws a controlled region in the normal terminal buffer
+  with ANSI cursor movement.
+- `full` viewport: enters the terminal alternate screen, keeps an internal line
+  buffer, redraws a viewport explicitly, and leaves the original scrollback
   untouched when the user exits.
 
-The scroll viewport is inspired by `less`: it does not depend on terminal
+The full viewport is inspired by `less`: it does not depend on terminal
 scrollback. It renders from an internal buffer and fetches additional
 `IReplPageSource<T>` payloads as the user pages past the buffered end.
+
+Applications that need a different terminal experience can register a custom
+`IReplPagerRenderer` in `options.Output.ResultFlow.PagerRenderers`. A custom
+renderer is selected by its `ReplPagerMode` and receives a
+`ReplPagerRenderContext` containing the rendered payload, terminal writer, key
+reader, visible row hint, and continuation fetcher.
 
 ## Testing Result Flow
 

@@ -434,7 +434,7 @@ public sealed class Given_HelpDiscovery
 		output.Text.Should().Contain("--result:page-size <n>");
 		output.Text.Should().Contain("--result:cursor <value>");
 		output.Text.Should().Contain("--result:all");
-		output.Text.Should().Contain("--result:pager=auto|off|more|scroll|external");
+		output.Text.Should().Contain("--result:pager=auto|off|more|inline|full");
 	}
 
 	[TestMethod]
