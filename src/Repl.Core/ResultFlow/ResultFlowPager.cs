@@ -161,6 +161,30 @@ internal static class ResultFlowPager
 		}
 
 		var session = new PagerSession(payload, hasMorePayload);
+		await RenderBuiltInAsync(
+				mode,
+				session,
+				output,
+				keyReader,
+				visibleRows,
+				visibleRowsProvider,
+				ansiEnabled,
+				fetchNextPayload,
+				cancellationToken)
+			.ConfigureAwait(false);
+	}
+
+	private static async ValueTask RenderBuiltInAsync(
+		ReplPagerMode mode,
+		PagerSession session,
+		TextWriter output,
+		IReplKeyReader keyReader,
+		int visibleRows,
+		Func<int>? visibleRowsProvider,
+		bool ansiEnabled,
+		Func<CancellationToken, ValueTask<ResultFlowPagerPage?>>? fetchNextPayload,
+		CancellationToken cancellationToken)
+	{
 		switch (mode)
 		{
 			case ReplPagerMode.Full:
@@ -193,6 +217,7 @@ internal static class ResultFlowPager
 						output,
 						keyReader,
 						Math.Max(1, visibleRows),
+						ansiEnabled,
 						fetchNextPayload,
 						cancellationToken)
 					.ConfigureAwait(false);
@@ -259,6 +284,7 @@ internal static class ResultFlowPager
 		TextWriter output,
 		IReplKeyReader keyReader,
 		int visibleRows,
+		bool useTransientPrompt,
 		Func<CancellationToken, ValueTask<ResultFlowPagerPage?>>? fetchNextPayload,
 		CancellationToken cancellationToken)
 	{
@@ -291,7 +317,7 @@ internal static class ResultFlowPager
 					break;
 				}
 
-				if (await ReadMoreActionAsync(session, output, keyReader, cancellationToken).ConfigureAwait(false) == PagerAction.Quit)
+				if (await ReadMoreActionAsync(session, output, keyReader, useTransientPrompt, cancellationToken).ConfigureAwait(false) == PagerAction.Quit)
 				{
 					return;
 				}
@@ -302,7 +328,7 @@ internal static class ResultFlowPager
 				return;
 			}
 
-			if (await ReadMoreActionAsync(session, output, keyReader, cancellationToken).ConfigureAwait(false) == PagerAction.Quit)
+			if (await ReadMoreActionAsync(session, output, keyReader, useTransientPrompt, cancellationToken).ConfigureAwait(false) == PagerAction.Quit)
 			{
 				return;
 			}
@@ -350,6 +376,7 @@ internal static class ResultFlowPager
 		PagerSession session,
 		TextWriter output,
 		IReplKeyReader keyReader,
+		bool useTransientPrompt,
 		CancellationToken cancellationToken)
 	{
 		await output.WriteAsync(MorePrompt).ConfigureAwait(false);
@@ -362,11 +389,11 @@ internal static class ResultFlowPager
 			{
 				case ConsoleKey.Q:
 				case ConsoleKey.Escape:
-					await output.WriteLineAsync().ConfigureAwait(false);
+					await FinishMorePromptAsync(output, useTransientPrompt).ConfigureAwait(false);
 					return PagerAction.Quit;
 				case ConsoleKey.Enter:
 				case ConsoleKey.DownArrow:
-					await output.WriteLineAsync().ConfigureAwait(false);
+					await FinishMorePromptAsync(output, useTransientPrompt).ConfigureAwait(false);
 					session.NextWindow = 1;
 					return PagerAction.LineDown;
 				case ConsoleKey.UpArrow:
@@ -375,11 +402,24 @@ internal static class ResultFlowPager
 				case ConsoleKey.End:
 					continue;
 				default:
-					await output.WriteLineAsync().ConfigureAwait(false);
+					await FinishMorePromptAsync(output, useTransientPrompt).ConfigureAwait(false);
 					session.NextWindow = session.PageSize;
 					return PagerAction.PageDown;
 			}
 		}
+	}
+
+	private static async ValueTask FinishMorePromptAsync(TextWriter output, bool useTransientPrompt)
+	{
+		if (!useTransientPrompt)
+		{
+			await output.WriteLineAsync().ConfigureAwait(false);
+			return;
+		}
+
+		await output.WriteAsync('\r').ConfigureAwait(false);
+		await output.WriteAsync(new string(' ', MorePrompt.Length)).ConfigureAwait(false);
+		await output.WriteAsync('\r').ConfigureAwait(false);
 	}
 
 	private static async ValueTask RenderViewportAsync(

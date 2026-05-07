@@ -62,6 +62,36 @@ public sealed class Given_ResultFlowPager
 	}
 
 	[TestMethod]
+	[Description("Result-flow more pager clears the prompt before writing the next row when ANSI rendering is available.")]
+	public async Task When_MorePagerUsesAnsiPrompt_Then_PromptDoesNotBecomeAVisibleRow()
+	{
+		using var writer = new StringWriter();
+		const string morePrompt = "--More-- Space/PageDown: continue, Enter/Down: line, Up/PageUp: ignored, q/Esc: stop";
+		var keys = new FakeKeyReader(
+		[
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.DownArrow, '\0'),
+			MakeKey(ConsoleKey.Q, 'q'),
+		]);
+
+		await ResultFlowPager.WriteAsync(
+			"one\ntwo\nthree\nfour",
+			writer,
+			keys,
+			visibleRows: 2,
+			pagerMode: ReplPagerMode.More,
+			ansiEnabled: true,
+			CancellationToken.None);
+
+		var output = writer.ToString();
+		output.Should().Contain($"two{Environment.NewLine}{morePrompt}");
+		output.Should().Contain($"{morePrompt}\r{new string(' ', morePrompt.Length)}\rthree");
+		output.Should().Contain($"{morePrompt}\r{new string(' ', morePrompt.Length)}\rfour");
+		output.Should().NotContain($"{morePrompt}{Environment.NewLine}three");
+		output.Should().NotContain($"{morePrompt}{Environment.NewLine}four");
+	}
+
+	[TestMethod]
 	[Description("Result-flow more pager ignores UpArrow because append-only output cannot redraw previous lines cleanly.")]
 	public async Task When_MorePagerReceivesUpArrow_Then_DoesNotReplayOrAdvance()
 	{
