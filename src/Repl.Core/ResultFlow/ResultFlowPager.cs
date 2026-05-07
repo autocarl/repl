@@ -4,14 +4,6 @@ internal static class ResultFlowPager
 {
 	private const string MorePrompt = "--More-- Space/PageDown: continue, Enter/Down: line, Up/PageUp: ignored, q/Esc: stop";
 	private const string FullStatus = "-- result-flow {0}-{1}/{2}{3}  Space: next  Up/Down: scroll  Home/End: known bounds  q: quit --";
-	private const string EnterAlternateScreen = "\u001b[?1049h";
-	private const string LeaveAlternateScreen = "\u001b[?1049l";
-	private const string HideCursor = "\u001b[?25l";
-	private const string ShowCursor = "\u001b[?25h";
-	private const string CursorHome = "\u001b[H";
-	private const string ClearToEndOfScreen = "\u001b[J";
-	private const string DisableLineWrap = "\u001b[?7l";
-	private const string EnableLineWrap = "\u001b[?7h";
 	private static readonly System.Text.CompositeFormat FullStatusFormat =
 		System.Text.CompositeFormat.Parse(FullStatus);
 
@@ -179,7 +171,7 @@ internal static class ResultFlowPager
 						Math.Max(2, visibleRows),
 						visibleRowsProvider,
 						fetchNextPayload,
-						useAlternateScreen: true,
+						TerminalSurfaceMode.AlternateScreen,
 						cancellationToken)
 					.ConfigureAwait(false);
 				break;
@@ -191,7 +183,7 @@ internal static class ResultFlowPager
 						Math.Max(2, visibleRows),
 						visibleRowsProvider,
 						fetchNextPayload,
-						useAlternateScreen: false,
+						TerminalSurfaceMode.InlineRegion,
 						cancellationToken)
 					.ConfigureAwait(false);
 				break;
@@ -397,7 +389,7 @@ internal static class ResultFlowPager
 		int visibleRows,
 		Func<int>? visibleRowsProvider,
 		Func<CancellationToken, ValueTask<ResultFlowPagerPage?>>? fetchNextPayload,
-		bool useAlternateScreen,
+		TerminalSurfaceMode surfaceMode,
 		CancellationToken cancellationToken)
 	{
 		var state = new ViewportState(session, visibleRows);
@@ -406,16 +398,11 @@ internal static class ResultFlowPager
 			return;
 		}
 
-		if (useAlternateScreen)
-		{
-			await output.WriteAsync(EnterAlternateScreen).ConfigureAwait(false);
-		}
-
-		await output.WriteAsync(HideCursor).ConfigureAwait(false);
-		await output.WriteAsync(DisableLineWrap).ConfigureAwait(false);
-		await output.WriteAsync(CursorHome).ConfigureAwait(false);
-		await output.WriteAsync(ClearToEndOfScreen).ConfigureAwait(false);
-
+		var surface = await TerminalSurfaceHost.EnterAsync(
+				output,
+				surfaceMode,
+				cancellationToken)
+			.ConfigureAwait(false);
 		try
 		{
 			await EnsureViewportContentAsync(state.Session, fetchNextPayload, cancellationToken).ConfigureAwait(false);
@@ -424,10 +411,10 @@ internal static class ResultFlowPager
 				var currentRows = GetCurrentVisibleRows(visibleRows, visibleRowsProvider);
 				if (state.UpdateVisibleRows(currentRows))
 				{
-					await ClearViewportAsync(output, state, useAlternateScreen).ConfigureAwait(false);
+					await ClearViewportAsync(surface, state).ConfigureAwait(false);
 				}
 
-				await RenderViewportFrameAsync(state, output, useAlternateScreen, cancellationToken).ConfigureAwait(false);
+				await RenderViewportFrameAsync(state, surface, cancellationToken).ConfigureAwait(false);
 				var key = await keyReader.ReadKeyAsync(cancellationToken).ConfigureAwait(false);
 				var beforeTopLine = state.TopLine;
 				var action = ApplyViewportKey(state, key);
@@ -447,14 +434,7 @@ internal static class ResultFlowPager
 		}
 		finally
 		{
-			await output.WriteAsync(EnableLineWrap).ConfigureAwait(false);
-			await output.WriteAsync(ShowCursor).ConfigureAwait(false);
-			if (useAlternateScreen)
-			{
-				await output.WriteAsync(LeaveAlternateScreen).ConfigureAwait(false);
-			}
-
-			await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+			await surface.DisposeAsync().ConfigureAwait(false);
 		}
 	}
 
@@ -484,44 +464,43 @@ internal static class ResultFlowPager
 		session.Append(nextPayload.Payload, nextPayload.HasMore);
 	}
 
-	private static async ValueTask ClearViewportAsync(TextWriter output, ViewportState state, bool useAlternateScreen)
+	private static async ValueTask ClearViewportAsync(TerminalSurfaceScope surface, ViewportState state)
 	{
-		if (useAlternateScreen)
+		if (surface.Mode == TerminalSurfaceMode.AlternateScreen)
 		{
-			await output.WriteAsync(CursorHome).ConfigureAwait(false);
+			await surface.MoveHomeAsync().ConfigureAwait(false);
 		}
 		else if (state.RenderedHeight > 0)
 		{
-			await output.WriteAsync($"\u001b[{state.RenderedHeight}A").ConfigureAwait(false);
-			await output.WriteAsync('\r').ConfigureAwait(false);
+			await surface.MoveCursorUpAsync(state.RenderedHeight).ConfigureAwait(false);
+			await surface.MoveToColumnStartAsync().ConfigureAwait(false);
 		}
 
-		await output.WriteAsync(ClearToEndOfScreen).ConfigureAwait(false);
+		await surface.ClearToEndOfScreenAsync().ConfigureAwait(false);
 		state.ResetRenderedLineLengths();
 	}
 
 	private static async ValueTask RenderViewportFrameAsync(
 		ViewportState state,
-		TextWriter output,
-		bool useAlternateScreen,
+		TerminalSurfaceScope surface,
 		CancellationToken cancellationToken)
 	{
-		await PositionViewportAsync(output, state, useAlternateScreen).ConfigureAwait(false);
+		await PositionViewportAsync(surface, state).ConfigureAwait(false);
 		var row = 0;
 		foreach (var headerLine in state.Session.HeaderLines)
 		{
-			await WriteViewportLineAsync(state, output, row++, headerLine).ConfigureAwait(false);
+			await WriteViewportLineAsync(state, surface.Output, row++, headerLine).ConfigureAwait(false);
 		}
 
 		var take = Math.Min(state.ViewportHeight, Math.Max(0, state.Session.Lines.Count - state.TopLine));
 		for (var i = 0; i < take; i++)
 		{
-			await WriteViewportLineAsync(state, output, row++, state.Session.Lines[state.TopLine + i]).ConfigureAwait(false);
+			await WriteViewportLineAsync(state, surface.Output, row++, state.Session.Lines[state.TopLine + i]).ConfigureAwait(false);
 		}
 
 		for (var i = take; i < state.ViewportHeight; i++)
 		{
-			await WriteViewportLineAsync(state, output, row++, string.Empty).ConfigureAwait(false);
+			await WriteViewportLineAsync(state, surface.Output, row++, string.Empty).ConfigureAwait(false);
 		}
 
 		var lastLine = state.Session.Lines.Count == 0
@@ -536,21 +515,21 @@ internal static class ResultFlowPager
 				lastLine,
 				state.Session.Lines.Count,
 				state.Session.HasMorePayload ? "+" : string.Empty);
-		await WriteViewportLineAsync(state, output, row++, status, appendNewLine: false).ConfigureAwait(false);
+		await WriteViewportLineAsync(state, surface.Output, row++, status, appendNewLine: false).ConfigureAwait(false);
 		state.RenderedHeight = row;
-		await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+		await surface.FlushAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private static async ValueTask PositionViewportAsync(TextWriter output, ViewportState state, bool useAlternateScreen)
+	private static async ValueTask PositionViewportAsync(TerminalSurfaceScope surface, ViewportState state)
 	{
-		if (useAlternateScreen)
+		if (surface.Mode == TerminalSurfaceMode.AlternateScreen)
 		{
-			await output.WriteAsync(CursorHome).ConfigureAwait(false);
+			await surface.MoveHomeAsync().ConfigureAwait(false);
 		}
 		else if (state.RenderedHeight > 0)
 		{
-			await output.WriteAsync($"\u001b[{state.RenderedHeight}A").ConfigureAwait(false);
-			await output.WriteAsync('\r').ConfigureAwait(false);
+			await surface.MoveCursorUpAsync(state.RenderedHeight).ConfigureAwait(false);
+			await surface.MoveToColumnStartAsync().ConfigureAwait(false);
 		}
 	}
 
