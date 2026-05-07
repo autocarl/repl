@@ -392,6 +392,74 @@ Result-flow flags are global and use the `--result:` prefix so they do not colli
 input are available, then falls back to the simple `more` behavior in limited
 terminals.
 
+## Advanced: Source Paging Vs Output Paging
+
+Result flow has two different paging layers. They are related, but they solve
+different problems:
+
+| Layer | What it pages | Who controls it | Why it exists |
+|---|---|---|---|
+| Source paging | Data items fetched by the handler or `IReplPageSource<T>` | The handler/source through `ReplPageRequest.PageSize` and `Cursor` | Avoid loading too many rows, expensive API calls, or unsafe memory growth. |
+| Output paging | Rendered terminal lines already produced for human display | The interactive pager through `--result:pager` and terminal height | Avoid flooding the user's screen and provide navigation. |
+
+Source paging happens before output formatting. Output paging happens after
+formatting. A single data item can become zero, one, or many output lines,
+depending on the formatter, terminal width, ANSI/Spectre rendering, wrapping,
+and object shape.
+
+For example, this source returns data pages:
+
+```csharp
+app.Map("activity", (IReplPagingContext paging, ActivityStore store) =>
+    paging.CreateSource<ActivityRow>(async (request, ct) =>
+    {
+        var page = await store.QueryAsync(
+            cursor: request.Cursor,
+            take: request.PageSize,
+            ct);
+
+        return request.Page(
+            page.Items,
+            nextCursor: page.NextCursor,
+            totalCount: page.TotalCount);
+    }));
+```
+
+The source decides how many rows to fetch. The output pager decides how many
+rendered lines to show before prompting:
+
+```bash
+myapp activity --result:page-size=100 --result:pager=more
+```
+
+This means:
+
+- Repl asks the source for up to 100 `ActivityRow` items at a time.
+- The human formatter turns those rows into a table.
+- The `more` pager shows only the visible rendered lines, then waits for input.
+- If the user pages past the buffered rows, Repl fetches the next source page
+  using the source cursor.
+
+Do not use output paging as a substitute for source paging. Returning a
+100,000-row list and relying on the pager still allocates and formats the whole
+list before the user sees the first screen. Use `IReplPageSource<T>` or
+`ReplPage<T>` whenever the data source can page efficiently.
+
+Do not use source paging as a substitute for output paging either. A source page
+of 20 objects can still produce hundreds of terminal lines if rows contain long
+strings, nested collections, or narrow-column wrapping. Human terminal output
+still benefits from `auto`, `more`, `inline`, or `full`.
+
+Rules of thumb:
+
+- Tune `--result:page-size` for data-source cost, API limits, and memory safety.
+- Tune `--result:pager` for terminal UX.
+- Use `VisibleRowCapacityHint` only as a best-effort hint; it is not the same as
+  `PageSize` and is not a hard display contract.
+- For machine outputs, source paging still matters, but output paging is off.
+- For redirected output, Repl writes normal stdout and lets tools such as
+  `less`, `grep`, `tail`, or `jq` handle downstream paging/filtering.
+
 ## CLI And Pipe Behavior
 
 The integrated pager only applies to human terminal formats:
