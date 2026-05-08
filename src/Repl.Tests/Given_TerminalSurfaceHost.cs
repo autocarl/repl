@@ -86,4 +86,54 @@ public sealed class Given_TerminalSurfaceHost
 		output.Should().Contain(AnsiSequences.ShowCursor);
 		output.Should().Contain(AnsiSequences.LeaveAlternateScreen);
 	}
+
+	[TestMethod]
+	[Description("Terminal surface enter attempts cleanup when setup fails after partially entering the surface.")]
+	public async Task When_SurfaceEnterFailsAfterAlternateScreen_Then_CleanupIsAttempted()
+	{
+		using var writer = new ThrowOnceWriter(AnsiSequences.HideCursor);
+
+		var act = async () => await TerminalSurfaceHost.EnterAsync(
+				writer,
+				TerminalSurfaceMode.AlternateScreen,
+				CancellationToken.None)
+			.ConfigureAwait(false);
+
+		await act.Should().ThrowAsync<IOException>().ConfigureAwait(false);
+		var output = writer.ToString();
+		output.Should().Contain(AnsiSequences.EnterAlternateScreen);
+		output.Should().Contain(AnsiSequences.EnableLineWrap);
+		output.Should().Contain(AnsiSequences.ShowCursor);
+		output.Should().Contain(AnsiSequences.LeaveAlternateScreen);
+	}
+
+	[TestMethod]
+	[Description("Terminal surface dispose keeps restoring remaining state when one restore write fails.")]
+	public async Task When_SurfaceDisposeRestoreWriteFails_Then_RemainingCleanupIsAttempted()
+	{
+		using var writer = new ThrowOnceWriter(AnsiSequences.EnableLineWrap);
+		var surface = new TerminalSurfaceScope(writer, TerminalSurfaceMode.AlternateScreen);
+
+		await surface.DisposeAsync().ConfigureAwait(false);
+
+		var output = writer.ToString();
+		output.Should().Contain(AnsiSequences.ShowCursor);
+		output.Should().Contain(AnsiSequences.LeaveAlternateScreen);
+	}
+
+	private sealed class ThrowOnceWriter(string throwOn) : StringWriter
+	{
+		private bool _thrown;
+
+		public override Task WriteAsync(string? value)
+		{
+			if (!_thrown && string.Equals(value, throwOn, StringComparison.Ordinal))
+			{
+				_thrown = true;
+				throw new IOException("simulated terminal failure");
+			}
+
+			return base.WriteAsync(value);
+		}
+	}
 }

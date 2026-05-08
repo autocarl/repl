@@ -9,20 +9,28 @@ internal static class TerminalSurfaceHost
 	{
 		ArgumentNullException.ThrowIfNull(output);
 
-		if (mode == TerminalSurfaceMode.AlternateScreen)
+		try
 		{
-			await output.WriteAsync(AnsiSequences.EnterAlternateScreen).ConfigureAwait(false);
-		}
+			if (mode == TerminalSurfaceMode.AlternateScreen)
+			{
+				await output.WriteAsync(AnsiSequences.EnterAlternateScreen).ConfigureAwait(false);
+			}
 
-		await output.WriteAsync(AnsiSequences.HideCursor).ConfigureAwait(false);
-		await output.WriteAsync(AnsiSequences.DisableLineWrap).ConfigureAwait(false);
-		if (mode == TerminalSurfaceMode.AlternateScreen)
+			await output.WriteAsync(AnsiSequences.HideCursor).ConfigureAwait(false);
+			await output.WriteAsync(AnsiSequences.DisableLineWrap).ConfigureAwait(false);
+			if (mode == TerminalSurfaceMode.AlternateScreen)
+			{
+				await output.WriteAsync(AnsiSequences.CursorHome).ConfigureAwait(false);
+			}
+
+			await output.WriteAsync(AnsiSequences.ClearToEndOfScreen).ConfigureAwait(false);
+			await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+		}
+		catch
 		{
-			await output.WriteAsync(AnsiSequences.CursorHome).ConfigureAwait(false);
+			await TerminalSurfaceScope.RestoreAsync(output, mode).ConfigureAwait(false);
+			throw;
 		}
-
-		await output.WriteAsync(AnsiSequences.ClearToEndOfScreen).ConfigureAwait(false);
-		await output.FlushAsync(cancellationToken).ConfigureAwait(false);
 
 		return new TerminalSurfaceScope(output, mode);
 	}

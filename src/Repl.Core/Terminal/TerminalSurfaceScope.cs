@@ -38,14 +38,28 @@ internal sealed class TerminalSurfaceScope(TextWriter output, TerminalSurfaceMod
 		}
 
 		_disposed = true;
-		await Output.WriteAsync(AnsiSequences.EnableLineWrap).ConfigureAwait(false);
-		await Output.WriteAsync(AnsiSequences.ShowCursor).ConfigureAwait(false);
-		if (Mode == TerminalSurfaceMode.AlternateScreen)
+		await RestoreAsync(Output, Mode).ConfigureAwait(false);
+	}
+
+	internal static async ValueTask RestoreAsync(TextWriter output, TerminalSurfaceMode mode)
+	{
+		await TryWriteAsync(output, AnsiSequences.EnableLineWrap).ConfigureAwait(false);
+		await TryWriteAsync(output, AnsiSequences.ShowCursor).ConfigureAwait(false);
+		if (mode == TerminalSurfaceMode.AlternateScreen)
 		{
-			await Output.WriteAsync(AnsiSequences.LeaveAlternateScreen).ConfigureAwait(false);
+			await TryWriteAsync(output, AnsiSequences.LeaveAlternateScreen).ConfigureAwait(false);
 		}
 
-		await Output.FlushAsync().ConfigureAwait(false);
+		try
+		{
+			await output.FlushAsync().ConfigureAwait(false);
+		}
+		catch (IOException)
+		{
+		}
+		catch (ObjectDisposedException)
+		{
+		}
 	}
 
 	private ValueTask WriteAsync(string value) =>
@@ -53,4 +67,18 @@ internal sealed class TerminalSurfaceScope(TextWriter output, TerminalSurfaceMod
 
 	private ValueTask WriteAsync(char value) =>
 		new(Output.WriteAsync(value));
+
+	private static async ValueTask TryWriteAsync(TextWriter output, string value)
+	{
+		try
+		{
+			await output.WriteAsync(value).ConfigureAwait(false);
+		}
+		catch (IOException)
+		{
+		}
+		catch (ObjectDisposedException)
+		{
+		}
+	}
 }
