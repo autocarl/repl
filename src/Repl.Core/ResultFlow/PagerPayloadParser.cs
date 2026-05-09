@@ -1,6 +1,7 @@
 namespace Repl;
 
 using System.Buffers;
+using Repl.Terminal;
 
 internal static class PagerPayloadParser
 {
@@ -57,15 +58,15 @@ internal static class PagerPayloadParser
 
 	private static bool IsPlainTableSeparator(string line)
 	{
-		var text = line.Trim();
+		var text = line.AsSpan().Trim();
 		return text.Length > 0
-			&& text.AsSpan().IndexOfAnyExcept(PlainTableSeparatorChars) < 0
-			&& text.Contains('-', StringComparison.Ordinal);
+			&& text.IndexOfAnyExcept(PlainTableSeparatorChars) < 0
+			&& text.Contains('-');
 	}
 
 	private static bool IsPlainHumanTableHeader(string line)
 	{
-		var text = line.TrimStart();
+		var text = line.AsSpan().TrimStart();
 		return text.StartsWith("# ", StringComparison.Ordinal)
 			&& text.Contains("  ", StringComparison.Ordinal);
 	}
@@ -105,33 +106,6 @@ internal static class PagerPayloadParser
 			return line.Trim();
 		}
 
-		var builder = new System.Text.StringBuilder(line.Length);
-		for (var i = 0; i < line.Length; i++)
-		{
-			if (line[i] == '\u001b')
-			{
-				if (i + 1 >= line.Length)
-				{
-					continue;
-				}
-
-				if (line[i + 1] != '[')
-				{
-					continue;
-				}
-
-				i += 2;
-				while (i < line.Length && (line[i] < '@' || line[i] > '~'))
-				{
-					i++;
-				}
-
-				continue;
-			}
-
-			builder.Append(line[i]);
-		}
-
-		return builder.ToString().Trim();
+		return AnsiTextMetrics.StripControlSequences(line).Trim();
 	}
 }
