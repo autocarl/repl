@@ -1,5 +1,7 @@
 # Repl.Protocol
 
+**Website:** [repl.yllibed.org](https://repl.yllibed.org/)
+
 `Repl.Protocol` provides **machine-readable contracts** for tooling and automation.
 
 Use it when you want to represent things like help or errors as structured objects, and map those contracts to other shapes (e.g. MCP tool descriptors).

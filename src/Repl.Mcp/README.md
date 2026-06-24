@@ -1,5 +1,7 @@
 # Repl.Mcp
 
+**Website:** [repl.yllibed.org](https://repl.yllibed.org/)
+
 MCP server integration for [Repl Toolkit](https://github.com/yllibed/repl) — expose your command graph as AI agent tools, resources, prompts, and MCP Apps UI via the [Model Context Protocol](https://modelcontextprotocol.io).
 
 Use `Repl.Mcp` when you already have, or want to build, a Repl command graph and make the same operations available to AI agents without writing a separate MCP server by hand.
