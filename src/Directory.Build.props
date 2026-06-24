@@ -19,7 +19,7 @@
 		<RepositoryUrl>https://github.com/yllibed/repl</RepositoryUrl>
 		<RepositoryType>git</RepositoryType>
 		<PublishRepositoryUrl>true</PublishRepositoryUrl>
-		<PackageProjectUrl>https://github.com/yllibed/repl</PackageProjectUrl>
+		<PackageProjectUrl>https://repl.yllibed.org/</PackageProjectUrl>
 		<Authors>Carl de Billy</Authors>
 		<PackageTags>repl;cli;command-line;terminal;interactive-shell;automation;dotnet;csharp;mcp;model-context-protocol;ai-agents;developer-tools</PackageTags>
 	</PropertyGroup>
