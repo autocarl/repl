@@ -1,5 +1,7 @@
 # Repl.Logging
 
+**Website:** [repl.yllibed.org](https://repl.yllibed.org/)
+
 `Repl.Logging` provides ambient session-aware logging context for apps built with Repl Toolkit.
 
 It keeps `Microsoft.Extensions.Logging` as the logging contract and exposes Repl execution metadata so apps can enrich or route operator logs when needed.
