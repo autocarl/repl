@@ -100,8 +100,9 @@ public sealed class ParsingOptions
 	/// <param name="name">Canonical name without prefix (for example: "tenant").</param>
 	/// <param name="aliases">Optional aliases. Values without prefix are normalized to <c>--alias</c>.</param>
 	/// <param name="defaultValue">Optional default value metadata.</param>
-	public void AddGlobalOption<T>(string name, string[]? aliases = null, T? defaultValue = default) =>
-		AddGlobalOptionCore(name, typeof(T), aliases, defaultValue?.ToString());
+	/// <param name="description">Optional description shown in help output.</param>
+	public void AddGlobalOption<T>(string name, string[]? aliases = null, T? defaultValue = default, string? description = null) =>
+		AddGlobalOptionCore(name, typeof(T), aliases, defaultValue?.ToString(), description);
 
 	/// <summary>
 	/// Registers a custom global option using a type or constraint name
@@ -114,10 +115,11 @@ public sealed class ParsingOptions
 	/// </param>
 	/// <param name="aliases">Optional aliases. Values without prefix are normalized to <c>--alias</c>.</param>
 	/// <param name="defaultValue">Optional default value as string.</param>
-	public void AddGlobalOption(string name, string constraintOrTypeName, string[]? aliases = null, string? defaultValue = null) =>
-		AddGlobalOptionCore(name, ResolveConstraintOrTypeName(constraintOrTypeName, _customRouteConstraints), aliases, defaultValue);
+	/// <param name="description">Optional description shown in help output.</param>
+	public void AddGlobalOption(string name, string constraintOrTypeName, string[]? aliases = null, string? defaultValue = null, string? description = null) =>
+		AddGlobalOptionCore(name, ResolveConstraintOrTypeName(constraintOrTypeName, _customRouteConstraints), aliases, defaultValue, description);
 
-	internal void AddGlobalOptionCore(string name, Type valueType, string[]? aliases, string? defaultValue, Type? ownerType = null)
+	internal void AddGlobalOptionCore(string name, Type valueType, string[]? aliases, string? defaultValue, string? description = null, Type? ownerType = null)
 	{
 		name = string.IsNullOrWhiteSpace(name)
 			? throw new ArgumentException("Global option name cannot be empty.", nameof(name))
@@ -141,6 +143,7 @@ public sealed class ParsingOptions
 			CanonicalToken: normalizedCanonical,
 			Aliases: normalizedAliases,
 			DefaultValue: defaultValue,
+			Description: description,
 			ValueType: valueType,
 			OwnerType: ownerType);
 	}

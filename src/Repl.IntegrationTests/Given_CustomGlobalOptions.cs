@@ -1,3 +1,5 @@
+using Repl.Parameters;
+
 namespace Repl.IntegrationTests;
 
 [TestClass]
@@ -45,5 +47,52 @@ public sealed class Given_CustomGlobalOptions
 		output.ExitCode.Should().Be(0);
 		output.Text.Should().Contain("Global Options:");
 		output.Text.Should().Contain("--tenant, -t");
+		output.Text.Should().Contain("Custom global option.");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies typed global option descriptions and defaults are rendered in root help.")]
+	public void When_RequestingRootHelpForTypedGlobalOptions_Then_DescriptionsAndDefaultsAreListed()
+	{
+		var sut = ReplApp.Create()
+			.UseGlobalOptions<DemoGlobals>();
+		sut.Map("status", (DemoGlobals globals) => globals.Tenant);
+
+		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("--tenant, -t");
+		output.Text.Should().Contain("Tenant id used for all commands. [default: default]");
+		output.Text.Should().Contain("--verbose, -v");
+		output.Text.Should().Contain("Enable verbose diagnostics for all commands.");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies explicit global option descriptions are rendered in root help.")]
+	public void When_RequestingRootHelpForExplicitGlobalOption_Then_DescriptionIsListed()
+	{
+		var sut = ReplApp.Create()
+			.Options(options => options.Parsing.AddGlobalOption<string>(
+				"tenant",
+				aliases: ["-t"],
+				description: "Tenant id used for all commands."));
+		sut.Map("ping", () => "ok");
+
+		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("--tenant, -t");
+		output.Text.Should().Contain("Tenant id used for all commands.");
+	}
+
+	private sealed class DemoGlobals
+	{
+		[System.ComponentModel.Description("Tenant id used for all commands.")]
+		[ReplOption(Aliases = ["-t"])]
+		public string? Tenant { get; set; } = "default";
+
+		[System.ComponentModel.Description("Enable verbose diagnostics for all commands.")]
+		[ReplOption(Aliases = ["-v"])]
+		public bool Verbose { get; set; }
 	}
 }

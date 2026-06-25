@@ -35,8 +35,9 @@ public static class GlobalOptionsExtensions
 				var name = optionAttr?.Name ?? ToKebabCase(property.Name);
 				var aliases = optionAttr?.Aliases;
 				var defaultValue = property.GetValue(prototype)?.ToString();
+				var description = property.GetCustomAttribute<DescriptionAttribute>()?.Description;
 
-				options.Parsing.AddGlobalOptionCore(name, property.PropertyType, aliases, defaultValue, typeof(T));
+				options.Parsing.AddGlobalOptionCore(name, property.PropertyType, aliases, defaultValue, description, typeof(T));
 			}
 		});
 

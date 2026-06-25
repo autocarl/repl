@@ -619,13 +619,21 @@ internal static partial class HelpTextBuilder
 			.OrderBy(option => option.Name, StringComparer.OrdinalIgnoreCase)
 			.Select(option =>
 			{
-					var aliases = option.Aliases.Count == 0
-						? string.Empty
-						: $", {string.Join(", ", option.Aliases)}";
+				var aliases = option.Aliases.Count == 0
+					? string.Empty
+					: $", {string.Join(", ", option.Aliases)}";
+				var description = string.IsNullOrWhiteSpace(option.Description)
+					? "Custom global option."
+					: option.Description;
+				if (!string.IsNullOrWhiteSpace(option.DefaultValue))
+				{
+					description = $"{description} [default: {option.DefaultValue}]";
+				}
+
 				return new[]
 				{
 					$"{option.CanonicalToken}{aliases}",
-					"Custom global option.",
+					description,
 				};
 			});
 		return [.. BuiltInGlobalOptionRows.Concat(customRows)];
