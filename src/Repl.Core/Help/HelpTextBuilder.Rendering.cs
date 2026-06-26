@@ -208,7 +208,7 @@ internal static partial class HelpTextBuilder
 			parameterType = groupInfo.Property.PropertyType;
 			description = groupInfo.Property.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
 			var propDefault = groupInfo.Property.GetValue(groupInfo.DefaultInstance);
-			defaultValue = propDefault is not null && !IsDefaultForType(propDefault, parameterType)
+			defaultValue = propDefault is not null && !ParsingOptions.IsDefaultForType(propDefault, parameterType)
 				? $" [default: {propDefault}]"
 				: string.Empty;
 		}
@@ -312,31 +312,6 @@ internal static partial class HelpTextBuilder
 		return definition == typeof(Task<>) || definition == typeof(ValueTask<>)
 			? returnType.GetGenericArguments()[0]
 			: returnType;
-	}
-
-	private static bool IsDefaultForType(object value, Type type)
-	{
-		if (type == typeof(bool))
-		{
-			return value is false;
-		}
-
-		if (type == typeof(int))
-		{
-			return value is 0;
-		}
-
-		if (type == typeof(long))
-		{
-			return value is 0L;
-		}
-
-		if (type == typeof(double))
-		{
-			return value is 0.0d;
-		}
-
-		return false;
 	}
 
 	private static string ResolveOptionPlaceholder(Type parameterType)
