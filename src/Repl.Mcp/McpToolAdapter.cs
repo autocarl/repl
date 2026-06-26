@@ -34,14 +34,9 @@ internal sealed partial class McpToolAdapter
 	{
 		get
 		{
-			if (_app is CoreReplApp coreApp
-				&& coreApp.OptionsSnapshot.Output.Transformers.TryGetValue(ForcedOutputFormat, out var transformer)
-				&& !string.IsNullOrWhiteSpace(transformer.MimeType))
-			{
-				return transformer.MimeType;
-			}
-
-			return TextPlainMimeType;
+			var coreApp = _app as CoreReplApp
+				?? throw new InvalidOperationException("MCP tool adapter requires a CoreReplApp to resolve output metadata.");
+			return coreApp.OptionsSnapshot.Output.Transformers[ForcedOutputFormat].MimeType;
 		}
 	}
 
