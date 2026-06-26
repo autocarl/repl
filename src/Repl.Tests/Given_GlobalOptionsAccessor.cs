@@ -68,6 +68,30 @@ public sealed class Given_GlobalOptionsAccessor
 	}
 
 	[TestMethod]
+	[Description("GetValue returns caller default when a value-typed option has no explicit registration default.")]
+	public void When_ValueTypeOptionNotProvidedAndNoRegisteredDefault_Then_GetValueReturnsCallerDefault()
+	{
+		var parsing = new ParsingOptions();
+		parsing.AddGlobalOption<int>("port");
+		var sut = new GlobalOptionsSnapshot(parsing);
+		sut.Update(new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase));
+
+		sut.GetValue<int>("port", 8080).Should().Be(8080);
+	}
+
+	[TestMethod]
+	[Description("GetValue returns caller default when a described value-typed option has no explicit registration default.")]
+	public void When_DescribedValueTypeOptionNotProvidedAndNoRegisteredDefault_Then_GetValueReturnsCallerDefault()
+	{
+		var parsing = new ParsingOptions();
+		parsing.AddGlobalOption<int>("port", "Port used by the server.");
+		var sut = new GlobalOptionsSnapshot(parsing);
+		sut.Update(new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase));
+
+		sut.GetValue<int>("port", 8080).Should().Be(8080);
+	}
+
+	[TestMethod]
 	[Description("HasValue returns false before parsing.")]
 	public void When_NeverUpdated_Then_HasValueReturnsFalse()
 	{
