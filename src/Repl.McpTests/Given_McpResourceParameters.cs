@@ -159,6 +159,32 @@ public sealed class Given_McpResourceParameters
 	}
 
 	[TestMethod]
+	[Description("Resource reads discard low-level handler output so application/json only labels the JSON return payload.")]
+	public async Task When_ResourceHandlerWritesSideChannelOutput_Then_ReadReturnsOnlyJsonPayload()
+	{
+		var session = await McpTestFixture.CreateAsync(
+			app => app.Map("mixed", (IReplIoContext io) =>
+			{
+				io.Output.WriteLine("side-channel text");
+				return new { Value = 42 };
+			})
+				.ReadOnly()
+				.AsResource(),
+			configureServices: _ => { }).ConfigureAwait(false);
+
+		await using (session.ConfigureAwait(false))
+		{
+			var result = await session.Client.ReadResourceAsync("repl://mixed").ConfigureAwait(false);
+			var content = result.Contents.OfType<TextResourceContents>().Single();
+
+			content.MimeType.Should().Be("application/json");
+			content.Text.Should().NotContain("side-channel text");
+			using var json = JsonDocument.Parse(content.Text);
+			json.RootElement.EnumerateObject().Single().Value.GetInt32().Should().Be(42);
+		}
+	}
+
+	[TestMethod]
 	[Description("Void resource handlers are serialized by the forced JSON converter as JSON null, not tool fallback text.")]
 	public async Task When_ResourceHandlerReturnsVoid_Then_ReadUsesSerializedJsonNull()
 	{

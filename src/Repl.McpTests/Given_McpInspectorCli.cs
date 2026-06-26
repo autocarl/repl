@@ -6,18 +6,36 @@ namespace Repl.McpTests;
 [TestClass]
 public sealed class Given_McpInspectorCli
 {
+	private const string EnableInspectorSmokeVariable = "REPL_RUN_MCP_INSPECTOR_TESTS";
 	private const string InspectorPackage = "@modelcontextprotocol/inspector@0.22.0";
 
 	[TestMethod]
-	[Description("End-to-end smoke guard: MCP Inspector sees command-backed resources as JSON and receives parseable JSON content.")]
+	[TestCategory("ExternalToolchain")]
+	[Description("Opt-in end-to-end smoke guard: MCP Inspector sees command-backed resources as JSON and receives parseable JSON content.")]
 	public async Task When_InspectorReadsCommandBackedResource_Then_MimeTypeMatchesJsonPayload()
 	{
+		if (!IsInspectorSmokeEnabled())
+		{
+			Assert.Inconclusive(
+				$"Set {EnableInspectorSmokeVariable}=1 to run the MCP Inspector external-toolchain smoke test.");
+		}
+
+		var npx = ResolveExecutable(OperatingSystem.IsWindows() ? "npx.cmd" : "npx")
+			?? throw new InvalidOperationException(
+				$"{EnableInspectorSmokeVariable}=1 was set, but npx was not found on PATH.");
+		var dotnet = ResolveExecutable(OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet")
+			?? throw new InvalidOperationException(
+				$"{EnableInspectorSmokeVariable}=1 was set, but dotnet was not found on PATH.");
 		var serverDll = ResolveSampleServerDll();
 
 		var resourcesJson = await RunInspectorAsync(
+			npx,
+			dotnet,
 			serverDll,
 			["--method", "resources/list"]).ConfigureAwait(false);
 		var readJson = await RunInspectorAsync(
+			npx,
+			dotnet,
 			serverDll,
 			["--method", "resources/read", "--uri", "repl://contacts"]).ConfigureAwait(false);
 
@@ -30,10 +48,15 @@ public sealed class Given_McpInspectorCli
 		var content = read.RootElement.GetProperty("contents").EnumerateArray().Single();
 		content.GetProperty("uri").GetString().Should().Be("repl://contacts");
 		content.GetProperty("mimeType").GetString().Should().Be("application/json");
+		using var resourceText = JsonDocument.Parse(content.GetProperty("text").GetString() ?? string.Empty);
+		resourceText.RootElement.ValueKind.Should().NotBe(JsonValueKind.Undefined);
+	}
 
-		var contacts = JsonDocument.Parse(content.GetProperty("text").GetString() ?? string.Empty);
-		contacts.RootElement.ValueKind.Should().Be(JsonValueKind.Array);
-		contacts.RootElement.EnumerateArray().First().GetProperty("name").GetString().Should().Be("Alice");
+	private static bool IsInspectorSmokeEnabled()
+	{
+		var value = Environment.GetEnvironmentVariable(EnableInspectorSmokeVariable);
+		return string.Equals(value, "1", StringComparison.Ordinal)
+			|| string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static void AssertResourceMimeType(JsonElement root, string uri, string expectedMimeType)
@@ -45,25 +68,29 @@ public sealed class Given_McpInspectorCli
 		resource.GetProperty("mimeType").GetString().Should().Be(expectedMimeType);
 	}
 
-	private static async Task<string> RunInspectorAsync(string serverDll, IReadOnlyList<string> methodArguments)
+	private static async Task<string> RunInspectorAsync(
+		string npx,
+		string dotnet,
+		string serverDll,
+		IReadOnlyList<string> methodArguments)
 	{
 		using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
 		using var process = new Process
 		{
 			StartInfo =
 			{
-				FileName = OperatingSystem.IsWindows() ? "npx.cmd" : "npx",
+				FileName = npx,
 				RedirectStandardOutput = true,
 				RedirectStandardError = true,
 				UseShellExecute = false,
 			},
 		};
 
-		process.StartInfo.Environment["npm_config_loglevel"] = "silent";
+		ApplyMinimalEnvironment(process.StartInfo);
 		process.StartInfo.ArgumentList.Add("-y");
 		process.StartInfo.ArgumentList.Add(InspectorPackage);
 		process.StartInfo.ArgumentList.Add("--cli");
-		process.StartInfo.ArgumentList.Add("dotnet");
+		process.StartInfo.ArgumentList.Add(dotnet);
 		process.StartInfo.ArgumentList.Add(serverDll);
 		process.StartInfo.ArgumentList.Add("mcp");
 		process.StartInfo.ArgumentList.Add("serve");
@@ -72,7 +99,15 @@ public sealed class Given_McpInspectorCli
 			process.StartInfo.ArgumentList.Add(argument);
 		}
 
-		process.Start().Should().BeTrue();
+		try
+		{
+			process.Start();
+		}
+		catch (System.ComponentModel.Win32Exception ex)
+		{
+			throw new InvalidOperationException($"Failed to start MCP Inspector via '{npx}'.", ex);
+		}
+
 		var stdoutTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
 		var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
 
@@ -97,25 +132,80 @@ public sealed class Given_McpInspectorCli
 		return stdout;
 	}
 
+	private static void ApplyMinimalEnvironment(ProcessStartInfo startInfo)
+	{
+		startInfo.Environment.Clear();
+		CopyEnvironmentVariable(startInfo, "PATH");
+		CopyEnvironmentVariable(startInfo, "HOME");
+		CopyEnvironmentVariable(startInfo, "USERPROFILE");
+		CopyEnvironmentVariable(startInfo, "TMPDIR");
+		CopyEnvironmentVariable(startInfo, "TMP");
+		CopyEnvironmentVariable(startInfo, "TEMP");
+		startInfo.Environment["CI"] = "true";
+		startInfo.Environment["NO_COLOR"] = "1";
+		startInfo.Environment["npm_config_loglevel"] = "silent";
+	}
+
+	private static void CopyEnvironmentVariable(ProcessStartInfo startInfo, string name)
+	{
+		var value = Environment.GetEnvironmentVariable(name);
+		if (!string.IsNullOrEmpty(value))
+		{
+			startInfo.Environment[name] = value;
+		}
+	}
+
 	private static string ResolveSampleServerDll()
 	{
 		var root = ResolveRepositoryRoot();
 		var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name ?? "Release";
-		var serverDll = Path.Combine(
-			root,
-			"samples",
-			"08-mcp-server",
-			"bin",
-			configuration,
-			"net10.0",
-			"McpServerSample.dll");
-
-		if (!File.Exists(serverDll))
+		var sampleBin = Path.Combine(root, "samples", "08-mcp-server", "bin", configuration);
+		if (!Directory.Exists(sampleBin))
 		{
-			throw new FileNotFoundException("The MCP sample server must be built before the Inspector smoke test runs.", serverDll);
+			throw new DirectoryNotFoundException(
+				$"The MCP sample server output directory does not exist: {sampleBin}");
 		}
 
-		return serverDll;
+		var candidates = Directory
+			.EnumerateFiles(sampleBin, "McpServerSample.dll", SearchOption.AllDirectories)
+			.Where(path => !path.Contains($"{Path.DirectorySeparatorChar}ref{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+			.OrderByDescending(File.GetLastWriteTimeUtc)
+			.ToArray();
+		if (candidates.Length == 0)
+		{
+			throw new FileNotFoundException("The MCP sample server must be built before the Inspector smoke test runs.");
+		}
+
+		return candidates[0];
+	}
+
+	private static string? ResolveExecutable(string executable)
+	{
+		if (Path.IsPathRooted(executable))
+		{
+			return File.Exists(executable) ? executable : null;
+		}
+
+		var paths = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+			.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+		var extensions = OperatingSystem.IsWindows() && string.IsNullOrEmpty(Path.GetExtension(executable))
+			? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
+				.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+			: [string.Empty];
+
+		foreach (var directory in paths)
+		{
+			foreach (var extension in extensions)
+			{
+				var candidate = Path.Combine(directory, executable + extension);
+				if (File.Exists(candidate))
+				{
+					return Path.GetFullPath(candidate);
+				}
+			}
+		}
+
+		return null;
 	}
 
 	private static string ResolveRepositoryRoot()

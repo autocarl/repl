@@ -422,7 +422,19 @@ npx -y @modelcontextprotocol/inspector@0.22.0 --cli \
   | jq '.contents[] | { uri, mimeType, text }'
 ```
 
-For command-level tests, use `Repl.Testing`: `CommandExecution.GetResult<T>()` validates the handler return value before rendering, while `OutputText` / `ReadJson<T>()` validate rendered output. For MCP wire contracts such as `Resource.MimeType` and `TextResourceContents.MimeType`, use the MCP test fixture or an Inspector CLI smoke check because those values are protocol metadata, not `Repl.Testing` command results.
+The repository also includes an opt-in `dotnet test` smoke guard for this external toolchain:
+
+```bash
+REPL_RUN_MCP_INSPECTOR_TESTS=1 \
+  dotnet test src/Repl.McpTests/Repl.McpTests.csproj -c Release \
+  --filter 'TestCategory=ExternalToolchain'
+```
+
+It is skipped by default so the normal .NET test suite stays hermetic and does not require Node/npm or npm registry access.
+
+For command-level tests, use `Repl.Testing`: `CommandExecution.GetResult<T>()` validates the handler return value before rendering, while `OutputText` / `ReadJson<T>()` validate rendered output. For MCP wire contracts such as `Resource.MimeType` and `TextResourceContents.MimeType`, use the MCP test fixture or the opt-in Inspector CLI smoke check because those values are protocol metadata, not `Repl.Testing` command results.
+
+Command-backed resources expose the rendered handler return value as the resource body. Low-level writes to `IReplIoContext.Output` are treated as side-channel command output and are not included in `resources/read` bodies.
 
 ## Client compatibility
 

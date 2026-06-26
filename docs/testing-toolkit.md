@@ -61,7 +61,7 @@ For application tests, prefer `GetResult<T>()` / `TryGetResult<T>(...)` as the d
 `ReadJson<T>()` is available when the rendered output is JSON and the test should validate the serialized representation.
 
 `Repl.Testing` intentionally validates the Repl command pipeline rather than MCP protocol metadata.
-For MCP wire contracts such as resource `mimeType` values, use the MCP test fixture or an external smoke test such as MCP Inspector CLI.
+For MCP wire contracts such as resource `mimeType` values, use the MCP test fixture or the opt-in MCP Inspector CLI smoke test (`REPL_RUN_MCP_INSPECTOR_TESTS=1` + `TestCategory=ExternalToolchain`).
 
 ### Semantic interaction events
 

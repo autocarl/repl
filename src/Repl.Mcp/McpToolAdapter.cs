@@ -143,7 +143,13 @@ internal sealed partial class McpToolAdapter
 		}
 
 		var (tokens, prefills) = PrepareExecution(command, arguments);
-		var invocation = await ExecuteThroughPipelineAsync(tokens, prefills, server, progressToken, ct)
+		var invocation = await ExecuteThroughPipelineAsync(
+			tokens,
+			prefills,
+			server,
+			progressToken,
+			ct,
+			captureCommandOutput: false)
 			.ConfigureAwait(false);
 
 		if (invocation.ExitCode != 0)
@@ -169,7 +175,8 @@ internal sealed partial class McpToolAdapter
 		Dictionary<string, string> prefills,
 		McpServer? server,
 		ProgressToken? progressToken,
-		CancellationToken ct)
+		CancellationToken ct,
+		bool captureCommandOutput = true)
 	{
 		var invocableApp = _app as ISubInvocableReplApp
 			?? throw new InvalidOperationException("MCP tool adapter requires an app that supports sub-invocation.");
@@ -192,11 +199,15 @@ internal sealed partial class McpToolAdapter
 		var effectiveTokens = new List<string>(tokens.Count + 1) { $"--output:{ForcedOutputFormat}" };
 		effectiveTokens.AddRange(tokens);
 
+		// Command-backed resources expose the rendered return value as the resource body.
+		// Low-level handler writes to IReplIoContext.Output are side-channel output, not resource content.
+		var commandOutput = captureCommandOutput ? outputWriter : TextWriter.Null;
 		using (ReplSessionIO.SetSession(
 			output: outputWriter,
 			input: inputReader,
 			ansiMode: Rendering.AnsiMode.Never,
 			sessionId: $"mcp-{Guid.NewGuid():N}",
+			commandOutput: commandOutput,
 			isHostedSession: true))
 		{
 			ReplSessionIO.IsProgrammatic = true;
