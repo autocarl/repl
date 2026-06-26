@@ -48,7 +48,12 @@ public sealed class Given_McpResourceParameters
 	{
 		var resource = new ReplDocResource(
 			Path: "config {env}", Description: "desc", Details: null, Arguments: [], Options: []);
-		var sut = new ReplMcpServerResource(resource, resourceName: "config", uriTemplate: "repl://config/{env}", adapter: null!);
+		var sut = new ReplMcpServerResource(
+			resource,
+			resourceName: "config",
+			uriTemplate: "repl://config/{env}",
+			adapter: null!,
+			mimeType: "application/json");
 
 		sut.IsMatch("repl://config/production").Should().BeTrue();
 		sut.IsMatch("repl://config/staging").Should().BeTrue();
@@ -104,35 +109,8 @@ public sealed class Given_McpResourceParameters
 	}
 
 	[TestMethod]
-	[Description("Explicit resource MIME type override wins over the forced MCP output converter MIME type.")]
-	public async Task When_ResourceHasExplicitMimeTypeOverride_Then_ListAndReadUseOverride()
-	{
-		var session = await McpTestFixture.CreateAsync(
-			app => app.Map("ops status", () => new
-				{
-					Service = "checkout",
-					Healthy = true,
-				})
-				.ReadOnly()
-				.AsResource(mimeType: "application/vnd.repl.status+json")).ConfigureAwait(false);
-
-		await using (session.ConfigureAwait(false))
-		{
-			var resources = await session.Client.ListResourcesAsync().ConfigureAwait(false);
-			resources.Should().ContainSingle(r => string.Equals(r.Uri, "repl://ops/status", StringComparison.Ordinal)).Which
-				.MimeType.Should().Be("application/vnd.repl.status+json");
-
-			var result = await session.Client.ReadResourceAsync("repl://ops/status").ConfigureAwait(false);
-			var content = result.Contents.OfType<TextResourceContents>().Single();
-
-			content.MimeType.Should().Be("application/vnd.repl.status+json");
-			content.Text.Should().Contain("checkout");
-		}
-	}
-
-	[TestMethod]
-	[Description("Undeclared resource templates use the forced MCP output converter MIME type.")]
-	public async Task When_TemplatedResourceHasNoDeclaredMimeType_Then_TemplateUsesForcedJsonMimeType()
+	[Description("Resource templates use the forced MCP output converter MIME type.")]
+	public async Task When_TemplatedResource_Then_TemplateUsesForcedJsonMimeType()
 	{
 		var session = await McpTestFixture.CreateAsync(
 			app => app.Map("docs {name}", (string name) => $"# {name}")
@@ -145,6 +123,58 @@ public sealed class Given_McpResourceParameters
 
 			templates.Should().ContainSingle(t => t.UriTemplate.Contains("{name}", StringComparison.Ordinal)).Which
 				.MimeType.Should().Be("application/json");
+		}
+	}
+
+	[TestMethod]
+	[Description("Resource reads bypass paged tool text summaries and keep serialized JSON content.")]
+	public async Task When_ResourceReadReturnsPageAndSummaryOnlyMode_Then_ReadStillReturnsJson()
+	{
+		var session = await McpTestFixture.CreateAsync(
+			app => app.Map("contacts", (IReplPagingContext paging) =>
+				paging.Page(
+					new[]
+					{
+						new { Id = 1, Name = "Alice" },
+					},
+					nextCursor: "page-2",
+					totalCount: 2))
+				.ReadOnly()
+				.AsResource(),
+			options => options.PagedResultTextMode = McpPagedResultTextMode.SummaryOnly).ConfigureAwait(false);
+
+		await using (session.ConfigureAwait(false))
+		{
+			var result = await session.Client.ReadResourceAsync("repl://contacts").ConfigureAwait(false);
+			var content = result.Contents.OfType<TextResourceContents>().Single();
+
+			content.MimeType.Should().Be("application/json");
+			content.Text.Should().Contain("\"items\"");
+			content.Text.Should().Contain("page-2");
+			content.Text.Should().NotContain("Returned 1 item(s).");
+		}
+	}
+
+	[TestMethod]
+	[Description("Resource reads bypass the tool OK placeholder and keep the serialized JSON null payload.")]
+	public async Task When_ResourceHandlerProducesNoOutput_Then_ReadUsesSerializedJsonNull()
+	{
+		var session = await McpTestFixture.CreateAsync(
+			app => app.Map("noop", () => { })
+				.ReadOnly()
+				.AsResource()).ConfigureAwait(false);
+
+		await using (session.ConfigureAwait(false))
+		{
+			var resources = await session.Client.ListResourcesAsync().ConfigureAwait(false);
+			resources.Should().ContainSingle(r => string.Equals(r.Uri, "repl://noop", StringComparison.Ordinal)).Which
+				.MimeType.Should().Be("application/json");
+
+			var result = await session.Client.ReadResourceAsync("repl://noop").ConfigureAwait(false);
+			var content = result.Contents.OfType<TextResourceContents>().Single();
+
+			content.MimeType.Should().Be("application/json");
+			content.Text.Should().Be("null");
 		}
 	}
 

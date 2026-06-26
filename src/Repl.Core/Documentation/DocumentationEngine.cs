@@ -81,10 +81,7 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 				Description: cmd.Description,
 				Details: cmd.Details,
 				Arguments: cmd.Arguments,
-				Options: cmd.Options)
-			{
-				MimeType = cmd.ResourceMimeType,
-			})
+				Options: cmd.Options))
 			.ToArray();
 		var model = new ReplDocumentationModel(
 			App: BuildDocumentationApp(),
@@ -201,7 +198,6 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			Metadata: route.Command.Metadata.Count > 0 ? route.Command.Metadata : null,
 			Answers: answers.Length > 0 ? answers : null,
 			IsResource: route.Command.IsResource,
-			ResourceMimeType: route.Command.ResourceMimeType,
 			IsPrompt: route.Command.IsPrompt,
 			AcceptsPagingInput: acceptsPagingInput,
 			EmitsPagedResult: emitsPagedResult);

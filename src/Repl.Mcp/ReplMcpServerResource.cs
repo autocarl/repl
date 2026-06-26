@@ -13,8 +13,6 @@ namespace Repl.Mcp;
 /// </summary>
 internal sealed partial class ReplMcpServerResource : McpServerResource
 {
-	private const string DefaultMimeType = "text/plain";
-
 	private readonly string _resourceName;
 	private readonly string _mimeType;
 	private readonly McpToolAdapter _adapter;
@@ -27,12 +25,11 @@ internal sealed partial class ReplMcpServerResource : McpServerResource
 		string resourceName,
 		string uriTemplate,
 		McpToolAdapter adapter,
-		string? defaultMimeType = null)
+		string mimeType)
 	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(mimeType);
 		_resourceName = resourceName;
-		_mimeType = !string.IsNullOrWhiteSpace(resource.MimeType)
-			? resource.MimeType
-			: string.IsNullOrWhiteSpace(defaultMimeType) ? DefaultMimeType : defaultMimeType;
+		_mimeType = mimeType;
 		_adapter = adapter;
 		_protocolResourceTemplate = new ResourceTemplate
 		{
@@ -73,23 +70,18 @@ internal sealed partial class ReplMcpServerResource : McpServerResource
 	{
 		var arguments = ExtractArguments(request.Params.Uri);
 
-		var result = await _adapter.InvokeAsync(
+		var result = await _adapter.InvokeResourceAsync(
 			_resourceName,
 			arguments,
 			request.Server,
 			progressToken: null,
-			cancellationToken,
-			allowStaticResults: false)
+			cancellationToken)
 			.ConfigureAwait(false);
 
-		if (result.IsError == true)
+		if (result.IsError)
 		{
-			var errorText = result.Content?.OfType<TextContentBlock>().FirstOrDefault()?.Text
-				?? "Resource read failed.";
-			throw new McpException(errorText);
+			throw new McpException(result.Text);
 		}
-
-		var text = result.Content?.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? "";
 		return new ReadResourceResult
 		{
 			Contents =
@@ -97,8 +89,8 @@ internal sealed partial class ReplMcpServerResource : McpServerResource
 				new TextResourceContents
 				{
 					Uri = request.Params.Uri,
-					MimeType = _mimeType,
-					Text = text,
+					MimeType = result.MimeType,
+					Text = result.Text,
 				},
 			],
 		};

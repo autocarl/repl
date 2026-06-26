@@ -39,6 +39,14 @@ app.Map("deploy {env}", handler)
 | `.AsMcpAppResource()` | Yes (launcher text) | Yes (`ui://` HTML resource) | No |
 | `.AutomationHidden()` | No | No | No |
 
+### Command-backed resource MIME types
+
+Standard `.AsResource()` and auto-promoted `.ReadOnly()` resources are rendered through the MCP output converter. The default MCP converter is JSON, so command-backed resources advertise `application/json` and `resources/read` returns serialized JSON text for normal command results. This is a wire-observable change from earlier versions that advertised `text/plain` for the same JSON content.
+
+Per-resource non-JSON output is not declared on `.AsResource()` today: the media type must come from the output path that actually produced the bytes. Use MCP Apps resources for HTML (`text/html;profile=mcp-app`) or wait for resource-specific converter/blob support before exposing Markdown, YAML, or binary resource bodies.
+
+Resource reads bypass the tool-call text fallback, so a handler with no value keeps the serialized JSON payload (for example `null`) instead of the tool placeholder text (`OK`).
+
 > **Compatibility fallback:** Only ~39% of clients support resources and ~38% support prompts. Enable `ResourceFallbackToTools` and/or `PromptFallbackToTools` to also expose them as tools:
 >
 > ```csharp
