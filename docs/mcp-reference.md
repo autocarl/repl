@@ -39,6 +39,14 @@ app.Map("deploy {env}", handler)
 | `.AsMcpAppResource()` | Yes (launcher text) | Yes (`ui://` HTML resource) | No |
 | `.AutomationHidden()` | No | No | No |
 
+### Command-backed resource MIME types
+
+Standard `.AsResource()` and auto-promoted `.ReadOnly()` resources are rendered through the MCP output converter. The default MCP converter is JSON, so command-backed resources advertise `application/json` and `resources/read` returns serialized JSON text for normal command results. This is a wire-observable change from earlier versions that advertised `text/plain` for the same JSON content.
+
+Per-resource non-JSON output is not declared on `.AsResource()` today: the media type must come from the output path that actually produced the bytes. Use MCP Apps resources for HTML (`text/html;profile=mcp-app`) or wait for resource-specific converter/blob support before exposing Markdown, YAML, or binary resource bodies.
+
+Resource reads bypass the tool-call text fallback, so a handler with no value keeps the serialized JSON payload (for example `null`) instead of the tool placeholder text (`OK`).
+
 > **Compatibility fallback:** Only ~39% of clients support resources and ~38% support prompts. Enable `ResourceFallbackToTools` and/or `PromptFallbackToTools` to also expose them as tools:
 >
 > ```csharp
@@ -390,9 +398,43 @@ app.UseMcpServer(o =>
 
 ### Debugging with MCP Inspector
 
+Use the UI for interactive exploration:
+
 ```bash
 npx @modelcontextprotocol/inspector myapp mcp serve
 ```
+
+Use CLI mode for repeatable smoke checks. `resources/list` exposes the advertised resource MIME type, and `resources/read` exposes the MIME type and body returned on the wire:
+
+```bash
+# Build or publish the server first; this example uses a built sample DLL.
+dotnet build samples/08-mcp-server/McpServerSample.csproj -c Release
+
+npx -y @modelcontextprotocol/inspector@0.22.0 --cli \
+  dotnet samples/08-mcp-server/bin/Release/net10.0/McpServerSample.dll mcp serve \
+  --method resources/list \
+  | jq '.resources[] | { uri, mimeType }'
+
+npx -y @modelcontextprotocol/inspector@0.22.0 --cli \
+  dotnet samples/08-mcp-server/bin/Release/net10.0/McpServerSample.dll mcp serve \
+  --method resources/read \
+  --uri repl://contacts \
+  | jq '.contents[] | { uri, mimeType, text }'
+```
+
+The repository also includes an opt-in `dotnet test` smoke guard for this external toolchain:
+
+```bash
+REPL_RUN_MCP_INSPECTOR_TESTS=1 \
+  dotnet test src/Repl.McpTests/Repl.McpTests.csproj -c Release \
+  --filter 'TestCategory=ExternalToolchain'
+```
+
+It is skipped by default so the normal .NET test suite stays hermetic and does not require Node/npm or npm registry access.
+
+For command-level tests, use `Repl.Testing`: `CommandExecution.GetResult<T>()` validates the handler return value before rendering, while `OutputText` / `ReadJson<T>()` validate rendered output. For MCP wire contracts such as `Resource.MimeType` and `TextResourceContents.MimeType`, use the MCP test fixture or the opt-in Inspector CLI smoke check because those values are protocol metadata, not `Repl.Testing` command results.
+
+Command-backed resources expose the rendered handler return value as the resource body. Low-level writes to `IReplIoContext.Output` are treated as side-channel command output and are not included in `resources/read` bodies.
 
 ## Client compatibility
 

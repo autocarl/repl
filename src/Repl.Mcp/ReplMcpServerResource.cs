@@ -14,6 +14,7 @@ namespace Repl.Mcp;
 internal sealed partial class ReplMcpServerResource : McpServerResource
 {
 	private readonly string _resourceName;
+	private readonly string _mimeType;
 	private readonly McpToolAdapter _adapter;
 	private readonly ResourceTemplate _protocolResourceTemplate;
 	private readonly Regex? _uriParser;
@@ -23,16 +24,19 @@ internal sealed partial class ReplMcpServerResource : McpServerResource
 		ReplDocResource resource,
 		string resourceName,
 		string uriTemplate,
-		McpToolAdapter adapter)
+		McpToolAdapter adapter,
+		string mimeType)
 	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(mimeType);
 		_resourceName = resourceName;
+		_mimeType = mimeType;
 		_adapter = adapter;
 		_protocolResourceTemplate = new ResourceTemplate
 		{
 			Name = resourceName,
 			Description = resource.Description,
 			UriTemplate = uriTemplate,
-			MimeType = "text/plain",
+			MimeType = _mimeType,
 		};
 
 		// Build a regex to extract template variables from the URI.
@@ -66,23 +70,18 @@ internal sealed partial class ReplMcpServerResource : McpServerResource
 	{
 		var arguments = ExtractArguments(request.Params.Uri);
 
-		var result = await _adapter.InvokeAsync(
+		var result = await _adapter.InvokeResourceAsync(
 			_resourceName,
 			arguments,
 			request.Server,
 			progressToken: null,
-			cancellationToken,
-			allowStaticResults: false)
+			cancellationToken)
 			.ConfigureAwait(false);
 
-		if (result.IsError == true)
+		if (result.IsError)
 		{
-			var errorText = result.Content?.OfType<TextContentBlock>().FirstOrDefault()?.Text
-				?? "Resource read failed.";
-			throw new McpException(errorText);
+			throw new McpException(result.Text);
 		}
-
-		var text = result.Content?.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? "";
 		return new ReadResourceResult
 		{
 			Contents =
@@ -90,8 +89,8 @@ internal sealed partial class ReplMcpServerResource : McpServerResource
 				new TextResourceContents
 				{
 					Uri = request.Params.Uri,
-					MimeType = "text/plain",
-					Text = text,
+					MimeType = result.MimeType,
+					Text = result.Text,
 				},
 			],
 		};

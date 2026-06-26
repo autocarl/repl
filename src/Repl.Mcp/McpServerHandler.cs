@@ -822,6 +822,7 @@ internal sealed class McpServerHandler
 		Dictionary<string, ReplDocCommand> commandsByPath)
 	{
 		var resources = new List<McpServerResource>();
+		var resourceMimeType = adapter.ForcedOutputMimeType;
 
 		foreach (var resource in model.Resources)
 		{
@@ -854,7 +855,12 @@ internal sealed class McpServerHandler
 			}
 
 			var uriTemplate = McpToolNameFlattener.BuildResourceUri(resource.Path, _options.ResourceUriScheme);
-			var mcpResource = new ReplMcpServerResource(resource, resourceName, uriTemplate, adapter);
+			var mcpResource = new ReplMcpServerResource(
+				resource,
+				resourceName,
+				uriTemplate,
+				adapter,
+				resourceMimeType);
 
 			if (docCommand is not null)
 			{

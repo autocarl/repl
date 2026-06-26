@@ -14,6 +14,9 @@ namespace Repl.Mcp;
 /// </summary>
 internal sealed partial class McpToolAdapter
 {
+	internal const string ForcedOutputFormat = "json";
+	private const string TextPlainMimeType = "text/plain";
+
 	private readonly ICoreReplApp _app;
 	private readonly ReplMcpServerOptions _options;
 	private readonly IServiceProvider _services;
@@ -25,6 +28,24 @@ internal sealed partial class McpToolAdapter
 		_app = app;
 		_options = options;
 		_services = services;
+	}
+
+	internal string ForcedOutputMimeType
+	{
+		get
+		{
+			if (_app is not CoreReplApp coreApp)
+			{
+				throw new InvalidOperationException("MCP tool adapter requires a CoreReplApp to resolve output metadata.");
+			}
+
+			if (!coreApp.OptionsSnapshot.Output.Transformers.TryGetValue(ForcedOutputFormat, out var transformer))
+			{
+				throw new InvalidOperationException("MCP server requires the 'json' output transformer.");
+			}
+
+			return transformer.MimeType;
+		}
 	}
 
 	/// <summary>
@@ -96,21 +117,80 @@ internal sealed partial class McpToolAdapter
 		}
 
 		var (tokens, prefills) = PrepareExecution(command, arguments);
-		return await ExecuteThroughPipelineAsync(tokens, prefills, server, progressToken, ct)
+		var invocation = await ExecuteThroughPipelineAsync(tokens, prefills, server, progressToken, ct)
 			.ConfigureAwait(false);
+		var output = invocation.Output;
+		if (string.IsNullOrWhiteSpace(output))
+		{
+			output = invocation.ExitCode == 0
+				? "OK"
+				: $"Command failed with exit code {invocation.ExitCode}.";
+		}
+
+		return BuildToolResult(output, invocation.ExitCode, _options.PagedResultTextMode);
 	}
 
-	private async Task<CallToolResult> ExecuteThroughPipelineAsync(
+	internal async Task<McpResourceReadInvocation> InvokeResourceAsync(
+		string resourceName,
+		IDictionary<string, JsonElement> arguments,
+		McpServer? server,
+		ProgressToken? progressToken,
+		CancellationToken ct)
+	{
+		if (!_toolRoutes.TryGetValue(resourceName, out var command))
+		{
+			return new McpResourceReadInvocation($"Unknown resource: {resourceName}", TextPlainMimeType, IsError: true);
+		}
+
+		var (tokens, prefills) = PrepareExecution(command, arguments);
+		var invocation = await ExecuteThroughPipelineAsync(
+			tokens,
+			prefills,
+			server,
+			progressToken,
+			ct,
+			captureCommandOutput: false)
+			.ConfigureAwait(false);
+
+		if (invocation.ExitCode != 0)
+		{
+			var error = invocation.Output;
+			if (string.IsNullOrWhiteSpace(error))
+			{
+				error = invocation.Error;
+			}
+
+			if (string.IsNullOrWhiteSpace(error))
+			{
+				error = $"Command failed with exit code {invocation.ExitCode}.";
+			}
+
+			return new McpResourceReadInvocation(error, TextPlainMimeType, IsError: true);
+		}
+
+		if (string.IsNullOrWhiteSpace(invocation.Output))
+		{
+			// Results.Exit(0) without a payload intentionally renders no CLI output.
+			// Resource reads still need a body that matches the advertised forced JSON MIME type.
+			return new McpResourceReadInvocation("null", ForcedOutputMimeType, IsError: false);
+		}
+
+		return new McpResourceReadInvocation(invocation.Output, ForcedOutputMimeType, IsError: false);
+	}
+
+	private async Task<McpPipelineInvocation> ExecuteThroughPipelineAsync(
 		List<string> tokens,
 		Dictionary<string, string> prefills,
 		McpServer? server,
 		ProgressToken? progressToken,
-		CancellationToken ct)
+		CancellationToken ct,
+		bool captureCommandOutput = true)
 	{
 		var invocableApp = _app as ISubInvocableReplApp
 			?? throw new InvalidOperationException("MCP tool adapter requires an app that supports sub-invocation.");
 
 		var outputWriter = new StringWriter();
+		var errorWriter = captureCommandOutput ? outputWriter : new StringWriter();
 		var inputReader = new StringReader(string.Empty);
 		var feedback = _services.GetService(typeof(IMcpFeedback)) as IMcpFeedback;
 		var interactionChannel = new McpInteractionChannel(
@@ -125,14 +205,19 @@ internal sealed partial class McpToolAdapter
 			?.PushProgressToken(progressToken);
 
 		// Force JSON output — agents consume structured data, not human tables/banners.
-		var effectiveTokens = new List<string>(tokens.Count + 1) { "--output:json" };
+		var effectiveTokens = new List<string>(tokens.Count + 1) { $"--output:{ForcedOutputFormat}" };
 		effectiveTokens.AddRange(tokens);
 
+		// Command-backed resources expose the rendered return value as the resource body.
+		// Low-level handler writes to IReplIoContext.Output/Error are side-channel output, not resource content.
+		var commandOutput = captureCommandOutput ? outputWriter : TextWriter.Null;
 		using (ReplSessionIO.SetSession(
 			output: outputWriter,
 			input: inputReader,
 			ansiMode: Rendering.AnsiMode.Never,
 			sessionId: $"mcp-{Guid.NewGuid():N}",
+			commandOutput: commandOutput,
+			error: errorWriter,
 			isHostedSession: true))
 		{
 			ReplSessionIO.IsProgrammatic = true;
@@ -140,14 +225,14 @@ internal sealed partial class McpToolAdapter
 				effectiveTokens.ToArray(), mcpServices, ct).ConfigureAwait(false);
 
 			var output = outputWriter.ToString().Trim();
-			if (string.IsNullOrWhiteSpace(output))
-			{
-				output = exitCode == 0 ? "OK" : $"Command failed with exit code {exitCode}.";
-			}
-
-			return BuildToolResult(output, exitCode, _options.PagedResultTextMode);
+			var error = captureCommandOutput ? string.Empty : errorWriter.ToString().Trim();
+			return new McpPipelineInvocation(output, error, exitCode);
 		}
 	}
+
+	internal readonly record struct McpResourceReadInvocation(string Text, string MimeType, bool IsError);
+
+	private readonly record struct McpPipelineInvocation(string Output, string Error, int ExitCode);
 
 	private static CallToolResult BuildToolResult(string output, int exitCode, McpPagedResultTextMode pagedTextMode)
 	{
