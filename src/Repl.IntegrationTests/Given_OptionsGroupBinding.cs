@@ -32,6 +32,19 @@ public sealed class Given_OptionsGroupBinding
 		public string Query { get; set; } = "";
 	}
 
+	[ReplOptionsGroup]
+	public class NullableDefaultsOptions
+	{
+		[ReplOption]
+		public int? Limit { get; set; } = 0;
+
+		[ReplOption]
+		public bool? Force { get; set; } = false;
+
+		[ReplOption]
+		public int Offset { get; set; }
+	}
+
 	[TestMethod]
 	[Description("Regression guard: verifies named options bind to options group properties.")]
 	public void When_UsingNamedOptionOnGroup_Then_PropertyBindsSuccessfully()
@@ -123,6 +136,22 @@ public sealed class Given_OptionsGroupBinding
 
 		output.ExitCode.Should().Be(0);
 		output.Text.Should().Contain("json:20:5");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: a nullable group property initialized to the CLR default of its underlying type (int? = 0, bool? = false) is a deliberate default the binder preserves, so command help must advertise it — while implicit defaults of non-nullable properties stay hidden.")]
+	public void When_NullableGroupPropertyInitializedToUnderlyingClrDefault_Then_HelpShowsDefault()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("list", (NullableDefaultsOptions options) => "ok");
+
+		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["list", "--help", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		var lines = output.Text.Split('\n');
+		lines.Single(line => line.Contains("--limit")).Should().Contain("[default: 0]");
+		lines.Single(line => line.Contains("--force")).Should().Contain("[default: False]");
+		lines.Single(line => line.Contains("--offset")).Should().NotContain("[default:");
 	}
 
 	[TestMethod]

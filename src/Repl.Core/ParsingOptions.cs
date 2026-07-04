@@ -207,23 +207,31 @@ public sealed class ParsingOptions
 
 	internal static bool IsDefaultForType(object value, Type type)
 	{
-		var effectiveType = Nullable.GetUnderlyingType(type) ?? type;
-		if (effectiveType == typeof(bool))
+		// The default of a Nullable<T> is null, never a value: a nullable property or
+		// parameter initialized to 0 or false is a deliberate default that must be kept
+		// (rendered in help, applied at resolution), unlike the implicit default of the
+		// underlying non-nullable type.
+		if (Nullable.GetUnderlyingType(type) is not null)
+		{
+			return false;
+		}
+
+		if (type == typeof(bool))
 		{
 			return value is false;
 		}
 
-		if (effectiveType == typeof(int))
+		if (type == typeof(int))
 		{
 			return value is 0;
 		}
 
-		if (effectiveType == typeof(long))
+		if (type == typeof(long))
 		{
 			return value is 0L;
 		}
 
-		if (effectiveType == typeof(double))
+		if (type == typeof(double))
 		{
 			return value is 0.0d;
 		}

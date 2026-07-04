@@ -82,6 +82,21 @@ public sealed class Given_GlobalOptionsAccessor
 	}
 
 	[TestMethod]
+	[Description("Regression guard: an explicit registration default equal to the CLR default of the underlying type (0), declared through a nullable type parameter, is preserved as metadata and applied when the option is omitted instead of the call-site fallback.")]
+	public void When_NullableGlobalOptionDeclaresUnderlyingClrDefault_Then_RegisteredDefaultWins()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(o => o.Parsing.AddGlobalOption<int?>("port", defaultValue: 0));
+		sut.Map("show", (IGlobalOptionsAccessor globals) => $"port:{globals.GetValue<int>("port", 8080)}");
+
+		var output = ConsoleCaptureHelper.Capture(
+			() => sut.Run(["show", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("port:0");
+	}
+
+	[TestMethod]
 	[Description("UseGlobalOptions<T> registers typed class accessible via DI.")]
 	public void When_UsingTypedGlobalOptions_Then_ClassIsPopulatedFromParsedValues()
 	{
