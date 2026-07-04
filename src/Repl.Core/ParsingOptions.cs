@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 
 namespace Repl;
@@ -205,6 +206,10 @@ public sealed class ParsingOptions
 			? value.ToString()
 			: null;
 
+	[UnconditionalSuppressMessage(
+		"Trimming",
+		"IL2067",
+		Justification = "Activator.CreateInstance is only reached for value types, which always have a parameterless constructor.")]
 	internal static bool IsDefaultForType(object value, Type type)
 	{
 		// The default of a Nullable<T> is null, never a value: a nullable property or
@@ -216,27 +221,12 @@ public sealed class ParsingOptions
 			return false;
 		}
 
-		if (type == typeof(bool))
-		{
-			return value is false;
-		}
-
-		if (type == typeof(int))
-		{
-			return value is 0;
-		}
-
-		if (type == typeof(long))
-		{
-			return value is 0L;
-		}
-
-		if (type == typeof(double))
-		{
-			return value is 0.0d;
-		}
-
-		return false;
+		// Any non-nullable value type compares against its boxed CLR default (false, 0,
+		// Guid.Empty, enum zero, DateTime.MinValue, ...), so implicit defaults captured
+		// by `T? defaultValue = default` never become registration metadata. Reference
+		// types have no implicit non-null default to suppress. Registration-time only,
+		// so the boxing allocation is acceptable.
+		return type.IsValueType && value.Equals(Activator.CreateInstance(type));
 	}
 
 	private static Type ResolveConstraintOrTypeName(

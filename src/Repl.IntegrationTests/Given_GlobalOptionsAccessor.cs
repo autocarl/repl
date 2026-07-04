@@ -82,6 +82,22 @@ public sealed class Given_GlobalOptionsAccessor
 	}
 
 	[TestMethod]
+	[Description("Regression guard: an implicit CLR default for a value type outside the primitive whitelist (Guid.Empty) is not stored as registration metadata, so the call-site fallback wins when the option is omitted.")]
+	public void When_GlobalOptionDeclaresImplicitGuidDefault_Then_CallSiteFallbackWins()
+	{
+		var fallback = new Guid(0x42424242, 0x4242, 0x4242, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42);
+		var sut = ReplApp.Create();
+		sut.Options(o => o.Parsing.AddGlobalOption<Guid>("session", aliases: null, defaultValue: default, description: "Session id."));
+		sut.Map("show", (IGlobalOptionsAccessor globals) => $"session:{globals.GetValue<Guid>("session", fallback)}");
+
+		var output = ConsoleCaptureHelper.Capture(
+			() => sut.Run(["show", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain($"session:{fallback}");
+	}
+
+	[TestMethod]
 	[Description("Regression guard: an explicit registration default equal to the CLR default of the underlying type (0), declared through a nullable type parameter, is preserved as metadata and applied when the option is omitted instead of the call-site fallback.")]
 	public void When_NullableGlobalOptionDeclaresUnderlyingClrDefault_Then_RegisteredDefaultWins()
 	{
