@@ -82,6 +82,22 @@ public sealed class Given_GlobalOptionsAccessor
 	}
 
 	[TestMethod]
+	[Description("Regression guard: for typed global options, the accessor mirrors the prototype default even when it equals the CLR default (int = 0), staying consistent with the injected instance which always carries prototype values.")]
+	public void When_TypedGlobalOptionHasClrDefaultPrototypeValue_Then_AccessorMatchesInjectedInstance()
+	{
+		var sut = ReplApp.Create();
+		sut.UseGlobalOptions<ClrDefaultGlobals>();
+		sut.Map("show", (IGlobalOptionsAccessor globals, ClrDefaultGlobals opts) =>
+			$"accessor:{globals.GetValue<int>("retries", 42)} injected:{opts.Retries}");
+
+		var output = ConsoleCaptureHelper.Capture(
+			() => sut.Run(["show", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("accessor:0 injected:0");
+	}
+
+	[TestMethod]
 	[Description("Regression guard: an implicit CLR default for a value type outside the primitive whitelist (Guid.Empty) is not stored as registration metadata, so the call-site fallback wins when the option is omitted.")]
 	public void When_GlobalOptionDeclaresImplicitGuidDefault_Then_CallSiteFallbackWins()
 	{
@@ -421,6 +437,11 @@ public sealed class Given_GlobalOptionsAccessor
 		public string? Tenant { get; set; }
 
 		public int Port { get; set; } = 8080;
+	}
+
+	private sealed class ClrDefaultGlobals
+	{
+		public int Retries { get; set; }
 	}
 
 	private interface IInterfaceGlobalOptions

@@ -34,7 +34,11 @@ public static class GlobalOptionsExtensions
 				var optionAttr = property.GetCustomAttribute<ReplOptionAttribute>();
 				var name = optionAttr?.Name ?? ToKebabCase(property.Name);
 				var aliases = optionAttr?.Aliases;
-				var defaultValue = ParsingOptions.FormatDefaultValue(property.GetValue(prototype), property.PropertyType);
+				// The effective default of a typed global option is always the prototype value:
+				// PopulateInstance starts from new T() and only overwrites parsed values. Keep
+				// the metadata aligned (even when the value equals the CLR default) so
+				// IGlobalOptionsAccessor.GetValue resolves the same default as the injected T.
+				var defaultValue = property.GetValue(prototype)?.ToString();
 				var description = property.GetCustomAttribute<DescriptionAttribute>()?.Description;
 
 				options.Parsing.AddGlobalOptionCore(name, property.PropertyType, aliases, defaultValue, description, typeof(T));
