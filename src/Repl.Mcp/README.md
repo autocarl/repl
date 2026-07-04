@@ -49,7 +49,7 @@ Most MCP clients use the same shape:
 }
 ```
 
-Use the executable or `dotnet run --project ... -- mcp serve` command that matches your app packaging.
+Use the executable that matches your app packaging. For local project samples, build once and use `dotnet run --no-build --project ... -- mcp serve` so host startup does not rebuild or write build output to stdout.
 
 ## MCP Apps
 

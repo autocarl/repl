@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "repl-contacts-sample": {
+      "type": "stdio",
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--no-build",
+        "--project",
+        "/absolute/path/to/repl/samples/08-mcp-server/McpServerSample.csproj",
+        "--",
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}

@@ -335,9 +335,20 @@ app.UseMcpServer(o =>
 
 ## Agent configuration
 
-### Claude Desktop
+Agent hosts configure the app or tool you built with Repl.Mcp. They do not
+install Repl.Mcp directly.
 
-**File:** `~/.config/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
+Prefer a stable executable command, such as a published `dotnet tool`, for
+shared team configs. When documenting a local sample, build it once and use
+`dotnet run --no-build`, or point the host at a published executable. Plain
+`dotnet run --project ...` is fragile in host configs because cold builds can
+exceed startup timeouts and build/restore output can reach stdout before the MCP
+JSON-RPC stream starts.
+
+### Generic MCP client / Claude Desktop
+
+**File:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+(macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
 
 ```json
 {
@@ -349,25 +360,52 @@ app.UseMcpServer(o =>
   }
 }
 ```
+
+For a local sample project, split the launch into `command` and `args`:
+
+```json
+{
+  "mcpServers": {
+    "repl-contacts-sample": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--no-build",
+        "--project",
+        "/absolute/path/to/repl/samples/08-mcp-server/McpServerSample.csproj",
+        "--",
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}
+```
+
+On Windows JSON, write paths with doubled backslashes, for example
+`C:\\Users\\you\\src\\repl\\samples\\08-mcp-server\\McpServerSample.csproj`.
 
 ### Claude Code
 
-**File:** `~/.claude.json` or project `.claude/settings.json`
+Claude Code uses command registration as the standard flow:
 
-```json
-{
-  "mcpServers": {
-    "myapp": {
-      "command": "myapp",
-      "args": ["mcp", "serve"]
-    }
-  }
-}
+```bash
+claude mcp add myapp -- myapp mcp serve
 ```
 
-### VS Code (GitHub Copilot)
+For a local Repl sample after an initial build:
 
-**File:** `.vscode/mcp.json` (workspace) or `~/.mcp.json` (global)
+```bash
+claude mcp add repl-contacts-sample -- dotnet run --no-build --project /absolute/path/to/repl/samples/08-mcp-server/McpServerSample.csproj -- mcp serve
+```
+
+For file-based provisioning, use `.mcp.json` at the project root for project
+settings or `~/.claude.json` for user/local settings. Both use the generic
+`mcpServers` JSON shape.
+
+### VS Code / GitHub Copilot
+
+**File:** `.vscode/mcp.json` (workspace)
 
 ```json
 {
@@ -381,20 +419,34 @@ app.UseMcpServer(o =>
 }
 ```
 
+VS Code also supports command-line registration from macOS/Linux shells:
+
+```bash
+code --add-mcp '{"name":"myapp","command":"myapp","args":["mcp","serve"]}'
+```
+
+On Windows, prefer the `.vscode/mcp.json` file. The `code.cmd --add-mcp`
+argument path can mangle inline JSON in common shells; if you write JSON by
+hand, remember to escape backslashes in Windows paths.
+
 ### Cursor
 
 **File:** `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global)
 
-```json
-{
-  "mcpServers": {
-    "myapp": {
-      "command": "myapp",
-      "args": ["mcp", "serve"]
-    }
-  }
-}
-```
+Cursor uses the generic `mcpServers` JSON shape.
+
+### Cline
+
+Use **Configure MCP Servers** to edit `cline_mcp_settings.json`, then add the
+local stdio server with the generic `mcpServers` JSON shape. The Cline
+marketplace is for published/curated servers and will not install an unpublished
+local sample.
+
+### Complete copy/paste sample
+
+See [sample 08 — Build an MCP Server with Repl.Mcp](../samples/08-mcp-server/)
+for Cursor, VS Code, Claude Code, Cline, generic JSON, and MCP Inspector
+examples.
 
 ### Debugging with MCP Inspector
 
@@ -404,7 +456,16 @@ Use the UI for interactive exploration:
 npx @modelcontextprotocol/inspector myapp mcp serve
 ```
 
-Use CLI mode for repeatable smoke checks. `resources/list` exposes the advertised resource MIME type, and `resources/read` exposes the MIME type and body returned on the wire:
+For a local sample project, build first and pass the same no-build command used
+by agent hosts:
+
+```bash
+npx @modelcontextprotocol/inspector dotnet run --no-build --project /absolute/path/to/repl/samples/08-mcp-server/McpServerSample.csproj -- mcp serve
+```
+
+Use CLI mode for repeatable smoke checks. `resources/list` exposes the
+advertised resource MIME type, and `resources/read` exposes the MIME type and
+body returned on the wire:
 
 ```bash
 # Build or publish the server first; this example uses a built sample DLL.
@@ -422,7 +483,8 @@ npx -y @modelcontextprotocol/inspector@0.22.0 --cli \
   | jq '.contents[] | { uri, mimeType, text }'
 ```
 
-The repository also includes an opt-in `dotnet test` smoke guard for this external toolchain:
+The repository also includes an opt-in `dotnet test` smoke guard for this
+external toolchain:
 
 ```bash
 REPL_RUN_MCP_INSPECTOR_TESTS=1 \
@@ -430,11 +492,19 @@ REPL_RUN_MCP_INSPECTOR_TESTS=1 \
   --filter 'TestCategory=ExternalToolchain'
 ```
 
-It is skipped by default so the normal .NET test suite stays hermetic and does not require Node/npm or npm registry access.
+It is skipped by default so the normal .NET test suite stays hermetic and does
+not require Node/npm or npm registry access.
 
-For command-level tests, use `Repl.Testing`: `CommandExecution.GetResult<T>()` validates the handler return value before rendering, while `OutputText` / `ReadJson<T>()` validate rendered output. For MCP wire contracts such as `Resource.MimeType` and `TextResourceContents.MimeType`, use the MCP test fixture or the opt-in Inspector CLI smoke check because those values are protocol metadata, not `Repl.Testing` command results.
+For command-level tests, use `Repl.Testing`: `CommandExecution.GetResult<T>()`
+validates the handler return value before rendering, while `OutputText` /
+`ReadJson<T>()` validate rendered output. For MCP wire contracts such as
+`Resource.MimeType` and `TextResourceContents.MimeType`, use the MCP test
+fixture or the opt-in Inspector CLI smoke check because those values are
+protocol metadata, not `Repl.Testing` command results.
 
-Command-backed resources expose the rendered handler return value as the resource body. Low-level writes to `IReplIoContext.Output` are treated as side-channel command output and are not included in `resources/read` bodies.
+Command-backed resources expose the rendered handler return value as the
+resource body. Low-level writes to `IReplIoContext.Output` are treated as
+side-channel command output and are not included in `resources/read` bodies.
 
 ## Client compatibility
 
