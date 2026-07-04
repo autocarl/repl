@@ -10,11 +10,11 @@ using Repl.Mcp;
 // Repl.Mcp is the component that lets this sample app become an MCP server.
 // Agent hosts install/configure the sample app command, not Repl.Mcp itself.
 //
-// Run interactively:  dotnet run
-// Run as MCP server:  dotnet run -- mcp serve
+// Run interactively from this project:  dotnet run
+// Run as MCP server after building:  dotnet run --no-build -- mcp serve
 //
-// Configure in an MCP host with:
-//   { "command": "dotnet", "args": ["run", "--project", "path/to/08-mcp-server", "--", "mcp", "serve"] }
+// Configure an MCP host with an absolute project path and no build step:
+//   { "command": "dotnet", "args": ["run", "--no-build", "--project", "/absolute/path/to/repl/samples/08-mcp-server/McpServerSample.csproj", "--", "mcp", "serve"] }
 
 var app = ReplApp.Create(services =>
 {

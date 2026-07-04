@@ -765,7 +765,7 @@ dependency-free and can opt in by registering their own
 
 - [Core Basics sample](../samples/01-core-basics/README.md#result-flow-paging)
 - [Spectre sample](../samples/07-spectre/README.md#activity--paged-long-data-source)
-- [MCP Server sample](../samples/08-mcp-server/README.md#demo-workflow)
+- [MCP Server sample](../samples/08-mcp-server/README.md#test-with-mcp-inspector)
 - [Output System](output-system.md)
 - [Command Reference](commands.md)
 - [MCP Reference](mcp-reference.md)

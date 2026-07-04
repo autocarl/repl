@@ -138,7 +138,7 @@ Each sample has a companion cookbook page with explanations and patterns.
 | **[Hosting Remote](samples/05-hosting-remote/)** — remote interactive REPL sessions | [repl.yllibed.org/cookbook/hosting-remote/](https://repl.yllibed.org/cookbook/hosting-remote/) |
 | **[Testing](samples/06-testing/)** — multi-session typed assertions | [repl.yllibed.org/cookbook/testing/](https://repl.yllibed.org/cookbook/testing/) |
 | **[Spectre](samples/07-spectre/)** — Spectre.Console renderables, visualizations, rich prompts | [repl.yllibed.org/cookbook/spectre/](https://repl.yllibed.org/cookbook/spectre/) |
-| **[MCP Server](samples/08-mcp-server/)** — MCP tools, resources, prompts, and MCP Apps UI | [repl.yllibed.org/cookbook/mcp-server/](https://repl.yllibed.org/cookbook/mcp-server/) |
+| **[Build an MCP Server with Repl.Mcp](samples/08-mcp-server/)** — MCP tools, resources, prompts, and MCP Apps UI | [repl.yllibed.org/cookbook/mcp-server/](https://repl.yllibed.org/cookbook/mcp-server/) |
 
 ## More documentation
 

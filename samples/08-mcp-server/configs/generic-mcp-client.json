@@ -4,6 +4,7 @@
       "command": "dotnet",
       "args": [
         "run",
+        "--no-build",
         "--project",
         "/absolute/path/to/repl/samples/08-mcp-server/McpServerSample.csproj",
         "--",
