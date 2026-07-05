@@ -282,6 +282,26 @@ public sealed class Given_ShellIntegrationMarkEmitter
 	}
 
 	[TestMethod]
+	[Description("A hosted client advertising ANSI only through capability flags (no AnsiSupport override) still gets marks: the server console's redirection state must not suppress a capability the client explicitly advertised.")]
+	public async Task When_HostedClientAdvertisesAnsiThroughCapabilities_Then_MarksAreEmitted()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		using var session = ReplSessionIO.SetSession(
+			output: harness.Writer,
+			input: TextReader.Null);
+		ReplSessionIO.TerminalCapabilities = TerminalCapabilities.Ansi | TerminalCapabilities.ShellIntegrationMarks;
+		var emitter = ShellIntegrationMarkEmitter.Create(
+			new TerminalIntegrationOptions { ShellIntegration = ShellIntegrationMode.Auto },
+			new OutputOptions());
+
+		await RunFullLifecycleAsync(emitter);
+
+		harness.RawOutput.Should().Contain("]133;A");
+		harness.RawOutput.Should().Contain("]133;D;0");
+	}
+
+	[TestMethod]
 	[Description("A hosted client advertising ShellIntegrationMarks after the session started (Telnet TTYPE, control messages) gets marks from the next prompt cycle: enablement is re-evaluated per cycle, not frozen at session start.")]
 	public async Task When_HostedSessionAdvertisesMarksMidSession_Then_MarksAppearOnNextPromptCycle()
 	{

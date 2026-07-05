@@ -221,6 +221,21 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
+	[Description("A protocol-passthrough invocation that fails validation (unknown option) never streams a payload: the failure keeps its command-end mark and exit code so terminals decorate it as failed.")]
+	public void When_PassthroughCommandFailsValidation_Then_CommandEndReportsFailure()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var sut = CreateMarkedApp();
+		sut.Map("serve", () => "protocol-payload").AsProtocolPassthrough();
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "serve --bogus 42\rexit\r");
+
+		raw.Should().NotContain("protocol-payload");
+		raw.Should().Contain("]133;D;1");
+	}
+
+	[TestMethod]
 	[Description("Requesting --help on a protocol-passthrough route only renders help, so the normal lifecycle applies: the help cycle gets output-start and a successful command-end mark.")]
 	public void When_PassthroughRouteRequestsHelp_Then_LifecycleMarksApplyNormally()
 	{

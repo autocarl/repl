@@ -180,7 +180,7 @@ internal sealed class ShellIntegrationMarkEmitter
 		// protocol streams, non-ANSI writers, or redirected local output.
 		if (options is null
 			|| ReplSessionIO.IsProtocolPassthrough
-			|| !outputOptions.IsAnsiEnabled()
+			|| !IsAnsiCapableForMarks(outputOptions)
 			|| (Console.IsOutputRedirected && !ReplSessionIO.IsSessionActive))
 		{
 			return false;
@@ -200,6 +200,23 @@ internal sealed class ShellIntegrationMarkEmitter
 
 	private static bool SessionAdvertisesShellIntegration() =>
 		ReplSessionIO.TerminalCapabilities.HasFlag(TerminalCapabilities.ShellIntegrationMarks);
+
+	// A hosted client can advertise ANSI purely through capability flags (identity
+	// inference, control messages, TerminalSessionOverrides) without the AnsiSupport
+	// override; honor that instead of IsAnsiEnabled's fallback to the server console's
+	// redirection state. Explicit opt-outs (AnsiSupport=false, AnsiMode.Never) still win.
+	private static bool IsAnsiCapableForMarks(OutputOptions outputOptions)
+	{
+		if (outputOptions.IsAnsiEnabled())
+		{
+			return true;
+		}
+
+		return ReplSessionIO.IsSessionActive
+			&& ReplSessionIO.AnsiSupport is null
+			&& outputOptions.AnsiMode != AnsiMode.Never
+			&& ReplSessionIO.TerminalCapabilities.HasFlag(TerminalCapabilities.Ansi);
+	}
 
 	// Same session-boundary rule as ResolveEnabled: the 633 dialect is chosen from the
 	// client-reported identity for hosted sessions, from the environment locally.

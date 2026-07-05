@@ -241,20 +241,24 @@ internal sealed class InteractiveSession(CoreReplApp app)
 					inputTokens, scopeTokens, serviceProvider, cancelHandler, cancellationToken)
 				.ConfigureAwait(false);
 		}
-		catch when (!isProtocolPassthrough)
+		catch
 		{
 			// Close the lifecycle before the exception propagates so the terminal
-			// never keeps an unterminated command segment.
+			// never keeps an unterminated command segment. A throwing passthrough
+			// command never completed a payload, so the mark is safe there too.
 			await marks.WriteCommandEndAsync(exitCode: 1).ConfigureAwait(false);
 			throw;
 		}
 
-		if (isProtocolPassthrough)
+		if (isProtocolPassthrough && exitCode == 0)
 		{
 			marks.AbandonCycle();
 		}
 		else
 		{
+			// A failed passthrough invocation (validation error, unsupported host)
+			// only rendered an error and never streamed a payload: keep its failure
+			// decoration and command boundary.
 			await marks.WriteCommandEndAsync(exitCode).ConfigureAwait(false);
 		}
 
