@@ -49,6 +49,17 @@ Regardless of mode, marks are never written when:
 - ANSI output is disabled (`NO_COLOR`, `TERM=dumb`, explicit `AnsiMode.Never`, ...);
 - a command is streaming raw protocol bytes (protocol passthrough, including MCP stdio).
 
+## Protocol-passthrough commands
+
+A command marked `.AsProtocolPassthrough()` turns the output stream into a raw protocol channel (MCP stdio, a completion payload, a file transfer). No mark may sit inside that stream. Because the prompt marks `A` and `B` are written *around the prompt* — before the committed line is known — they still precede such a command; but once the input resolves to a passthrough route, no `E`, `C`, or `D` is emitted, and the cycle is abandoned. The next prompt's `A` implicitly closes the abandoned segment on the terminal side. This holds whatever the command's exit code: a passthrough handler may emit bytes and then fail, so an exit code can never prove the payload never started.
+
+An input that only *looks* like it targets a passthrough route but does not actually stream a payload keeps the normal lifecycle: an ambient command sharing the route's token (for example `help`, `history`, or a custom ambient), or `<route> --help` (which only renders help), all get `C` and `D` as usual.
+
+## Disabling marks
+
+- **Per app**: `options.ShellIntegration = ShellIntegrationMode.Never` (or simply never calling `UseTerminalIntegration`).
+- **Per run, by the end user**: `NO_COLOR=1` or `TERM=dumb` disables marks — but as collateral of disabling all ANSI styling, since marks ride the same ANSI gate. There is no mark-only runtime switch; if a terminal is misdetected and shows raw `]133;…`, `NO_COLOR` is the escape hatch.
+
 ## Backend selection
 
 The generic backend is OSC 133, understood by Windows Terminal, WezTerm, iTerm2, Ghostty, and others. When the VS Code integrated terminal is detected — `TERM_PROGRAM=vscode` for the local console, or a `vscode` terminal identity reported by the hosted session's client — Repl switches to the OSC 633 dialect and additionally reports the command line with `E`. Backend selection follows the same session boundary as `Auto`: the server's environment never picks the dialect for a remote client.
@@ -58,6 +69,18 @@ ConEmu is deliberately excluded from `Auto`: it renders OSC 9;4 progress but not
 ## Hosted sessions
 
 Hosted sessions (WebSocket, Telnet) receive marks when their reported terminal identity infers `TerminalCapabilities.ShellIntegrationMarks` (for example `Windows Terminal`, `wezterm`, `vscode`) or when the host sets the flag explicitly through `TerminalSessionOverrides`. See [Terminal Metadata](terminal-metadata.md).
+
+## Troubleshooting
+
+The enablement decision is a black box at runtime (it emits no diagnostics). When marks misbehave, walk the gate chain in order — the first gate that fails explains the symptom:
+
+| Symptom | Gate to check |
+|---|---|
+| Raw `]133;…` / `]633;…` text on screen | The terminal does not render marks. Set `ShellIntegrationMode.Never`, or `NO_COLOR=1` as an end-user escape hatch. |
+| No marks at all (expected some) | `ShellIntegration` mode (`Never`?); then `UseTerminalIntegration` actually called?; then the ANSI gate (`NO_COLOR`, `TERM=dumb`, `AnsiMode.Never`, redirected output with no hosted session). |
+| No marks under Auto specifically | Detection: locally `WT_SESSION`/`TERM_PROGRAM`; under tmux/screen Auto stays off; for a hosted client, the advertised `ShellIntegrationMarks` capability. |
+| Command navigation works but wrong dialect | Backend selection: OSC 633 only when VS Code is detected (`TERM_PROGRAM=vscode` locally or a `vscode` hosted identity), else OSC 133. |
+| Marks missing only around one command | That command is protocol passthrough (see above) — this is intended. |
 
 ## See Also
 
