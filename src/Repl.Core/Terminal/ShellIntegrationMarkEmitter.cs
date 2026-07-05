@@ -22,14 +22,21 @@ internal sealed class ShellIntegrationMarkEmitter
 
 	private const string Bell = "\x07";
 
+	// The A/B/C/D-no-code marks are constant per backend; precomputed so the per-prompt
+	// path allocates no throw-away interpolated strings (only D-with-exit-code does).
+	private static readonly MarkSet Osc133 = new("\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07", "\x1b]133;D\x07");
+	private static readonly MarkSet Osc633 = new("\x1b]633;A\x07", "\x1b]633;B\x07", "\x1b]633;C\x07", "\x1b]633;D\x07");
+
 	private static readonly SearchValues<char> EscapedCommandLineChars = CreateEscapedCommandLineChars();
 
 	private readonly TerminalIntegrationOptions? _options;
 	private readonly OutputOptions _outputOptions;
 	private bool _enabled;
 	private bool _isVsCodeBackend;
-	private string _oscCode = "133";
+	private MarkSet _marks = Osc133;
 	private Phase _phase;
+
+	private readonly record struct MarkSet(string PromptStart, string InputStart, string OutputStart, string CommandEndNoCode);
 
 	private ShellIntegrationMarkEmitter(TerminalIntegrationOptions? options, OutputOptions outputOptions)
 	{
@@ -58,7 +65,7 @@ internal sealed class ShellIntegrationMarkEmitter
 		}
 
 		_phase = Phase.Prompt;
-		await ReplSessionIO.Output.WriteAsync($"\x1b]{_oscCode};A{Bell}").ConfigureAwait(false);
+		await ReplSessionIO.Output.WriteAsync(_marks.PromptStart).ConfigureAwait(false);
 	}
 
 	/// <summary>Prompt end / input start (mark B): call after the prompt text, before reading the line.</summary>
@@ -70,7 +77,7 @@ internal sealed class ShellIntegrationMarkEmitter
 		}
 
 		_phase = Phase.Input;
-		await ReplSessionIO.Output.WriteAsync($"\x1b]{_oscCode};B{Bell}").ConfigureAwait(false);
+		await ReplSessionIO.Output.WriteAsync(_marks.InputStart).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -97,7 +104,7 @@ internal sealed class ShellIntegrationMarkEmitter
 		}
 
 		_phase = Phase.Executing;
-		await ReplSessionIO.Output.WriteAsync($"\x1b]{_oscCode};C{Bell}").ConfigureAwait(false);
+		await ReplSessionIO.Output.WriteAsync(_marks.OutputStart).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -120,10 +127,10 @@ internal sealed class ShellIntegrationMarkEmitter
 		}
 
 		_phase = Phase.Idle;
-		var suffix = exitCode is { } code
-			? $";{code.ToString(CultureInfo.InvariantCulture)}"
-			: string.Empty;
-		await ReplSessionIO.Output.WriteAsync($"\x1b]{_oscCode};D{suffix}{Bell}").ConfigureAwait(false);
+		var mark = exitCode is { } code
+			? $"\x1b]{(_isVsCodeBackend ? "633" : "133")};D;{code.ToString(CultureInfo.InvariantCulture)}{Bell}"
+			: _marks.CommandEndNoCode;
+		await ReplSessionIO.Output.WriteAsync(mark).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -178,7 +185,7 @@ internal sealed class ShellIntegrationMarkEmitter
 	{
 		_enabled = ResolveEnabled(_options, _outputOptions);
 		_isVsCodeBackend = _enabled && IsVsCodeBackend();
-		_oscCode = _isVsCodeBackend ? "633" : "133";
+		_marks = _isVsCodeBackend ? Osc633 : Osc133;
 	}
 
 	private static bool ResolveEnabled(TerminalIntegrationOptions? options, OutputOptions outputOptions)

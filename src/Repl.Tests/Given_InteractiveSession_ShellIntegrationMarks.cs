@@ -211,8 +211,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 
 		var raw = RunInteractiveSession(harness, sut, "serve --json\rexit\r");
 
-		CountOccurrences(raw, "]133;C").Should().Be(1, because: "only the exit cycle may open an output region");
-		CountOccurrences(raw, "]133;D").Should().Be(1, because: "no command-end mark may trail the protocol payload");
+		TerminalMarks.Count(raw, "]133;C").Should().Be(1, because: "only the exit cycle may open an output region");
+		TerminalMarks.Count(raw, "]133;D").Should().Be(1, because: "no command-end mark may trail the protocol payload");
 	}
 
 	[TestMethod]
@@ -227,8 +227,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "serve\rexit\r");
 
 		raw.Should().Contain("protocol-payload");
-		CountOccurrences(raw, "]133;C").Should().Be(1, because: "only the exit cycle may open an output region");
-		CountOccurrences(raw, "]133;D").Should().Be(1, because: "no command-end mark may trail the protocol payload");
+		TerminalMarks.Count(raw, "]133;C").Should().Be(1, because: "only the exit cycle may open an output region");
+		TerminalMarks.Count(raw, "]133;D").Should().Be(1, because: "no command-end mark may trail the protocol payload");
 		raw.IndexOf("]133;C", StringComparison.Ordinal)
 			.Should().BeGreaterThan(
 				raw.IndexOf("protocol-payload", StringComparison.Ordinal),
@@ -247,8 +247,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "serve --bogus 42\rexit\r");
 
 		raw.Should().NotContain("protocol-payload");
-		CountOccurrences(raw, "]133;C").Should().Be(1, because: "only the exit cycle may open an output region");
-		CountOccurrences(raw, "]133;D").Should().Be(1, because: "only the exit cycle may report a command end");
+		TerminalMarks.Count(raw, "]133;C").Should().Be(1, because: "only the exit cycle may open an output region");
+		TerminalMarks.Count(raw, "]133;D").Should().Be(1, because: "only the exit cycle may report a command end");
 	}
 
 	[TestMethod]
@@ -263,7 +263,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "serve\rexit\r");
 
 		raw.Should().NotContain("]133;D;7");
-		CountOccurrences(raw, "]133;D").Should().Be(1, because: "only the exit cycle may report a command end");
+		TerminalMarks.Count(raw, "]133;D").Should().Be(1, because: "only the exit cycle may report a command end");
 	}
 
 	[TestMethod]
@@ -278,8 +278,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "history\rexit\r");
 
 		raw.Should().NotContain("protocol-payload", because: "the ambient history command wins over the route");
-		CountOccurrences(raw, "]133;C").Should().Be(2, because: "the ambient command's output is normal terminal output");
-		CountOccurrences(raw, "]133;D;0").Should().Be(2);
+		TerminalMarks.Count(raw, "]133;C").Should().Be(2, because: "the ambient command's output is normal terminal output");
+		TerminalMarks.Count(raw, "]133;D;0").Should().Be(2);
 	}
 
 	[TestMethod]
@@ -293,8 +293,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 
 		var raw = RunInteractiveSession(harness, sut, "serve --help\rexit\r");
 
-		CountOccurrences(raw, "]133;C").Should().Be(2, because: "help rendering is normal terminal output, not a protocol payload");
-		CountOccurrences(raw, "]133;D;0").Should().Be(2);
+		TerminalMarks.Count(raw, "]133;C").Should().Be(2, because: "help rendering is normal terminal output, not a protocol payload");
+		TerminalMarks.Count(raw, "]133;D;0").Should().Be(2);
 	}
 
 	[TestMethod]
@@ -348,7 +348,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "work\rexit\r");
 
 		raw.Should().Contain("working on it");
-		CountOccurrences(raw, "]133;A").Should().Be(2, because: "only the work and exit prompt cycles may open a lifecycle");
+		TerminalMarks.Count(raw, "]133;A").Should().Be(2, because: "only the work and exit prompt cycles may open a lifecycle");
 	}
 
 	[TestMethod]
@@ -455,19 +455,6 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		char.IsAsciiLetter(ch)
 			? ConsoleKey.A + (char.ToUpperInvariant(ch) - 'A')
 			: ConsoleKey.Spacebar;
-
-	private static int CountOccurrences(string text, string needle)
-	{
-		var count = 0;
-		var index = 0;
-		while ((index = text.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
-		{
-			count++;
-			index += needle.Length;
-		}
-
-		return count;
-	}
 
 	// Delegates to an inner writer but throws when asked to write a fragment (e.g. the
 	// command-end mark), simulating a transport torn down mid-command.

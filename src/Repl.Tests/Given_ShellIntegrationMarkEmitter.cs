@@ -44,6 +44,61 @@ public sealed class Given_ShellIntegrationMarkEmitter
 	}
 
 	[TestMethod]
+	[Description("Marks use the exact OSC framing — ESC introducer and BEL terminator — so a dropped ESC or a wrong terminator (ST vs BEL) is caught, not just the ]133;X substring.")]
+	public async Task When_MarksAreEmitted_Then_FullOscFramingIsExact()
+	{
+		var esc = ((char)0x1b).ToString();
+		var bel = ((char)0x07).ToString();
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		using var session = ReplSessionIO.SetSession(
+			output: harness.Writer,
+			input: TextReader.Null,
+			ansiMode: AnsiMode.Always);
+		var emitter = CreateEmitter(ShellIntegrationMode.Always);
+
+		await emitter.WritePromptStartAsync();
+		await emitter.WriteInputStartAsync();
+		await emitter.WriteOutputStartAsync();
+		await emitter.WriteCommandEndAsync(exitCode: 0);
+
+		var raw = harness.RawOutput;
+		raw.Should().Contain(esc + "]133;A" + bel);
+		raw.Should().Contain(esc + "]133;B" + bel);
+		raw.Should().Contain(esc + "]133;C" + bel);
+		raw.Should().Contain(esc + "]133;D;0" + bel);
+	}
+
+	[TestMethod]
+	[Description("The VS Code backend uses the same exact ESC/BEL framing on the 633 dialect, including the command-line report and the exit-code-less command end.")]
+	public async Task When_VsCodeBackend_Then_Full633FramingIsExact()
+	{
+		var esc = ((char)0x1b).ToString();
+		var bel = ((char)0x07).ToString();
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		using var session = ReplSessionIO.SetSession(
+			output: harness.Writer,
+			input: TextReader.Null,
+			ansiMode: AnsiMode.Always);
+		ReplSessionIO.TerminalIdentity = "vscode";
+		var emitter = CreateEmitter(ShellIntegrationMode.Auto);
+
+		await emitter.WritePromptStartAsync();
+		await emitter.WriteInputStartAsync();
+		await emitter.WriteCommandLineAsync("ping");
+		await emitter.WriteOutputStartAsync();
+		await emitter.WriteCommandEndAsync(exitCode: null);
+
+		var raw = harness.RawOutput;
+		raw.Should().Contain(esc + "]633;A" + bel);
+		raw.Should().Contain(esc + "]633;B" + bel);
+		raw.Should().Contain(esc + "]633;E;ping" + bel);
+		raw.Should().Contain(esc + "]633;C" + bel);
+		raw.Should().Contain(esc + "]633;D" + bel);
+	}
+
+	[TestMethod]
 	[Description("Never mode suppresses every mark even on a capable ANSI session.")]
 	public async Task When_ModeNever_Then_NoMarksAreEmitted()
 	{
@@ -367,7 +422,7 @@ public sealed class Given_ShellIntegrationMarkEmitter
 		await RunFullLifecycleAsync(emitter);
 		await emitter.WriteCommandEndAsync(exitCode: 1);
 
-		CountOccurrences(harness.RawOutput, "]133;D").Should().Be(1);
+		TerminalMarks.Count(harness.RawOutput, "]133;D").Should().Be(1);
 	}
 
 	[TestMethod]
@@ -407,18 +462,5 @@ public sealed class Given_ShellIntegrationMarkEmitter
 		await emitter.WriteInputStartAsync().ConfigureAwait(false);
 		await emitter.WriteOutputStartAsync().ConfigureAwait(false);
 		await emitter.WriteCommandEndAsync(exitCode: 0).ConfigureAwait(false);
-	}
-
-	private static int CountOccurrences(string text, string needle)
-	{
-		var count = 0;
-		var index = 0;
-		while ((index = text.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
-		{
-			count++;
-			index += needle.Length;
-		}
-
-		return count;
 	}
 }

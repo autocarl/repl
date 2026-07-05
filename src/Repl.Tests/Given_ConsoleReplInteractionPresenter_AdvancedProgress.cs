@@ -123,29 +123,4 @@ public sealed class Given_ConsoleReplInteractionPresenter_AdvancedProgress
 
 		harness.RawOutput.Should().Contain("\u001b]9;4;1;42\u0007");
 	}
-
-	private sealed class EnvironmentVariableScope : IDisposable
-	{
-		private readonly (string Name, string? PreviousValue)[] _previousValues;
-
-		public EnvironmentVariableScope(params (string Name, string? Value)[] variables)
-		{
-			_previousValues = variables
-				.Select(static variable => (variable.Name, Environment.GetEnvironmentVariable(variable.Name)))
-				.ToArray();
-
-			foreach (var (name, value) in variables)
-			{
-				Environment.SetEnvironmentVariable(name, value);
-			}
-		}
-
-		public void Dispose()
-		{
-			foreach (var (name, previousValue) in _previousValues)
-			{
-				Environment.SetEnvironmentVariable(name, previousValue);
-			}
-		}
-	}
 }
