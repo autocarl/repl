@@ -279,6 +279,16 @@ public sealed class Given_ShellIntegrationMarkEmitter
 			.Should().Be("single-word-stays-intact");
 		ShellIntegrationMarkEmitter.EscapeCommandLine("tab\there")
 			.Should().Be(@"tab\x09here");
+
+		// DEL (0x7f) and C1 controls (0x80-0x9f) must be escaped too: an unescaped
+		// ST (U+009C) / OSC (U+009D) / CSI (U+009B) in pasted text would break out of
+		// the 633;E payload and forge terminal sequences on xterm.js/VTE.
+		ShellIntegrationMarkEmitter.EscapeCommandLine("del" + (char)0x7f + "here")
+			.Should().Be(@"del\x7fhere");
+		ShellIntegrationMarkEmitter.EscapeCommandLine("st" + (char)0x9c + "osc" + (char)0x9d + "csi" + (char)0x9b)
+			.Should().Be(@"st\x9cosc\x9dcsi\x9b");
+		ShellIntegrationMarkEmitter.EscapeCommandLine("high" + (char)0xe9 + "accent-stays")
+			.Should().Be("high" + (char)0xe9 + "accent-stays");
 	}
 
 	[TestMethod]

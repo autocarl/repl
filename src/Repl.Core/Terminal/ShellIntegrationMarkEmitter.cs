@@ -128,8 +128,10 @@ internal sealed class ShellIntegrationMarkEmitter
 
 	/// <summary>
 	/// Escapes a command line for the OSC 633;E payload per the VS Code shell-integration
-	/// contract: <c>\</c> becomes <c>\\</c>, <c>;</c> becomes <c>\x3b</c>, and characters
-	/// at or below 0x20 (space and control characters) become <c>\xHH</c> (lowercase hex).
+	/// contract: <c>\</c> becomes <c>\\</c>, <c>;</c> becomes <c>\x3b</c>, and every byte
+	/// that could break out of the OSC string — space and C0 controls (&lt;= 0x20), DEL
+	/// (0x7f), and the C1 controls (0x80–0x9f, which include the 8-bit ST/OSC/CSI
+	/// introducers xterm.js and VTE act on) — becomes <c>\xHH</c> (lowercase hex).
 	/// </summary>
 	internal static string EscapeCommandLine(string commandLine)
 	{
@@ -152,7 +154,7 @@ internal sealed class ShellIntegrationMarkEmitter
 			{
 				builder.Append(@"\x3b");
 			}
-			else if (ch <= ' ')
+			else if (IsForbiddenControl(ch))
 			{
 				builder.Append(@"\x").Append(hexDigits[(ch >> 4) & 0xF]).Append(hexDigits[ch & 0xF]);
 			}
@@ -164,6 +166,11 @@ internal sealed class ShellIntegrationMarkEmitter
 
 		return builder.ToString();
 	}
+
+	// Space + C0 controls, DEL, and C1 controls: all can terminate or forge the OSC
+	// string on terminals that decode 8-bit control codes. Only reached for chars <= 0x9f
+	// (nothing above is in the SearchValues set), so the upper bound is implicit.
+	private static bool IsForbiddenControl(char ch) => ch <= ' ' || ch == '\x7f' || ch >= '\x80';
 
 	// Resolves enablement and backend for the cycle that is about to start. Cheap by
 	// design: environment variables are only consulted when no hosted session is active.
@@ -225,16 +232,26 @@ internal sealed class ShellIntegrationMarkEmitter
 			? ReplSessionIO.TerminalIdentity?.Contains("vscode", StringComparison.OrdinalIgnoreCase) is true
 			: TerminalEnvironmentClassifier.IsVsCodeTerminal();
 
-	// The escape set is backslash, semicolon, space, and every control character below
-	// 0x20; built programmatically to keep raw control bytes out of the source file.
+	// The escape set is backslash, semicolon, space + C0 controls (0x00–0x20), DEL (0x7f),
+	// and the C1 controls (0x80–0x9f); built programmatically to keep raw control bytes
+	// out of the source file. Chars above 0x9f are never in the set, so EscapeCommandLine's
+	// forbidden-control check needs no explicit upper bound.
 	private static SearchValues<char> CreateEscapedCommandLineChars()
 	{
-		Span<char> chars = stackalloc char[35];
+		// 2 punctuation + 33 (0x00–0x20) + 1 (DEL) + 32 (0x80–0x9f) = 68.
+		Span<char> chars = stackalloc char[68];
 		chars[0] = '\\';
 		chars[1] = ';';
-		for (var i = 0; i <= 32; i++)
+		var next = 2;
+		for (var i = 0; i <= 0x20; i++)
 		{
-			chars[i + 2] = (char)i;
+			chars[next++] = (char)i;
+		}
+
+		chars[next++] = '\x7f';
+		for (var i = 0x80; i <= 0x9f; i++)
+		{
+			chars[next++] = (char)i;
 		}
 
 		return SearchValues.Create(chars);
