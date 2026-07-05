@@ -241,24 +241,28 @@ internal sealed class InteractiveSession(CoreReplApp app)
 					inputTokens, scopeTokens, serviceProvider, cancelHandler, cancellationToken)
 				.ConfigureAwait(false);
 		}
+		catch when (isProtocolPassthrough)
+		{
+			marks.AbandonCycle();
+			throw;
+		}
 		catch
 		{
 			// Close the lifecycle before the exception propagates so the terminal
-			// never keeps an unterminated command segment. A throwing passthrough
-			// command never completed a payload, so the mark is safe there too.
+			// never keeps an unterminated command segment.
 			await marks.WriteCommandEndAsync(exitCode: 1).ConfigureAwait(false);
 			throw;
 		}
 
-		if (isProtocolPassthrough && exitCode == 0)
+		if (isProtocolPassthrough)
 		{
+			// Once a passthrough invocation has dispatched, an exit code cannot prove
+			// the payload never started (handlers may emit bytes and then fail), so
+			// no mark may trail it — whatever the outcome.
 			marks.AbandonCycle();
 		}
 		else
 		{
-			// A failed passthrough invocation (validation error, unsupported host)
-			// only rendered an error and never streamed a payload: keep its failure
-			// decoration and command boundary.
 			await marks.WriteCommandEndAsync(exitCode).ConfigureAwait(false);
 		}
 
@@ -271,6 +275,13 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	/// </summary>
 	private bool IsProtocolPassthroughInvocation(List<string> inputTokens, List<string> scopeTokens)
 	{
+		if (IsAmbientCommandInvocation(inputTokens))
+		{
+			// Ambient commands win over routes sharing the same token and produce
+			// normal terminal output, never a protocol payload.
+			return false;
+		}
+
 		var invocationTokens = scopeTokens.Concat(inputTokens).ToArray();
 		var globalOptions = GlobalOptionParser.Parse(invocationTokens, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing);
 		if (globalOptions.HelpRequested)
@@ -287,6 +298,27 @@ internal sealed class InteractiveSession(CoreReplApp app)
 
 		var match = app.Resolve(prefixResolution.Tokens);
 		return match?.Route.Command.IsProtocolPassthrough == true;
+	}
+
+	/// <summary>
+	/// Token-only mirror of the dispatch table in <see cref="TryHandleAmbientCommandAsync"/>:
+	/// keep the two in sync when adding an ambient command.
+	/// </summary>
+	private bool IsAmbientCommandInvocation(List<string> inputTokens)
+	{
+		if (inputTokens.Count == 0)
+		{
+			return false;
+		}
+
+		var token = inputTokens[0];
+		return CoreReplApp.IsHelpToken(token)
+			|| (inputTokens.Count == 1 && string.Equals(token, "..", StringComparison.Ordinal))
+			|| (inputTokens.Count == 1 && string.Equals(token, "exit", StringComparison.OrdinalIgnoreCase))
+			|| string.Equals(token, "complete", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(token, "autocomplete", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(token, "history", StringComparison.OrdinalIgnoreCase)
+			|| app.OptionsSnapshot.AmbientCommands.CustomCommands.ContainsKey(token);
 	}
 
 	private static void SetCommandTokenOnChannel(IServiceProvider serviceProvider, CancellationToken ct)

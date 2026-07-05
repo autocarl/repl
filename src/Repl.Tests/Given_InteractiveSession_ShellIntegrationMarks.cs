@@ -221,8 +221,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("A protocol-passthrough invocation that fails validation (unknown option) never streams a payload: the failure keeps its command-end mark and exit code so terminals decorate it as failed.")]
-	public void When_PassthroughCommandFailsValidation_Then_CommandEndReportsFailure()
+	[Description("Once a protocol-passthrough invocation dispatches, no command-end mark may be emitted even on failure: an error exit cannot prove the payload never started, so the cycle is abandoned silently.")]
+	public void When_PassthroughCommandFailsValidation_Then_CycleIsAbandonedWithoutMarks()
 	{
 		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
 		var sut = CreateMarkedApp();
@@ -232,7 +232,39 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "serve --bogus 42\rexit\r");
 
 		raw.Should().NotContain("protocol-payload");
-		raw.Should().Contain("]133;D;1");
+		CountOccurrences(raw, "]133;C").Should().Be(1, because: "only the exit cycle may open an output region");
+		CountOccurrences(raw, "]133;D").Should().Be(1, because: "only the exit cycle may report a command end");
+	}
+
+	[TestMethod]
+	[Description("A passthrough handler that emits bytes and then returns a nonzero exit gets no trailing command-end mark: OSC bytes must never follow a protocol payload, whatever the exit code.")]
+	public void When_PassthroughHandlerExitsNonZero_Then_NoMarkTrailsThePayload()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var sut = CreateMarkedApp();
+		sut.Map("serve", () => Results.Exit(7)).AsProtocolPassthrough();
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "serve\rexit\r");
+
+		raw.Should().NotContain("]133;D;7");
+		CountOccurrences(raw, "]133;D").Should().Be(1, because: "only the exit cycle may report a command end");
+	}
+
+	[TestMethod]
+	[Description("An ambient command that shares its token with a protocol-passthrough route is handled ambient-first and keeps the normal lifecycle: output-start and a command-end mark wrap its terminal output.")]
+	public void When_AmbientCommandSharesTokenWithPassthroughRoute_Then_AmbientLifecycleApplies()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var sut = CreateMarkedApp();
+		sut.Map("history", () => "protocol-payload").AsProtocolPassthrough();
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "history\rexit\r");
+
+		raw.Should().NotContain("protocol-payload", because: "the ambient history command wins over the route");
+		CountOccurrences(raw, "]133;C").Should().Be(2, because: "the ambient command's output is normal terminal output");
+		CountOccurrences(raw, "]133;D;0").Should().Be(2);
 	}
 
 	[TestMethod]
