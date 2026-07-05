@@ -221,6 +221,21 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
+	[Description("Requesting --help on a protocol-passthrough route only renders help, so the normal lifecycle applies: the help cycle gets output-start and a successful command-end mark.")]
+	public void When_PassthroughRouteRequestsHelp_Then_LifecycleMarksApplyNormally()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var sut = CreateMarkedApp();
+		sut.Map("serve", () => "protocol-payload").AsProtocolPassthrough();
+		var harness = new TerminalHarness(cols: 80, rows: 24);
+
+		var raw = RunInteractiveSession(harness, sut, "serve --help\rexit\r");
+
+		CountOccurrences(raw, "]133;C").Should().Be(2, because: "help rendering is normal terminal output, not a protocol payload");
+		CountOccurrences(raw, "]133;D;0").Should().Be(2);
+	}
+
+	[TestMethod]
 	[Description("A dispatch that throws (history with a non-numeric --limit) still closes the lifecycle with a failed command-end mark so the terminal never keeps an unterminated command segment.")]
 	public void When_AmbientCommandThrows_Then_CommandEndStillReportsFailure()
 	{
@@ -308,7 +323,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 			{
 				_ = sut.Run([]);
 			}
-			catch when (swallowRunExceptions)
+			catch (InvalidOperationException) when (swallowRunExceptions)
 			{
 				// The test asserts on the marks emitted before the crash propagated.
 			}

@@ -268,15 +268,38 @@ public sealed class Given_ShellIntegrationMarkEmitter
 	}
 
 	[TestMethod]
-	[Description("The 633;E payload escapes backslashes, semicolons, and control characters per the VS Code shell-integration spec so the reported command line round-trips exactly.")]
+	[Description("The 633;E payload escapes backslashes, semicolons, spaces, and control characters per the VS Code shell-integration contract (0x20 and below) so multi-word command lines round-trip exactly.")]
 	public void When_CommandLineContainsBackslashSemicolonAndControlChars_Then_Osc633PayloadIsEscaped()
 	{
 		ShellIntegrationMarkEmitter.EscapeCommandLine(@"a\b;c" + "\n")
 			.Should().Be(@"a\\b\x3bc\x0a");
-		ShellIntegrationMarkEmitter.EscapeCommandLine("plain text stays intact")
-			.Should().Be("plain text stays intact");
+		ShellIntegrationMarkEmitter.EscapeCommandLine("git status")
+			.Should().Be(@"git\x20status");
+		ShellIntegrationMarkEmitter.EscapeCommandLine("single-word-stays-intact")
+			.Should().Be("single-word-stays-intact");
 		ShellIntegrationMarkEmitter.EscapeCommandLine("tab\there")
 			.Should().Be(@"tab\x09here");
+	}
+
+	[TestMethod]
+	[Description("A hosted client advertising ShellIntegrationMarks after the session started (Telnet TTYPE, control messages) gets marks from the next prompt cycle: enablement is re-evaluated per cycle, not frozen at session start.")]
+	public async Task When_HostedSessionAdvertisesMarksMidSession_Then_MarksAppearOnNextPromptCycle()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		using var session = ReplSessionIO.SetSession(
+			output: harness.Writer,
+			input: TextReader.Null,
+			ansiMode: AnsiMode.Always);
+		var emitter = CreateEmitter(ShellIntegrationMode.Auto);
+
+		await RunFullLifecycleAsync(emitter);
+		harness.RawOutput.Should().NotContain("]133;", because: "the client has not advertised marks yet");
+		ReplSessionIO.TerminalIdentity = "Windows Terminal";
+		await RunFullLifecycleAsync(emitter);
+
+		harness.RawOutput.Should().Contain("]133;A");
+		harness.RawOutput.Should().Contain("]133;D;0");
 	}
 
 	[TestMethod]

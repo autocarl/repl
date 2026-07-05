@@ -24,16 +24,17 @@ internal sealed class ShellIntegrationMarkEmitter
 
 	private static readonly SearchValues<char> EscapedCommandLineChars = CreateEscapedCommandLineChars();
 
-	private readonly bool _enabled;
-	private readonly bool _isVsCodeBackend;
-	private readonly string _oscCode;
+	private readonly TerminalIntegrationOptions? _options;
+	private readonly OutputOptions _outputOptions;
+	private bool _enabled;
+	private bool _isVsCodeBackend;
+	private string _oscCode = "133";
 	private Phase _phase;
 
-	private ShellIntegrationMarkEmitter(bool enabled, bool isVsCodeBackend)
+	private ShellIntegrationMarkEmitter(TerminalIntegrationOptions? options, OutputOptions outputOptions)
 	{
-		_enabled = enabled;
-		_isVsCodeBackend = isVsCodeBackend;
-		_oscCode = isVsCodeBackend ? "633" : "133";
+		_options = options;
+		_outputOptions = outputOptions;
 	}
 
 	public static ShellIntegrationMarkEmitter Create(
@@ -41,13 +42,16 @@ internal sealed class ShellIntegrationMarkEmitter
 		OutputOptions outputOptions)
 	{
 		ArgumentNullException.ThrowIfNull(outputOptions);
-		var enabled = ResolveEnabled(options, outputOptions);
-		return new ShellIntegrationMarkEmitter(enabled, enabled && IsVsCodeBackend());
+		return new ShellIntegrationMarkEmitter(options, outputOptions);
 	}
 
 	/// <summary>Prompt start (mark A): call before writing the prompt text.</summary>
 	public async ValueTask WritePromptStartAsync()
 	{
+		// Hosted clients can advertise capabilities mid-session (Telnet TTYPE,
+		// @@repl:* control messages), so enablement and backend are re-resolved at
+		// each prompt and frozen for the cycle to keep its marks consistent.
+		RefreshCycleConfiguration();
 		if (!_enabled)
 		{
 			return;
@@ -124,8 +128,8 @@ internal sealed class ShellIntegrationMarkEmitter
 
 	/// <summary>
 	/// Escapes a command line for the OSC 633;E payload per the VS Code shell-integration
-	/// spec: <c>\</c> becomes <c>\\</c>, <c>;</c> becomes <c>\x3b</c>, and control
-	/// characters below 0x20 become <c>\xHH</c> (lowercase hex).
+	/// contract: <c>\</c> becomes <c>\\</c>, <c>;</c> becomes <c>\x3b</c>, and characters
+	/// at or below 0x20 (space and control characters) become <c>\xHH</c> (lowercase hex).
 	/// </summary>
 	internal static string EscapeCommandLine(string commandLine)
 	{
@@ -148,7 +152,7 @@ internal sealed class ShellIntegrationMarkEmitter
 			{
 				builder.Append(@"\x3b");
 			}
-			else if (ch < ' ')
+			else if (ch <= ' ')
 			{
 				builder.Append(@"\x").Append(hexDigits[(ch >> 4) & 0xF]).Append(hexDigits[ch & 0xF]);
 			}
@@ -159,6 +163,15 @@ internal sealed class ShellIntegrationMarkEmitter
 		}
 
 		return builder.ToString();
+	}
+
+	// Resolves enablement and backend for the cycle that is about to start. Cheap by
+	// design: environment variables are only consulted when no hosted session is active.
+	private void RefreshCycleConfiguration()
+	{
+		_enabled = ResolveEnabled(_options, _outputOptions);
+		_isVsCodeBackend = _enabled && IsVsCodeBackend();
+		_oscCode = _isVsCodeBackend ? "633" : "133";
 	}
 
 	private static bool ResolveEnabled(TerminalIntegrationOptions? options, OutputOptions outputOptions)
@@ -195,14 +208,14 @@ internal sealed class ShellIntegrationMarkEmitter
 			? ReplSessionIO.TerminalIdentity?.Contains("vscode", StringComparison.OrdinalIgnoreCase) is true
 			: TerminalEnvironmentClassifier.IsVsCodeTerminal();
 
-	// The escape set is backslash, semicolon, and every control character below 0x20;
-	// built programmatically to keep raw control bytes out of the source file.
+	// The escape set is backslash, semicolon, space, and every control character below
+	// 0x20; built programmatically to keep raw control bytes out of the source file.
 	private static SearchValues<char> CreateEscapedCommandLineChars()
 	{
-		Span<char> chars = stackalloc char[34];
+		Span<char> chars = stackalloc char[35];
 		chars[0] = '\\';
 		chars[1] = ';';
-		for (var i = 0; i < 32; i++)
+		for (var i = 0; i <= 32; i++)
 		{
 			chars[i + 2] = (char)i;
 		}

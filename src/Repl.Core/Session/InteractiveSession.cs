@@ -269,6 +269,12 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	{
 		var invocationTokens = scopeTokens.Concat(inputTokens).ToArray();
 		var globalOptions = GlobalOptionParser.Parse(invocationTokens, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing);
+		if (globalOptions.HelpRequested)
+		{
+			// `serve --help` renders help; the payload never starts.
+			return false;
+		}
+
 		var prefixResolution = app.ResolveUniquePrefixes(globalOptions.RemainingTokens);
 		if (prefixResolution.IsAmbiguous)
 		{
