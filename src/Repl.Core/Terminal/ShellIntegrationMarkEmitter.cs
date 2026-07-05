@@ -166,22 +166,27 @@ internal sealed class ShellIntegrationMarkEmitter
 			return false;
 		}
 
+		// Hosted sessions decide from what the remote client advertised, never from the
+		// server's own environment: WT_SESSION/TERM_PROGRAM describe the terminal the
+		// server runs in, not the WebSocket/Telnet client on the other end.
 		return options.ShellIntegration switch
 		{
 			ShellIntegrationMode.Always => true,
 			ShellIntegrationMode.Never => false,
-			_ => SessionAdvertisesShellIntegration() || TerminalEnvironmentClassifier.IsKnownShellIntegrationTerminal(),
+			_ when ReplSessionIO.IsSessionActive => SessionAdvertisesShellIntegration(),
+			_ => TerminalEnvironmentClassifier.IsKnownShellIntegrationTerminal(),
 		};
 	}
 
 	private static bool SessionAdvertisesShellIntegration() =>
-		ReplSessionIO.IsSessionActive
-		&& ReplSessionIO.TerminalCapabilities.HasFlag(TerminalCapabilities.ShellIntegrationMarks);
+		ReplSessionIO.TerminalCapabilities.HasFlag(TerminalCapabilities.ShellIntegrationMarks);
 
+	// Same session-boundary rule as ResolveEnabled: the 633 dialect is chosen from the
+	// client-reported identity for hosted sessions, from the environment locally.
 	private static bool IsVsCodeBackend() =>
-		TerminalEnvironmentClassifier.IsVsCodeTerminal()
-		|| (ReplSessionIO.IsSessionActive
-			&& ReplSessionIO.TerminalIdentity?.Contains("vscode", StringComparison.OrdinalIgnoreCase) is true);
+		ReplSessionIO.IsSessionActive
+			? ReplSessionIO.TerminalIdentity?.Contains("vscode", StringComparison.OrdinalIgnoreCase) is true
+			: TerminalEnvironmentClassifier.IsVsCodeTerminal();
 
 	// The escape set is backslash, semicolon, and every control character below 0x20;
 	// built programmatically to keep raw control bytes out of the source file.

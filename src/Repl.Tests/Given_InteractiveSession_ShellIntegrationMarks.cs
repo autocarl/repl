@@ -152,20 +152,15 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("Under the VS Code integrated terminal the OSC 633 backend reports the committed command line with 633;E so command detection is independent of screen scraping.")]
+	[Description("A session reporting a VS Code terminal identity selects the OSC 633 backend, which reports the committed command line with 633;E so command detection is independent of screen scraping.")]
 	public void When_VsCodeTerminalIsDetected_Then_CommandLineIsReportedWithOsc633E()
 	{
-		using var env = new EnvironmentVariableScope(
-			("TMUX", null),
-			("TERM", null),
-			("WT_SESSION", null),
-			("ConEmuANSI", null),
-			("TERM_PROGRAM", "vscode"));
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
 		var sut = CreateMarkedApp(ShellIntegrationMode.Auto);
 		sut.Map("ping", () => "pong");
 		var harness = new TerminalHarness(cols: 80, rows: 12);
 
-		var raw = RunInteractiveSession(harness, sut, "ping\rexit\r");
+		var raw = RunInteractiveSession(harness, sut, "ping\rexit\r", terminalIdentity: "vscode");
 
 		var inputStart = raw.IndexOf("]633;B", StringComparison.Ordinal);
 		var commandLine = raw.IndexOf("]633;E;ping", StringComparison.Ordinal);
@@ -174,6 +169,21 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		commandLine.Should().BeGreaterThan(inputStart);
 		outputStart.Should().BeGreaterThan(commandLine);
 		raw.Should().NotContain("]133;");
+	}
+
+	[TestMethod]
+	[Description("A failed completion ambient command (complete without --target) reports exit code 1 in the command-end mark instead of decorating the failure as success.")]
+	public void When_CompleteAmbientCommandFails_Then_CommandEndReportsExitCodeOne()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var sut = CreateMarkedApp();
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "complete\rexit\r");
+
+		raw.Should().Contain("Error: complete requires --target");
+		raw.Should().Contain("]133;D;1");
 	}
 
 	[TestMethod]
@@ -225,7 +235,11 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		return sut;
 	}
 
-	private static string RunInteractiveSession(TerminalHarness harness, ReplApp sut, string typedInput)
+	private static string RunInteractiveSession(
+		TerminalHarness harness,
+		ReplApp sut,
+		string typedInput,
+		string? terminalIdentity = null)
 	{
 		var keyReader = new FakeKeyReader(typedInput.Select(ToKeyInfo).ToArray());
 		var previousReader = ReplSessionIO.KeyReader;
@@ -236,6 +250,10 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 			ReplSessionIO.WindowSize = (harness.Cols, harness.Rows);
 			ReplSessionIO.AnsiSupport = true;
 			ReplSessionIO.TerminalCapabilities = TerminalCapabilities.Ansi | TerminalCapabilities.VtInput;
+			if (terminalIdentity is not null)
+			{
+				ReplSessionIO.TerminalIdentity = terminalIdentity;
+			}
 
 			_ = sut.Run([]);
 			return harness.RawOutput;

@@ -39,7 +39,7 @@ CLI one-shot mode emits no marks: Repl does not own the surrounding shell prompt
 
 `ShellIntegrationMode` mirrors the existing `AdvancedProgressMode` semantics:
 
-- `Auto` (default) — emit when the terminal is known to render marks: the hosted session advertises `TerminalCapabilities.ShellIntegrationMarks`, or the local environment identifies Windows Terminal (`WT_SESSION`), VS Code (`TERM_PROGRAM=vscode`), or WezTerm (`TERM_PROGRAM=WezTerm`). Multiplexers (tmux, GNU screen) stay off: mark positioning is unreliable through panes.
+- `Auto` (default) — emit when the terminal is known to render marks. For a hosted session, only what the remote client advertised counts: `TerminalCapabilities.ShellIntegrationMarks` (usually inferred from its reported terminal identity). For the local console, the environment identifies Windows Terminal (`WT_SESSION`), VS Code (`TERM_PROGRAM=vscode`), or WezTerm (`TERM_PROGRAM=WezTerm`); multiplexers (tmux, GNU screen) stay off because mark positioning is unreliable through panes. The server's own environment never enables marks for remote clients.
 - `Always` — emit whenever the structural gates allow it (see below). Useful for terminals that render marks but are not auto-detected, such as iTerm2 reached over SSH.
 - `Never` — never emit.
 
@@ -51,7 +51,7 @@ Regardless of mode, marks are never written when:
 
 ## Backend selection
 
-The generic backend is OSC 133, understood by Windows Terminal, WezTerm, iTerm2, Ghostty, and others. When the VS Code integrated terminal is detected — `TERM_PROGRAM=vscode` locally, or a hosted session reporting a `vscode` terminal identity — Repl switches to the OSC 633 dialect and additionally reports the command line with `E`.
+The generic backend is OSC 133, understood by Windows Terminal, WezTerm, iTerm2, Ghostty, and others. When the VS Code integrated terminal is detected — `TERM_PROGRAM=vscode` for the local console, or a `vscode` terminal identity reported by the hosted session's client — Repl switches to the OSC 633 dialect and additionally reports the command line with `E`. Backend selection follows the same session boundary as `Auto`: the server's environment never picks the dialect for a remote client.
 
 ConEmu is deliberately excluded from `Auto`: it renders OSC 9;4 progress but not FinalTerm marks.
 

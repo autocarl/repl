@@ -321,13 +321,13 @@ internal sealed class InteractiveSession(CoreReplApp app)
 
 		if (string.Equals(token, "complete", StringComparison.OrdinalIgnoreCase))
 		{
-			_ = await HandleCompletionAmbientCommandAsync(
+			var completionSucceeded = await HandleCompletionAmbientCommandAsync(
 					inputTokens.Skip(1).ToArray(),
 					scopeTokens,
 					serviceProvider,
 					cancellationToken)
 				.ConfigureAwait(false);
-			return AmbientCommandOutcome.Handled;
+			return completionSucceeded ? AmbientCommandOutcome.Handled : AmbientCommandOutcome.HandledError;
 		}
 
 		if (string.Equals(token, "autocomplete", StringComparison.OrdinalIgnoreCase))

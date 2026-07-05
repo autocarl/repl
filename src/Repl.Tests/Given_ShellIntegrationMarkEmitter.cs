@@ -67,15 +67,15 @@ public sealed class Given_ShellIntegrationMarkEmitter
 	}
 
 	[TestMethod]
-	[Description("Auto mode emits OSC 133 marks when Windows Terminal is detected through WT_SESSION.")]
-	public async Task When_ModeAuto_AndWindowsTerminalDetected_Then_Osc133MarksAreEmitted()
+	[Description("Auto mode ignores the server process environment while a hosted session is active: a client that never advertised marks gets none even when the server runs inside Windows Terminal or VS Code.")]
+	public async Task When_ModeAuto_AndHostedSessionLacksCapability_Then_ServerEnvironmentDoesNotEnableMarks()
 	{
 		using var env = new EnvironmentVariableScope(
 			("TMUX", null),
 			("TERM", null),
 			("WT_SESSION", "test-session"),
 			("ConEmuANSI", null),
-			("TERM_PROGRAM", null));
+			("TERM_PROGRAM", "vscode"));
 		var harness = new TerminalHarness(cols: 80, rows: 12);
 		using var session = ReplSessionIO.SetSession(
 			output: harness.Writer,
@@ -85,14 +85,13 @@ public sealed class Given_ShellIntegrationMarkEmitter
 
 		await RunFullLifecycleAsync(emitter);
 
-		harness.RawOutput.Should().Contain("]133;A");
-		harness.RawOutput.Should().Contain("]133;D;0");
-		harness.RawOutput.Should().NotContain("]633;");
+		harness.RawOutput.Should().NotContain("]133;");
+		harness.RawOutput.Should().NotContain("]633;");
 	}
 
 	[TestMethod]
-	[Description("Auto mode selects the OSC 633 backend under VS Code (TERM_PROGRAM=vscode) and reports the command line with 633;E between input start and output start.")]
-	public async Task When_ModeAuto_AndVsCodeDetected_Then_Osc633MarksAreEmittedIncludingCommandLine()
+	[Description("Backend selection ignores the server process environment for hosted sessions: a client advertising generic marks capability gets OSC 133 even when the server runs inside VS Code.")]
+	public async Task When_HostedSessionAdvertisesMarks_AndServerRunsInsideVsCode_Then_GenericBackendIsUsed()
 	{
 		using var env = new EnvironmentVariableScope(
 			("TMUX", null),
@@ -105,6 +104,26 @@ public sealed class Given_ShellIntegrationMarkEmitter
 			output: harness.Writer,
 			input: TextReader.Null,
 			ansiMode: AnsiMode.Always);
+		ReplSessionIO.TerminalIdentity = "Windows Terminal";
+		var emitter = CreateEmitter(ShellIntegrationMode.Auto);
+
+		await RunFullLifecycleAsync(emitter);
+
+		harness.RawOutput.Should().Contain("]133;A");
+		harness.RawOutput.Should().NotContain("]633;");
+	}
+
+	[TestMethod]
+	[Description("A session reporting a VS Code identity selects the OSC 633 backend and reports the command line with 633;E between input start and output start.")]
+	public async Task When_ModeAuto_AndVsCodeDetected_Then_Osc633MarksAreEmittedIncludingCommandLine()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		using var session = ReplSessionIO.SetSession(
+			output: harness.Writer,
+			input: TextReader.Null,
+			ansiMode: AnsiMode.Always);
+		ReplSessionIO.TerminalIdentity = "vscode";
 		var emitter = CreateEmitter(ShellIntegrationMode.Auto);
 
 		await emitter.WritePromptStartAsync();
