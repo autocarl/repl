@@ -201,6 +201,21 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
+	[Description("A passthrough route invoked with a leading global option (--json) is still classified as passthrough by the single committed-input resolution, so no output marks wrap its payload.")]
+	public void When_PassthroughCommandHasGlobalOption_Then_NoOutputMarksWrapThePayload()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var sut = CreateMarkedApp();
+		sut.Map("serve", () => "protocol-payload").AsProtocolPassthrough();
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "serve --json\rexit\r");
+
+		CountOccurrences(raw, "]133;C").Should().Be(1, because: "only the exit cycle may open an output region");
+		CountOccurrences(raw, "]133;D").Should().Be(1, because: "no command-end mark may trail the protocol payload");
+	}
+
+	[TestMethod]
 	[Description("A protocol-passthrough command run interactively gets no output-start or command-end marks: OSC bytes must never precede or trail a protocol payload on the same stream.")]
 	public void When_ProtocolPassthroughCommandRunsInteractively_Then_NoOutputMarksWrapTheProtocolStream()
 	{
@@ -336,6 +351,51 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		CountOccurrences(raw, "]133;A").Should().Be(2, because: "only the work and exit prompt cycles may open a lifecycle");
 	}
 
+	[TestMethod]
+	[Description("When the command-end mark write itself fails (torn-down transport), the original dispatch exception must surface, not the mark-write failure that only happened during cleanup.")]
+	public void When_CommandEndMarkWriteFails_Then_OriginalExceptionSurfaces()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var sut = CreateMarkedApp();
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		// `history --limit abc` raises InvalidOperationException from the ambient handler,
+		// which propagates to the cleanup catch; the writer then throws on the D-mark write.
+		var writer = new MarkFailingWriter(harness.Writer, failOn: "]133;D");
+
+		var thrown = CaptureInteractiveRun(writer, sut, "history --limit abc\r");
+
+		thrown.Should().BeOfType<InvalidOperationException>();
+		thrown!.Message.Should().Contain("history --limit must be a positive integer");
+	}
+
+	private static Exception? CaptureInteractiveRun(TextWriter writer, ReplApp sut, string typedInput)
+	{
+		var keyReader = new FakeKeyReader(typedInput.Select(ToKeyInfo).ToArray());
+		var previousReader = ReplSessionIO.KeyReader;
+		using var scope = ReplSessionIO.SetSession(writer, TextReader.Null);
+		try
+		{
+			ReplSessionIO.KeyReader = keyReader;
+			ReplSessionIO.WindowSize = (80, 12);
+			ReplSessionIO.AnsiSupport = true;
+			ReplSessionIO.TerminalCapabilities = TerminalCapabilities.Ansi | TerminalCapabilities.VtInput;
+			try
+			{
+				_ = sut.Run([]);
+				return null;
+			}
+			catch (Exception ex)
+			{
+				return ex;
+			}
+		}
+		finally
+		{
+			ReplSessionIO.KeyReader = previousReader;
+		}
+	}
+
 	private static ReplApp CreateMarkedApp(ShellIntegrationMode mode = ShellIntegrationMode.Always)
 	{
 		var sut = ReplApp.Create()
@@ -407,5 +467,38 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		}
 
 		return count;
+	}
+
+	// Delegates to an inner writer but throws when asked to write a fragment (e.g. the
+	// command-end mark), simulating a transport torn down mid-command.
+	private sealed class MarkFailingWriter(TextWriter inner, string failOn) : TextWriter
+	{
+		public override System.Text.Encoding Encoding => inner.Encoding;
+
+		public override void Write(string? value)
+		{
+			ThrowIfFragment(value);
+			inner.Write(value);
+		}
+
+		public override Task WriteAsync(string? value)
+		{
+			ThrowIfFragment(value);
+			return inner.WriteAsync(value);
+		}
+
+		public override Task WriteLineAsync(string? value)
+		{
+			ThrowIfFragment(value);
+			return inner.WriteLineAsync(value);
+		}
+
+		private void ThrowIfFragment(string? value)
+		{
+			if (value is not null && value.Contains(failOn, StringComparison.Ordinal))
+			{
+				throw new IOException("simulated transport failure on mark write");
+			}
+		}
 	}
 }

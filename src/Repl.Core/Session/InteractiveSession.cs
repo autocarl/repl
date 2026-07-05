@@ -138,49 +138,44 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	}
 
 	private async ValueTask<(AmbientCommandOutcome Outcome, int ExitCode)> DispatchInteractiveCommandAsync(
+		CommittedResolution resolution,
 		List<string> inputTokens,
 		List<string> scopeTokens,
 		IServiceProvider serviceProvider,
 		CancelKeyHandler cancelHandler,
 		CancellationToken cancellationToken)
 	{
-		var ambientOutcome = await TryHandleAmbientCommandAsync(
-				inputTokens,
-				scopeTokens,
-				serviceProvider,
-				isInteractiveSession: true,
-				cancellationToken)
-			.ConfigureAwait(false);
-		if (ambientOutcome is AmbientCommandOutcome.Exit or AmbientCommandOutcome.Handled)
+		if (resolution.Kind == CommittedKind.Ambient)
 		{
-			return (ambientOutcome, 0);
+			var ambientOutcome = await TryHandleAmbientCommandAsync(
+					inputTokens,
+					scopeTokens,
+					serviceProvider,
+					isInteractiveSession: true,
+					cancellationToken)
+				.ConfigureAwait(false);
+			return (ambientOutcome, ambientOutcome == AmbientCommandOutcome.HandledError ? 1 : 0);
 		}
 
-		if (ambientOutcome is AmbientCommandOutcome.HandledError)
+		app.GlobalOptionsSnapshotInstance.Update(resolution.Options!.CustomGlobalNamedOptions);
+		if (resolution.Kind == CommittedKind.Ambiguous)
 		{
-			return (ambientOutcome, 1);
-		}
-
-		var invocationTokens = scopeTokens.Concat(inputTokens).ToArray();
-		var globalOptions = GlobalOptionParser.Parse(invocationTokens, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing);
-		app.GlobalOptionsSnapshotInstance.Update(globalOptions.CustomGlobalNamedOptions);
-		var prefixResolution = app.ResolveUniquePrefixes(globalOptions.RemainingTokens);
-		if (prefixResolution.IsAmbiguous)
-		{
+			var prefixResolution = app.ResolveUniquePrefixes(resolution.Options.RemainingTokens);
 			var ambiguous = RoutingEngine.CreateAmbiguousPrefixResult(prefixResolution);
-			_ = await app.RenderOutputAsync(ambiguous, globalOptions.OutputFormat, cancellationToken, isInteractive: true)
+			_ = await app.RenderOutputAsync(ambiguous, resolution.Options.OutputFormat, cancellationToken, isInteractive: true)
 				.ConfigureAwait(false);
 			return (AmbientCommandOutcome.Handled, 1);
 		}
 
-		var resolvedOptions = globalOptions with { RemainingTokens = prefixResolution.Tokens };
-		var exitCode = await ExecuteWithCancellationAsync(resolvedOptions, scopeTokens, serviceProvider, cancelHandler, cancellationToken)
+		// Help or Routed: both flow through the command-cancellation scope so Ctrl-C and
+		// exit-code computation behave identically; the pre-resolved graph/match is reused.
+		var exitCode = await ExecuteWithCancellationAsync(resolution, scopeTokens, serviceProvider, cancelHandler, cancellationToken)
 			.ConfigureAwait(false);
 		return (AmbientCommandOutcome.Handled, exitCode);
 	}
 
 	private async ValueTask<int> ExecuteWithCancellationAsync(
-		GlobalInvocationOptions resolvedOptions,
+		CommittedResolution resolution,
 		List<string> scopeTokens,
 		IServiceProvider serviceProvider,
 		CancelKeyHandler cancelHandler,
@@ -192,14 +187,17 @@ internal sealed class InteractiveSession(CoreReplApp app)
 
 		try
 		{
-			return await ExecuteInteractiveInputAsync(resolvedOptions, scopeTokens, serviceProvider, commandCts.Token)
+			return await ExecuteInteractiveInputAsync(resolution, scopeTokens, serviceProvider, commandCts.Token)
 				.ConfigureAwait(false);
 		}
 		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
 		{
 			await ReplSessionIO.Output.WriteLineAsync("Cancelled.").ConfigureAwait(false);
 			// 128 + SIGINT(2): the shell convention for an interrupted command, so
-			// shell-integration marks decorate it as interrupted rather than failed.
+			// shell-integration marks decorate it as interrupted rather than failed. An
+			// outer-token cancellation (host shutdown) is NOT matched here — it propagates
+			// to ExecuteCommittedInputAsync's OCE catch, which closes the cycle with an
+			// aborted D (no exit code) rather than a failure.
 			return 130;
 		}
 		finally
@@ -212,6 +210,9 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	/// <summary>
 	/// Runs one committed input line inside its shell-integration lifecycle: opens the
 	/// output region, dispatches, and guarantees the cycle is closed on every path.
+	/// The input is resolved exactly once (<see cref="ResolveCommittedInput"/>) and that
+	/// single result drives both the passthrough mark decision and dispatch, so the two
+	/// can never disagree across a concurrent routing-graph invalidation.
 	/// </summary>
 	private async ValueTask<AmbientCommandOutcome> ExecuteCommittedInputAsync(
 		ShellIntegrationMarkEmitter marks,
@@ -222,11 +223,13 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		CancelKeyHandler cancelHandler,
 		CancellationToken cancellationToken)
 	{
+		var resolution = ResolveCommittedInput(inputTokens, scopeTokens);
+
 		// A protocol-passthrough command turns the output stream into a protocol
 		// channel: no mark may precede or trail its payload. A/B were already
 		// written around the prompt (before the command was known); the cycle is
 		// abandoned silently and the next prompt-start implicitly closes it.
-		var isProtocolPassthrough = IsProtocolPassthroughInvocation(inputTokens, scopeTokens);
+		var isProtocolPassthrough = resolution.IsProtocolPassthrough;
 		if (!isProtocolPassthrough)
 		{
 			await marks.WriteCommandLineAsync(line).ConfigureAwait(false);
@@ -238,7 +241,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		try
 		{
 			(outcome, exitCode) = await DispatchInteractiveCommandAsync(
-					inputTokens, scopeTokens, serviceProvider, cancelHandler, cancellationToken)
+					resolution, inputTokens, scopeTokens, serviceProvider, cancelHandler, cancellationToken)
 				.ConfigureAwait(false);
 		}
 		catch when (isProtocolPassthrough)
@@ -246,11 +249,19 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			marks.AbandonCycle();
 			throw;
 		}
+		catch (OperationCanceledException)
+		{
+			// Host-shutdown / session cancellation: close the cycle without an exit code
+			// (aborted form) rather than decorating it as a failure, then propagate.
+			await TryWriteCommandEndAsync(marks, exitCode: null).ConfigureAwait(false);
+			throw;
+		}
 		catch
 		{
-			// Close the lifecycle before the exception propagates so the terminal
-			// never keeps an unterminated command segment.
-			await marks.WriteCommandEndAsync(exitCode: 1).ConfigureAwait(false);
+			// Close the lifecycle before the exception propagates so the terminal never
+			// keeps an unterminated command segment. Best-effort: a failing mark write
+			// (e.g. a torn-down transport) must not replace the original exception.
+			await TryWriteCommandEndAsync(marks, exitCode: 1).ConfigureAwait(false);
 			throw;
 		}
 
@@ -269,17 +280,56 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		return outcome;
 	}
 
+	// Best-effort command-end used on exception paths: the original exception is the
+	// signal that matters, so a mark-write failure here is swallowed rather than masking it.
+	private static async ValueTask TryWriteCommandEndAsync(ShellIntegrationMarkEmitter marks, int? exitCode)
+	{
+		try
+		{
+			await marks.WriteCommandEndAsync(exitCode).ConfigureAwait(false);
+		}
+		catch
+		{
+			// Intentionally swallowed — see caller.
+		}
+	}
+
+	private enum CommittedKind
+	{
+		Ambient,
+		Help,
+		Ambiguous,
+		Routed,
+	}
+
 	/// <summary>
-	/// Pre-resolves the typed input (without executing it) to detect protocol-passthrough
-	/// routes before any lifecycle mark opens the output region.
+	/// The single resolution of one committed input line: whether it is an ambient
+	/// command, a help request, an ambiguous prefix, or a resolved route — captured
+	/// against one routing-graph snapshot and reused by both the mark decision and dispatch.
 	/// </summary>
-	private bool IsProtocolPassthroughInvocation(List<string> inputTokens, List<string> scopeTokens)
+	private readonly record struct CommittedResolution(
+		CommittedKind Kind,
+		GlobalInvocationOptions? Options,
+		ActiveRoutingGraph? Graph,
+		RouteResolver.RouteResolutionResult? Routes)
+	{
+		public bool IsProtocolPassthrough =>
+			Kind == CommittedKind.Routed && Routes?.Match?.Route.Command.IsProtocolPassthrough == true;
+	}
+
+	/// <summary>
+	/// Resolves the committed input once, against a single <see cref="CoreReplApp.ResolveActiveRoutingGraph"/>
+	/// snapshot, so the passthrough classification and the eventual execution can never
+	/// diverge. Ambient classification uses <see cref="IsAmbientCommandInvocation"/>, the
+	/// single authority also consulted by <see cref="TryHandleAmbientCommandAsync"/>.
+	/// </summary>
+	private CommittedResolution ResolveCommittedInput(IReadOnlyList<string> inputTokens, IReadOnlyList<string> scopeTokens)
 	{
 		if (IsAmbientCommandInvocation(inputTokens))
 		{
 			// Ambient commands win over routes sharing the same token and produce
 			// normal terminal output, never a protocol payload.
-			return false;
+			return new CommittedResolution(CommittedKind.Ambient, Options: null, Graph: null, Routes: null);
 		}
 
 		var invocationTokens = scopeTokens.Concat(inputTokens).ToArray();
@@ -287,24 +337,27 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		if (globalOptions.HelpRequested)
 		{
 			// `serve --help` renders help; the payload never starts.
-			return false;
+			return new CommittedResolution(CommittedKind.Help, globalOptions, Graph: null, Routes: null);
 		}
 
+		var graph = app.ResolveActiveRoutingGraph();
 		var prefixResolution = app.ResolveUniquePrefixes(globalOptions.RemainingTokens);
 		if (prefixResolution.IsAmbiguous)
 		{
-			return false;
+			return new CommittedResolution(CommittedKind.Ambiguous, globalOptions, graph, Routes: null);
 		}
 
-		var match = app.Resolve(prefixResolution.Tokens);
-		return match?.Route.Command.IsProtocolPassthrough == true;
+		var resolvedOptions = globalOptions with { RemainingTokens = prefixResolution.Tokens };
+		var routes = app.ResolveWithDiagnostics(resolvedOptions.RemainingTokens, graph.Routes);
+		return new CommittedResolution(CommittedKind.Routed, resolvedOptions, graph, routes);
 	}
 
 	/// <summary>
-	/// Token-only mirror of the dispatch table in <see cref="TryHandleAmbientCommandAsync"/>:
-	/// keep the two in sync when adding an ambient command.
+	/// Single authority for "is this input handled as an ambient command?", consulted by
+	/// both <see cref="ResolveCommittedInput"/> and the guard in
+	/// <see cref="TryHandleAmbientCommandAsync"/> so the two can never disagree.
 	/// </summary>
-	private bool IsAmbientCommandInvocation(List<string> inputTokens)
+	private bool IsAmbientCommandInvocation(IReadOnlyList<string> inputTokens)
 	{
 		if (inputTokens.Count == 0)
 		{
@@ -330,19 +383,23 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	}
 
 	private async ValueTask<int> ExecuteInteractiveInputAsync(
-		GlobalInvocationOptions globalOptions,
+		CommittedResolution committed,
 		List<string> scopeTokens,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
-		var activeGraph = app.ResolveActiveRoutingGraph();
+		var globalOptions = committed.Options!;
 		if (globalOptions.HelpRequested)
 		{
 			var rendered = await app.RenderHelpAsync(globalOptions, cancellationToken).ConfigureAwait(false);
 			return rendered ? 0 : 1;
 		}
 
-		var resolution = app.ResolveWithDiagnostics(globalOptions.RemainingTokens, activeGraph.Routes);
+		// Reuse the single routing-graph snapshot and route resolution captured in
+		// ResolveCommittedInput — never re-resolve here (that reopened a TOCTOU window
+		// against concurrent routing-graph invalidation).
+		var activeGraph = committed.Graph!.Value;
+		var resolution = committed.Routes!.Value;
 		var match = resolution.Match;
 		if (match is not null)
 		{
@@ -401,8 +458,10 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		bool isInteractiveSession,
 		CancellationToken cancellationToken)
 	{
-		if (inputTokens.Count == 0)
+		if (!IsAmbientCommandInvocation(inputTokens))
 		{
+			// Single classification authority (shared with ResolveCommittedInput): if the
+			// input is not an ambient command, none of the branches below would match it.
 			return AmbientCommandOutcome.NotHandled;
 		}
 
