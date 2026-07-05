@@ -168,7 +168,7 @@ internal sealed class ConsoleReplInteractionPresenter(
 		{
 			AdvancedProgressMode.Always => true,
 			AdvancedProgressMode.Never => false,
-			_ => SessionAdvertisesAdvancedProgress() || IsKnownAdvancedProgressTerminal(),
+			_ => SessionAdvertisesAdvancedProgress() || TerminalEnvironmentClassifier.IsKnownAdvancedProgressTerminal(),
 		};
 	}
 
@@ -176,33 +176,9 @@ internal sealed class ConsoleReplInteractionPresenter(
 		(!Console.IsOutputRedirected || ReplSessionIO.IsSessionActive)
 		&& !ReplSessionIO.IsProtocolPassthrough;
 
-	private static bool IsKnownAdvancedProgressTerminal()
-	{
-		if (IsTerminalMultiplexerSession())
-		{
-			return false;
-		}
-
-		return !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WT_SESSION"))
-			|| string.Equals(Environment.GetEnvironmentVariable("ConEmuANSI"), "ON", StringComparison.OrdinalIgnoreCase)
-			|| string.Equals(Environment.GetEnvironmentVariable("TERM_PROGRAM"), "WezTerm", StringComparison.OrdinalIgnoreCase);
-	}
-
 	private static bool SessionAdvertisesAdvancedProgress() =>
 		ReplSessionIO.IsSessionActive
 		&& ReplSessionIO.TerminalCapabilities.HasFlag(TerminalCapabilities.ProgressReporting);
-
-	private static bool IsTerminalMultiplexerSession()
-	{
-		if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMUX")))
-		{
-			return true;
-		}
-
-		var term = Environment.GetEnvironmentVariable("TERM");
-		return term?.StartsWith("screen", StringComparison.OrdinalIgnoreCase) is true
-			|| term?.StartsWith("tmux", StringComparison.OrdinalIgnoreCase) is true;
-	}
 
 	private static string? BuildAdvancedProgressSequence(ReplProgressEvent progress)
 	{
