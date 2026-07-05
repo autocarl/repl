@@ -82,6 +82,53 @@ public sealed class Given_GlobalOptionsAccessor
 	}
 
 	[TestMethod]
+	[Description("Regression guard: for typed global options, the accessor mirrors the prototype default even when it equals the CLR default (int = 0), staying consistent with the injected instance which always carries prototype values.")]
+	public void When_TypedGlobalOptionHasClrDefaultPrototypeValue_Then_AccessorMatchesInjectedInstance()
+	{
+		var sut = ReplApp.Create();
+		sut.UseGlobalOptions<ClrDefaultGlobals>();
+		sut.Map("show", (IGlobalOptionsAccessor globals, ClrDefaultGlobals opts) =>
+			$"accessor:{globals.GetValue<int>("retries", 42)} injected:{opts.Retries}");
+
+		var output = ConsoleCaptureHelper.Capture(
+			() => sut.Run(["show", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("accessor:0 injected:0");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: an implicit CLR default for a value type outside the primitive whitelist (Guid.Empty) is not stored as registration metadata, so the call-site fallback wins when the option is omitted.")]
+	public void When_GlobalOptionDeclaresImplicitGuidDefault_Then_CallSiteFallbackWins()
+	{
+		var fallback = new Guid(0x42424242, 0x4242, 0x4242, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42);
+		var sut = ReplApp.Create();
+		sut.Options(o => o.Parsing.AddGlobalOption<Guid>("session", aliases: null, defaultValue: default, description: "Session id."));
+		sut.Map("show", (IGlobalOptionsAccessor globals) => $"session:{globals.GetValue<Guid>("session", fallback)}");
+
+		var output = ConsoleCaptureHelper.Capture(
+			() => sut.Run(["show", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain($"session:{fallback}");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: an explicit registration default equal to the CLR default of the underlying type (0), declared through a nullable type parameter, is preserved as metadata and applied when the option is omitted instead of the call-site fallback.")]
+	public void When_NullableGlobalOptionDeclaresUnderlyingClrDefault_Then_RegisteredDefaultWins()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(o => o.Parsing.AddGlobalOption<int?>("port", defaultValue: 0));
+		sut.Map("show", (IGlobalOptionsAccessor globals) => $"port:{globals.GetValue<int>("port", 8080)}");
+
+		var output = ConsoleCaptureHelper.Capture(
+			() => sut.Run(["show", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("port:0");
+	}
+
+	[TestMethod]
 	[Description("UseGlobalOptions<T> registers typed class accessible via DI.")]
 	public void When_UsingTypedGlobalOptions_Then_ClassIsPopulatedFromParsedValues()
 	{
@@ -390,6 +437,11 @@ public sealed class Given_GlobalOptionsAccessor
 		public string? Tenant { get; set; }
 
 		public int Port { get; set; } = 8080;
+	}
+
+	private sealed class ClrDefaultGlobals
+	{
+		public int Retries { get; set; }
 	}
 
 	private interface IInterfaceGlobalOptions

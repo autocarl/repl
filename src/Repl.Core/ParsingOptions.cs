@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 
 namespace Repl;
@@ -101,7 +102,25 @@ public sealed class ParsingOptions
 	/// <param name="aliases">Optional aliases. Values without prefix are normalized to <c>--alias</c>.</param>
 	/// <param name="defaultValue">Optional default value metadata.</param>
 	public void AddGlobalOption<T>(string name, string[]? aliases = null, T? defaultValue = default) =>
-		AddGlobalOptionCore(name, typeof(T), aliases, defaultValue?.ToString());
+		AddGlobalOptionCore(name, typeof(T), aliases, FormatDefaultValue(defaultValue, typeof(T)));
+
+	/// <summary>
+	/// Registers a custom global option with an explicit help description.
+	/// </summary>
+	/// <remarks>
+	/// <paramref name="description"/> is the trailing required parameter so this overload never collides with
+	/// <see cref="AddGlobalOption{T}(string, string[], T)"/> during overload resolution: a positional
+	/// <c>null</c> second argument (for example <c>AddGlobalOption&lt;string&gt;("tenant", null)</c>) binds
+	/// unambiguously to the aliases-only overload. The typed <see cref="System.ComponentModel.DescriptionAttribute"/>
+	/// path (<c>UseGlobalOptions&lt;T&gt;()</c>) remains the primary way to attach descriptions.
+	/// </remarks>
+	/// <typeparam name="T">Declared value type.</typeparam>
+	/// <param name="name">Canonical name without prefix (for example: "tenant").</param>
+	/// <param name="aliases">Aliases (pass <c>null</c> for none). Values without prefix are normalized to <c>--alias</c>.</param>
+	/// <param name="defaultValue">Default value metadata (pass <c>default</c> for none).</param>
+	/// <param name="description">Description shown in help output.</param>
+	public void AddGlobalOption<T>(string name, string[]? aliases, T? defaultValue, string description) =>
+		AddGlobalOptionCore(name, typeof(T), aliases, FormatDefaultValue(defaultValue, typeof(T)), description);
 
 	/// <summary>
 	/// Registers a custom global option using a type or constraint name
@@ -117,7 +136,27 @@ public sealed class ParsingOptions
 	public void AddGlobalOption(string name, string constraintOrTypeName, string[]? aliases = null, string? defaultValue = null) =>
 		AddGlobalOptionCore(name, ResolveConstraintOrTypeName(constraintOrTypeName, _customRouteConstraints), aliases, defaultValue);
 
-	internal void AddGlobalOptionCore(string name, Type valueType, string[]? aliases, string? defaultValue, Type? ownerType = null)
+	/// <summary>
+	/// Registers a custom global option (by type or constraint name) with an explicit help description.
+	/// </summary>
+	/// <remarks>
+	/// <paramref name="description"/> is the trailing required parameter so this overload never collides with
+	/// <see cref="AddGlobalOption(string, string, string[], string)"/> during overload resolution: a positional
+	/// <c>null</c> third argument (for example <c>AddGlobalOption("port", "int", null)</c>) binds unambiguously
+	/// to the aliases-only overload.
+	/// </remarks>
+	/// <param name="name">Canonical name without prefix (for example: "tenant").</param>
+	/// <param name="constraintOrTypeName">
+	/// Built-in type name ("string", "int", "long", "bool", "guid", "uri", "date", "datetime", "timespan")
+	/// or a registered custom route constraint name. Custom constraints resolve to <c>string</c>.
+	/// </param>
+	/// <param name="aliases">Aliases (pass <c>null</c> for none). Values without prefix are normalized to <c>--alias</c>.</param>
+	/// <param name="defaultValue">Default value as string (pass <c>null</c> for none).</param>
+	/// <param name="description">Description shown in help output.</param>
+	public void AddGlobalOption(string name, string constraintOrTypeName, string[]? aliases, string? defaultValue, string description) =>
+		AddGlobalOptionCore(name, ResolveConstraintOrTypeName(constraintOrTypeName, _customRouteConstraints), aliases, defaultValue, description);
+
+	internal void AddGlobalOptionCore(string name, Type valueType, string[]? aliases, string? defaultValue, string? description = null, Type? ownerType = null)
 	{
 		name = string.IsNullOrWhiteSpace(name)
 			? throw new ArgumentException("Global option name cannot be empty.", nameof(name))
@@ -141,6 +180,7 @@ public sealed class ParsingOptions
 			CanonicalToken: normalizedCanonical,
 			Aliases: normalizedAliases,
 			DefaultValue: defaultValue,
+			Description: description,
 			ValueType: valueType,
 			OwnerType: ownerType);
 	}
@@ -159,6 +199,34 @@ public sealed class ParsingOptions
 			? "this registration"
 			: $"typed global options '{newOwner.Name}'";
 		return $"A global option named '{name}' is already registered by {existingSource} and cannot also be registered by {newSource}.";
+	}
+
+	internal static string? FormatDefaultValue(object? value, Type type) =>
+		value is not null && !IsDefaultForType(value, type)
+			? value.ToString()
+			: null;
+
+	[UnconditionalSuppressMessage(
+		"Trimming",
+		"IL2067",
+		Justification = "Activator.CreateInstance is only reached for value types, which always have a parameterless constructor.")]
+	internal static bool IsDefaultForType(object value, Type type)
+	{
+		// The default of a Nullable<T> is null, never a value: a nullable property or
+		// parameter initialized to 0 or false is a deliberate default that must be kept
+		// (rendered in help, applied at resolution), unlike the implicit default of the
+		// underlying non-nullable type.
+		if (Nullable.GetUnderlyingType(type) is not null)
+		{
+			return false;
+		}
+
+		// Any non-nullable value type compares against its boxed CLR default (false, 0,
+		// Guid.Empty, enum zero, DateTime.MinValue, ...), so implicit defaults captured
+		// by `T? defaultValue = default` never become registration metadata. Reference
+		// types have no implicit non-null default to suppress. Registration-time only,
+		// so the boxing allocation is acceptable.
+		return type.IsValueType && value.Equals(Activator.CreateInstance(type));
 	}
 
 	private static Type ResolveConstraintOrTypeName(
