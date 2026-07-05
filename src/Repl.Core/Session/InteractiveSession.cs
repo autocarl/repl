@@ -39,11 +39,13 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		var scopeTokens = initialScopeTokens.ToList();
 		var historyProvider = serviceProvider.GetService(typeof(IHistoryProvider)) as IHistoryProvider;
 		string? lastHistoryEntry = null;
+		var marks = ShellIntegrationMarkEmitter.Create(app.OptionsSnapshot.TerminalIntegration, app.OptionsSnapshot.Output);
 		await app.ShellCompletionRuntimeInstance.HandleStartupAsync(serviceProvider, cancellationToken).ConfigureAwait(false);
 		while (true)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var readResult = await ReadInteractiveInputAsync(
+					marks,
 					scopeTokens,
 					historyProvider,
 					serviceProvider,
@@ -51,6 +53,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				.ConfigureAwait(false);
 			if (readResult.Escaped)
 			{
+				await marks.WriteCommandEndAsync(exitCode: null).ConfigureAwait(false);
 				await ReplSessionIO.Output.WriteLineAsync().ConfigureAwait(false);
 				continue; // Esc at bare prompt → fresh line.
 			}
@@ -58,12 +61,14 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			var line = readResult.Line;
 			if (line is null)
 			{
+				await marks.WriteCommandEndAsync(exitCode: null).ConfigureAwait(false);
 				return 0;
 			}
 
 			var inputTokens = TokenizeInteractiveInput(line);
 			if (inputTokens.Count == 0)
 			{
+				await marks.WriteCommandEndAsync(exitCode: null).ConfigureAwait(false);
 				continue;
 			}
 
@@ -74,9 +79,12 @@ internal sealed class InteractiveSession(CoreReplApp app)
 					cancellationToken)
 				.ConfigureAwait(false);
 
-			var outcome = await DispatchInteractiveCommandAsync(
+			await marks.WriteCommandLineAsync(line).ConfigureAwait(false);
+			await marks.WriteOutputStartAsync().ConfigureAwait(false);
+			var (outcome, exitCode) = await DispatchInteractiveCommandAsync(
 					inputTokens, scopeTokens, serviceProvider, cancelHandler, cancellationToken)
 				.ConfigureAwait(false);
+			await marks.WriteCommandEndAsync(exitCode).ConfigureAwait(false);
 			if (outcome == AmbientCommandOutcome.Exit)
 			{
 				return 0;
@@ -85,13 +93,16 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	}
 
 	private async ValueTask<ConsoleLineReader.ReadResult> ReadInteractiveInputAsync(
+		ShellIntegrationMarkEmitter marks,
 		IReadOnlyList<string> scopeTokens,
 		IHistoryProvider? historyProvider,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
+		await marks.WritePromptStartAsync().ConfigureAwait(false);
 		await ReplSessionIO.Output.WriteAsync(BuildPrompt(scopeTokens)).ConfigureAwait(false);
 		await ReplSessionIO.Output.WriteAsync(' ').ConfigureAwait(false);
+		await marks.WriteInputStartAsync().ConfigureAwait(false);
 		var effectiveMode = app.Autocomplete.ResolveEffectiveAutocompleteMode(serviceProvider);
 		var renderMode = AutocompleteEngine.ResolveAutocompleteRenderMode(effectiveMode);
 		var colorStyles = app.Autocomplete.ResolveAutocompleteColorStyles(renderMode == ConsoleLineReader.AutocompleteRenderMode.Rich);
@@ -129,7 +140,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		return line;
 	}
 
-	private async ValueTask<AmbientCommandOutcome> DispatchInteractiveCommandAsync(
+	private async ValueTask<(AmbientCommandOutcome Outcome, int ExitCode)> DispatchInteractiveCommandAsync(
 		List<string> inputTokens,
 		List<string> scopeTokens,
 		IServiceProvider serviceProvider,
@@ -143,11 +154,14 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				isInteractiveSession: true,
 				cancellationToken)
 			.ConfigureAwait(false);
-		if (ambientOutcome is AmbientCommandOutcome.Exit
-			or AmbientCommandOutcome.Handled
-			or AmbientCommandOutcome.HandledError)
+		if (ambientOutcome is AmbientCommandOutcome.Exit or AmbientCommandOutcome.Handled)
 		{
-			return ambientOutcome;
+			return (ambientOutcome, 0);
+		}
+
+		if (ambientOutcome is AmbientCommandOutcome.HandledError)
+		{
+			return (ambientOutcome, 1);
 		}
 
 		var invocationTokens = scopeTokens.Concat(inputTokens).ToArray();
@@ -159,16 +173,16 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			var ambiguous = RoutingEngine.CreateAmbiguousPrefixResult(prefixResolution);
 			_ = await app.RenderOutputAsync(ambiguous, globalOptions.OutputFormat, cancellationToken, isInteractive: true)
 				.ConfigureAwait(false);
-			return AmbientCommandOutcome.Handled;
+			return (AmbientCommandOutcome.Handled, 1);
 		}
 
 		var resolvedOptions = globalOptions with { RemainingTokens = prefixResolution.Tokens };
-		await ExecuteWithCancellationAsync(resolvedOptions, scopeTokens, serviceProvider, cancelHandler, cancellationToken)
+		var exitCode = await ExecuteWithCancellationAsync(resolvedOptions, scopeTokens, serviceProvider, cancelHandler, cancellationToken)
 			.ConfigureAwait(false);
-		return AmbientCommandOutcome.Handled;
+		return (AmbientCommandOutcome.Handled, exitCode);
 	}
 
-	private async ValueTask ExecuteWithCancellationAsync(
+	private async ValueTask<int> ExecuteWithCancellationAsync(
 		GlobalInvocationOptions resolvedOptions,
 		List<string> scopeTokens,
 		IServiceProvider serviceProvider,
@@ -181,12 +195,15 @@ internal sealed class InteractiveSession(CoreReplApp app)
 
 		try
 		{
-			await ExecuteInteractiveInputAsync(resolvedOptions, scopeTokens, serviceProvider, commandCts.Token)
+			return await ExecuteInteractiveInputAsync(resolvedOptions, scopeTokens, serviceProvider, commandCts.Token)
 				.ConfigureAwait(false);
 		}
 		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
 		{
 			await ReplSessionIO.Output.WriteLineAsync("Cancelled.").ConfigureAwait(false);
+			// 128 + SIGINT(2): the shell convention for an interrupted command, so
+			// shell-integration marks decorate it as interrupted rather than failed.
+			return 130;
 		}
 		finally
 		{
@@ -203,7 +220,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		}
 	}
 
-	private async ValueTask ExecuteInteractiveInputAsync(
+	private async ValueTask<int> ExecuteInteractiveInputAsync(
 		GlobalInvocationOptions globalOptions,
 		List<string> scopeTokens,
 		IServiceProvider serviceProvider,
@@ -212,16 +229,16 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		var activeGraph = app.ResolveActiveRoutingGraph();
 		if (globalOptions.HelpRequested)
 		{
-			_ = await app.RenderHelpAsync(globalOptions, cancellationToken).ConfigureAwait(false);
-			return;
+			var rendered = await app.RenderHelpAsync(globalOptions, cancellationToken).ConfigureAwait(false);
+			return rendered ? 0 : 1;
 		}
 
 		var resolution = app.ResolveWithDiagnostics(globalOptions.RemainingTokens, activeGraph.Routes);
 		var match = resolution.Match;
 		if (match is not null)
 		{
-			await app.ExecuteMatchedCommandAsync(match, globalOptions, serviceProvider, scopeTokens, cancellationToken).ConfigureAwait(false);
-			return;
+			var (exitCode, _) = await app.ExecuteMatchedCommandAsync(match, globalOptions, serviceProvider, scopeTokens, cancellationToken).ConfigureAwait(false);
+			return exitCode;
 		}
 
 		var contextMatch = ContextResolver.ResolveExact(activeGraph.Contexts, globalOptions.RemainingTokens, app.OptionsSnapshot.Parsing);
@@ -237,7 +254,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 						cancellationToken,
 						isInteractive: true)
 					.ConfigureAwait(false);
-				return;
+				return 1;
 			}
 
 			scopeTokens.Clear();
@@ -248,7 +265,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				await app.InvokeBannerAsync(contextBanner, serviceProvider, cancellationToken).ConfigureAwait(false);
 			}
 
-			return;
+			return 0;
 		}
 
 		var failure = app.CreateRouteResolutionFailureResult(
@@ -261,6 +278,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				cancellationToken,
 				isInteractive: true)
 			.ConfigureAwait(false);
+		return 1;
 	}
 
 	[SuppressMessage(
