@@ -160,8 +160,9 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		app.GlobalOptionsSnapshotInstance.Update(resolution.Options!.CustomGlobalNamedOptions);
 		if (resolution.Kind == CommittedKind.Ambiguous)
 		{
-			var prefixResolution = app.ResolveUniquePrefixes(resolution.Options.RemainingTokens);
-			var ambiguous = RoutingEngine.CreateAmbiguousPrefixResult(prefixResolution);
+			// Reuse the prefix result from the single resolution — do not re-resolve
+			// against a fresh graph.
+			var ambiguous = RoutingEngine.CreateAmbiguousPrefixResult(resolution.Prefix!);
 			_ = await app.RenderOutputAsync(ambiguous, resolution.Options.OutputFormat, cancellationToken, isInteractive: true)
 				.ConfigureAwait(false);
 			return (AmbientCommandOutcome.Handled, 1);
@@ -311,6 +312,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		CommittedKind Kind,
 		GlobalInvocationOptions? Options,
 		ActiveRoutingGraph? Graph,
+		PrefixResolutionResult? Prefix,
 		RouteResolver.RouteResolutionResult? Routes)
 	{
 		public bool IsProtocolPassthrough =>
@@ -319,6 +321,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 
 	/// <summary>
 	/// Resolves the committed input once, against a single <see cref="CoreReplApp.ResolveActiveRoutingGraph"/>
+	/// snapshot — prefix expansion, help scoping, and the route match all use that one
 	/// snapshot, so the passthrough classification and the eventual execution can never
 	/// diverge. Ambient classification uses <see cref="IsAmbientCommandInvocation"/>, the
 	/// single authority also consulted by <see cref="TryHandleAmbientCommandAsync"/>.
@@ -329,27 +332,30 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		{
 			// Ambient commands win over routes sharing the same token and produce
 			// normal terminal output, never a protocol payload.
-			return new CommittedResolution(CommittedKind.Ambient, Options: null, Graph: null, Routes: null);
+			return new CommittedResolution(CommittedKind.Ambient, Options: null, Graph: null, Prefix: null, Routes: null);
 		}
 
 		var invocationTokens = scopeTokens.Concat(inputTokens).ToArray();
 		var globalOptions = GlobalOptionParser.Parse(invocationTokens, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing);
-		if (globalOptions.HelpRequested)
-		{
-			// `serve --help` renders help; the payload never starts.
-			return new CommittedResolution(CommittedKind.Help, globalOptions, Graph: null, Routes: null);
-		}
-
 		var graph = app.ResolveActiveRoutingGraph();
-		var prefixResolution = app.ResolveUniquePrefixes(globalOptions.RemainingTokens);
+
+		// Resolve prefixes against the captured graph BEFORE deciding help or matching, so
+		// an abbreviation (`ser` -> `server`) is expanded consistently and `ser --help`
+		// scopes help to the resolved command — matching the non-interactive path.
+		var prefixResolution = app.ResolveUniquePrefixes(globalOptions.RemainingTokens, graph);
 		if (prefixResolution.IsAmbiguous)
 		{
-			return new CommittedResolution(CommittedKind.Ambiguous, globalOptions, graph, Routes: null);
+			return new CommittedResolution(CommittedKind.Ambiguous, globalOptions, graph, prefixResolution, Routes: null);
 		}
 
 		var resolvedOptions = globalOptions with { RemainingTokens = prefixResolution.Tokens };
+		if (resolvedOptions.HelpRequested)
+		{
+			return new CommittedResolution(CommittedKind.Help, resolvedOptions, graph, prefixResolution, Routes: null);
+		}
+
 		var routes = app.ResolveWithDiagnostics(resolvedOptions.RemainingTokens, graph.Routes);
-		return new CommittedResolution(CommittedKind.Routed, resolvedOptions, graph, routes);
+		return new CommittedResolution(CommittedKind.Routed, resolvedOptions, graph, prefixResolution, routes);
 	}
 
 	/// <summary>

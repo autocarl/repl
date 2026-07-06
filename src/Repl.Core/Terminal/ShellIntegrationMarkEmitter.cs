@@ -175,9 +175,11 @@ internal sealed class ShellIntegrationMarkEmitter
 	}
 
 	// Space + C0 controls, DEL, and C1 controls: all can terminate or forge the OSC
-	// string on terminals that decode 8-bit control codes. Only reached for chars <= 0x9f
-	// (nothing above is in the SearchValues set), so the upper bound is implicit.
-	private static bool IsForbiddenControl(char ch) => ch <= ' ' || ch == '\x7f' || ch >= '\x80';
+	// string on terminals that decode 8-bit control codes. The C1 clause needs an explicit
+	// upper bound: this predicate runs on every char once the builder path opens, so
+	// without it a legitimate char >= 0xa0 (e.g. 'é') that follows an escapable char would
+	// be escaped too.
+	private static bool IsForbiddenControl(char ch) => ch <= ' ' || ch == '\x7f' || (ch >= '\x80' && ch <= '\x9f');
 
 	// Resolves enablement and backend for the cycle that is about to start. Cheap by
 	// design: environment variables are only consulted when no hosted session is active.

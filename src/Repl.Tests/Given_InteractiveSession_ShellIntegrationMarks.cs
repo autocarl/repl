@@ -283,6 +283,22 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
+	[Description("A prefix-abbreviated protocol-passthrough route (ser -> serve) is classified as passthrough by the single committed-input resolution — prefix expansion and the route match share one graph snapshot — so no output marks wrap its payload.")]
+	public void When_PrefixAbbreviatedPassthroughRuns_Then_NoOutputMarksWrapThePayload()
+	{
+		using var env = new EnvironmentVariableScope(NeutralTerminalEnvironment);
+		var sut = CreateMarkedApp();
+		sut.Map("serve", () => "protocol-payload").AsProtocolPassthrough();
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "ser\rexit\r");
+
+		raw.Should().Contain("protocol-payload");
+		TerminalMarks.Count(raw, "]133;C").Should().Be(1, because: "only the exit cycle may open an output region");
+		TerminalMarks.Count(raw, "]133;D").Should().Be(1, because: "no command-end mark may trail the abbreviated passthrough payload");
+	}
+
+	[TestMethod]
 	[Description("Requesting --help on a protocol-passthrough route only renders help, so the normal lifecycle applies: the help cycle gets output-start and a successful command-end mark.")]
 	public void When_PassthroughRouteRequestsHelp_Then_LifecycleMarksApplyNormally()
 	{

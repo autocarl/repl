@@ -344,6 +344,11 @@ public sealed class Given_ShellIntegrationMarkEmitter
 			.Should().Be(@"st\x9cosc\x9dcsi\x9b");
 		ShellIntegrationMarkEmitter.EscapeCommandLine("high" + (char)0xe9 + "accent-stays")
 			.Should().Be("high" + (char)0xe9 + "accent-stays");
+		// A char above 0x9f (e.g. é, U+00E9) that appears AFTER an escapable char must
+		// still be preserved: the escape predicate is only reached in the builder path,
+		// so it must have an upper bound at 0x9f, not escape everything >= 0x80.
+		ShellIntegrationMarkEmitter.EscapeCommandLine("echo caf" + (char)0xe9)
+			.Should().Be(@"echo\x20caf" + (char)0xe9);
 	}
 
 	[TestMethod]
