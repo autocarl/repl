@@ -190,13 +190,12 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			return (ambientOutcome, ambientOutcome == AmbientCommandOutcome.HandledError ? 1 : 0);
 		}
 
-		app.GlobalOptionsSnapshotInstance.Update(resolution.Options!.CustomGlobalNamedOptions);
 		if (resolution.Kind == CommittedKind.Ambiguous)
 		{
-			// Reuse the prefix result from the single resolution — do not re-resolve
-			// against a fresh graph.
+			// Globals were already applied in ResolveCommittedInput (before routing);
+			// reuse the prefix result from that single resolution — do not re-resolve.
 			var ambiguous = RoutingEngine.CreateAmbiguousPrefixResult(resolution.Prefix!);
-			_ = await app.RenderOutputAsync(ambiguous, resolution.Options.OutputFormat, cancellationToken, isInteractive: true)
+			_ = await app.RenderOutputAsync(ambiguous, resolution.Options!.OutputFormat, cancellationToken, isInteractive: true)
 				.ConfigureAwait(false);
 			return (AmbientCommandOutcome.Handled, 1);
 		}
@@ -370,6 +369,12 @@ internal sealed class InteractiveSession(CoreReplApp app)
 
 		var invocationTokens = scopeTokens.Concat(inputTokens).ToArray();
 		var globalOptions = GlobalOptionParser.Parse(invocationTokens, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing);
+
+		// Apply the parsed globals to the snapshot BEFORE resolving routes: module-presence
+		// predicates read IGlobalOptionsAccessor during ResolveActiveRoutingGraph, so a
+		// per-command global (e.g. `secret --env prod`) must be visible to routing or a
+		// gated command looks missing / a passthrough route is misclassified.
+		app.GlobalOptionsSnapshotInstance.Update(globalOptions.CustomGlobalNamedOptions);
 		var graph = app.ResolveActiveRoutingGraph();
 
 		// Resolve prefixes against the captured graph BEFORE deciding help or matching, so
