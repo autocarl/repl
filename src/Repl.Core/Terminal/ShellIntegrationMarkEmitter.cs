@@ -36,6 +36,8 @@ internal sealed class ShellIntegrationMarkEmitter
 	private bool _isVsCodeBackend;
 	private MarkSet _marks = Osc133;
 	private Phase _phase;
+	private bool _windowsPtyReported;
+	private string? _reportedPrompt;
 
 	private readonly record struct MarkSet(string PromptStart, string InputStart, string OutputStart, string CommandEndNoCode);
 
@@ -53,8 +55,12 @@ internal sealed class ShellIntegrationMarkEmitter
 		return new ShellIntegrationMarkEmitter(options, outputOptions);
 	}
 
-	/// <summary>Prompt start (mark A): call before writing the prompt text.</summary>
-	public async ValueTask WritePromptStartAsync()
+	/// <summary>
+	/// Prompt start (mark A): call before writing the prompt text. Pass the prompt text
+	/// the loop is about to render so the VS Code backend can declare it (see
+	/// <see cref="ReportVsCodePromptContextAsync"/>).
+	/// </summary>
+	public async ValueTask WritePromptStartAsync(string? promptText = null)
 	{
 		// Hosted clients can advertise capabilities mid-session (Telnet TTYPE,
 		// @@repl:* control messages), so enablement and backend are re-resolved at
@@ -65,9 +71,45 @@ internal sealed class ShellIntegrationMarkEmitter
 			return;
 		}
 
+		if (_isVsCodeBackend)
+		{
+			await ReportVsCodePromptContextAsync(promptText).ConfigureAwait(false);
+		}
+
 		_phase = Phase.Prompt;
 		await ReplSessionIO.Output.WriteAsync(_marks.PromptStart).ConfigureAwait(false);
 	}
+
+	// VS Code anchors command decorations at parse-time cursor positions, which ConPTY
+	// rewrites on a local Windows console (worst right at process start — the first
+	// command's decoration lands on the banner). Real shells compensate by declaring
+	// 633;P properties: IsWindows=True switches VS Code's command detection to its
+	// marker-adjusting heuristics, and Prompt=<text> lets those heuristics recognize a
+	// custom prompt line. Both must precede the first input-start (B) so they already
+	// cover the very first command.
+	private async ValueTask ReportVsCodePromptContextAsync(string? promptText)
+	{
+		if (!_windowsPtyReported)
+		{
+			_windowsPtyReported = true;
+			if (ShouldReportWindowsConPty())
+			{
+				await ReplSessionIO.Output.WriteAsync("\x1b]633;P;IsWindows=True\x07").ConfigureAwait(false);
+			}
+		}
+
+		if (promptText is not null && !string.Equals(_reportedPrompt, promptText, StringComparison.Ordinal))
+		{
+			_reportedPrompt = promptText;
+			await ReplSessionIO.Output.WriteAsync($"\x1b]633;P;Prompt={EscapeCommandLine(promptText)}{Bell}").ConfigureAwait(false);
+		}
+	}
+
+	// Hosted transports deliver our bytes verbatim to the remote terminal (no ConPTY in
+	// the path), so they keep VS Code's position-trusting default; only a local console
+	// on Windows goes through ConPTY.
+	internal static bool ShouldReportWindowsConPty() =>
+		!ReplSessionIO.IsSessionActive && OperatingSystem.IsWindows();
 
 	/// <summary>Prompt end / input start (mark B): call after the prompt text, before reading the line.</summary>
 	public async ValueTask WriteInputStartAsync()

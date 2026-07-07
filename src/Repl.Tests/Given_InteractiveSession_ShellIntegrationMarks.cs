@@ -180,6 +180,53 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
+	[Description("The VS Code backend declares the prompt text via OSC 633;P;Prompt before the first input-start mark, so VS Code's marker-adjusting heuristics can recognize the custom prompt line (ConPTY rewrites make parse-time positions unreliable on Windows).")]
+	public void When_VsCodeBackendRuns_Then_PromptPropertyIsReportedBeforeInputStart()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp(ShellIntegrationMode.Auto);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "ping\rexit\r", terminalIdentity: "vscode");
+
+		raw.Should().Contain("]633;P;Prompt=>", because: "the interactive prompt ('>') must be declared to the terminal");
+		raw.IndexOf("]633;P;Prompt=", StringComparison.Ordinal).Should().BeLessThan(
+			raw.IndexOf("]633;B", StringComparison.Ordinal),
+			because: "properties must precede the first input-start so the heuristics already apply to the first command");
+	}
+
+	[TestMethod]
+	[Description("Hosted sessions never report 633;P;IsWindows: the transport delivers bytes verbatim to the remote terminal, so VS Code's position-trusting default is correct there — ConPTY compensation is a local-console concern.")]
+	public void When_HostedVsCodeSessionRuns_Then_IsWindowsPropertyIsNotReported()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp(ShellIntegrationMode.Auto);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "ping\rexit\r", terminalIdentity: "vscode");
+
+		raw.Should().NotContain("]633;P;IsWindows");
+	}
+
+	[TestMethod]
+	[Description("The generic OSC 133 backend reports no P properties: the property sequence is a VS Code 633-dialect concept and would be garbage on FinalTerm-only terminals.")]
+	public void When_Osc133BackendRuns_Then_NoPropertySequenceIsReported()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp(ShellIntegrationMode.Auto);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "ping\rexit\r", terminalIdentity: "Windows Terminal");
+
+		raw.Should().Contain("]133;A", because: "sanity: the generic backend is active");
+		raw.Should().NotContain(";P;Prompt");
+		raw.Should().NotContain(";P;IsWindows");
+	}
+
+	[TestMethod]
 	[Description("A failed completion ambient command (complete without --target) reports exit code 1 in the command-end mark instead of decorating the failure as success.")]
 	public void When_CompleteAmbientCommandFails_Then_CommandEndReportsExitCodeOne()
 	{

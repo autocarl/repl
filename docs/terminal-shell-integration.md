@@ -64,6 +64,8 @@ An input that only *looks* like it targets a passthrough route but does not actu
 
 The generic backend is OSC 133, understood by Windows Terminal, WezTerm, iTerm2, Ghostty, and others. When the VS Code integrated terminal is detected — `TERM_PROGRAM=vscode` for the local console, or a `vscode` terminal identity reported by the hosted session's client — Repl switches to the OSC 633 dialect and additionally reports the command line with `E`. Backend selection follows the same session boundary as `Auto`: the server's environment never picks the dialect for a remote client.
 
+The 633 backend also declares two properties before the first prompt, like VS Code's own shell scripts do: `633;P;Prompt=<text>` (the prompt text, re-declared when scope navigation changes it) and, on a local Windows console only, `633;P;IsWindows=True`. The latter switches VS Code's command detection to its ConPTY-compensating heuristics — without it, the gutter decoration of the first command can be misplaced because ConPTY rewrites the byte stream at process start. Hosted transports deliver bytes verbatim, so they never declare `IsWindows`.
+
 ConEmu is deliberately excluded from `Auto`: it renders OSC 9;4 progress but not FinalTerm marks.
 
 ## Hosted sessions

@@ -142,8 +142,9 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	{
 		var scopeTokens = cycle.ScopeTokens;
 		var serviceProvider = cycle.ServiceProvider;
-		await cycle.Marks.WritePromptStartAsync().ConfigureAwait(false);
-		await ReplSessionIO.Output.WriteAsync(BuildPrompt(scopeTokens)).ConfigureAwait(false);
+		var promptText = BuildPrompt(scopeTokens);
+		await cycle.Marks.WritePromptStartAsync(promptText).ConfigureAwait(false);
+		await ReplSessionIO.Output.WriteAsync(promptText).ConfigureAwait(false);
 		await ReplSessionIO.Output.WriteAsync(' ').ConfigureAwait(false);
 		await cycle.Marks.WriteInputStartAsync().ConfigureAwait(false);
 		var effectiveMode = app.Autocomplete.ResolveEffectiveAutocompleteMode(serviceProvider);

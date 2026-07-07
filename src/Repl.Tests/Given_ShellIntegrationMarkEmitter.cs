@@ -531,6 +531,22 @@ public sealed class Given_ShellIntegrationMarkEmitter
 		neverMode.LastGate.Should().Be(ShellIntegrationGate.ModeNever);
 	}
 
+	[TestMethod]
+	[Description("IsWindows=True is reported only for a local console on Windows, where ConPTY sits between the app and the terminal: a hosted session keeps VS Code's position-trusting default, and non-Windows hosts have no ConPTY to compensate for.")]
+	public void When_CheckingConPtyReporting_Then_OnlyLocalWindowsConsoleQualifies()
+	{
+		bool insideSession;
+		using (ReplSessionIO.SetSession(new StringWriter(), TextReader.Null))
+		{
+			insideSession = ShellIntegrationMarkEmitter.ShouldReportWindowsConPty();
+		}
+
+		var outsideSession = ShellIntegrationMarkEmitter.ShouldReportWindowsConPty();
+
+		insideSession.Should().BeFalse(because: "hosted transports deliver bytes verbatim, without ConPTY in the path");
+		outsideSession.Should().Be(OperatingSystem.IsWindows(), because: "a local console goes through ConPTY exactly when the host OS is Windows");
+	}
+
 	private static ShellIntegrationMarkEmitter CreateEmitter(ShellIntegrationMode mode) =>
 		ShellIntegrationMarkEmitter.Create(
 			new TerminalIntegrationOptions { ShellIntegration = mode },
