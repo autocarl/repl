@@ -66,6 +66,8 @@ The generic backend is OSC 133, understood by Windows Terminal, WezTerm, iTerm2,
 
 The 633 backend also declares two properties before the first prompt, like VS Code's own shell scripts do: `633;P;Prompt=<text>` (the prompt text, re-declared when scope navigation changes it) and, on a local Windows console only, `633;P;IsWindows=True`. The latter switches VS Code's command detection to its ConPTY-compensating heuristics — without it, the gutter decoration of the first command can be misplaced because ConPTY rewrites the byte stream at process start. Hosted transports deliver bytes verbatim, so they never declare `IsWindows`.
 
+Because a Repl app is usually *launched from* an integrated shell, that shell's own command (the app process) is still open from the terminal's point of view when the first prompt renders, and VS Code would anchor the first prompt at that command's stale end position — the first gutter decoration then lands on the app banner. The 633 backend therefore opens the session with a lone `D` (no exit code, the "aborted" form: the outer command's exit code is unknowable from inside it) before the very first `A`, closing the outer command at the true cursor position. This is a nested-shell handshake regular shells don't need; it is harmless when nothing was open.
+
 ConEmu is deliberately excluded from `Auto`: it renders OSC 9;4 progress but not FinalTerm marks.
 
 ## Hosted sessions

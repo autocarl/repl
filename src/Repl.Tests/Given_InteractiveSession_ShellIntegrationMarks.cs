@@ -197,6 +197,41 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
+	[Description("The VS Code backend opens the session with a lone command-end (no exit code) before the first prompt-start: when the app was launched from an integrated shell, that shell's command is still open and VS Code would anchor our first prompt at its stale end position (the banner). The opener closes it at the true cursor position.")]
+	public void When_VsCodeBackendRuns_Then_SessionOpensWithALoneCommandEndBeforeTheFirstPromptStart()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp(ShellIntegrationMode.Auto);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "ping\rexit\r", terminalIdentity: "vscode");
+
+		var firstCommandEnd = raw.IndexOf("]633;D", StringComparison.Ordinal);
+		var firstPromptStart = raw.IndexOf("]633;A", StringComparison.Ordinal);
+		firstCommandEnd.Should().BeGreaterThanOrEqualTo(0);
+		firstCommandEnd.Should().BeLessThan(firstPromptStart, because: "the opener must close the outer shell's command before our first prompt anchors");
+		MarkPayloadAt(raw, firstCommandEnd).Should().NotContain("D;", because: "the opener uses the aborted form — we cannot know the outer command's exit code");
+	}
+
+	[TestMethod]
+	[Description("The generic OSC 133 backend does not emit the session opener: the stale-anchor behavior it compensates for is specific to VS Code's command detection, and a leading D would break the mark-count expectations of FinalTerm terminals.")]
+	public void When_Osc133BackendRuns_Then_NoCommandEndPrecedesTheFirstPromptStart()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp(ShellIntegrationMode.Auto);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "ping\rexit\r", terminalIdentity: "Windows Terminal");
+
+		var firstCommandEnd = raw.IndexOf("]133;D", StringComparison.Ordinal);
+		var firstPromptStart = raw.IndexOf("]133;A", StringComparison.Ordinal);
+		firstPromptStart.Should().BeGreaterThanOrEqualTo(0);
+		firstCommandEnd.Should().BeGreaterThan(firstPromptStart, because: "the first D must be the first command's own end, not a session opener");
+	}
+
+	[TestMethod]
 	[Description("Hosted sessions never report 633;P;IsWindows: the transport delivers bytes verbatim to the remote terminal, so VS Code's position-trusting default is correct there — ConPTY compensation is a local-console concern.")]
 	public void When_HostedVsCodeSessionRuns_Then_IsWindowsPropertyIsNotReported()
 	{

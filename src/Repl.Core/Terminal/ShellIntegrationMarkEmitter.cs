@@ -38,6 +38,7 @@ internal sealed class ShellIntegrationMarkEmitter
 	private Phase _phase;
 	private bool _windowsPtyReported;
 	private string? _reportedPrompt;
+	private bool _sessionOpened;
 	private readonly ShellIntegrationStatusAmbient.Slot? _statusSlot;
 	private ShellIntegrationGate? _publishedGate;
 	private bool _publishedVsCodeBackend;
@@ -81,6 +82,19 @@ internal sealed class ShellIntegrationMarkEmitter
 
 		if (_isVsCodeBackend)
 		{
+			// Nested-terminal handshake, once per session: when this app was launched from
+			// an integrated shell, that shell's command (this very process) is still open
+			// from VS Code's point of view, and handlePromptStart would anchor our first
+			// prompt at that command's stale end position — the first gutter decoration
+			// then lands on the banner. A lone command-end (aborted form: the outer exit
+			// code is unknowable) closes it at the true cursor position first. Real shells
+			// don't need this because they are not nested; harmless when nothing was open.
+			if (!_sessionOpened)
+			{
+				_sessionOpened = true;
+				await ReplSessionIO.Output.WriteAsync(_marks.CommandEndNoCode).ConfigureAwait(false);
+			}
+
 			await ReportVsCodePromptContextAsync(promptText).ConfigureAwait(false);
 		}
 
