@@ -18,6 +18,29 @@ public sealed class Given_TerminalEnvironmentClassifier
 	}
 
 	[TestMethod]
+	[Description("The ANSI opt-out predicate applies the same precedence as styled output: NO_COLOR wins over everything, CLICOLOR_FORCE=1 overrides TERM=dumb, TERM=dumb alone opts out — so the marks/progress gate and IsAnsiEnabled cannot disagree.")]
+	public void When_CheckingAnsiOptOut_Then_PrecedenceMatchesStyledOutput()
+	{
+		using (new EnvironmentVariableScope(("NO_COLOR", "1"), ("CLICOLOR_FORCE", "1"), ("TERM", null)))
+		{
+			TerminalEnvironmentClassifier.IsAnsiOptOutEnvironment()
+				.Should().BeTrue(because: "NO_COLOR outranks CLICOLOR_FORCE");
+		}
+
+		using (new EnvironmentVariableScope(("NO_COLOR", null), ("CLICOLOR_FORCE", "1"), ("TERM", "dumb")))
+		{
+			TerminalEnvironmentClassifier.IsAnsiOptOutEnvironment()
+				.Should().BeFalse(because: "an explicit CLICOLOR_FORCE=1 overrides TERM=dumb, as it does for styled output");
+		}
+
+		using (new EnvironmentVariableScope(("NO_COLOR", null), ("CLICOLOR_FORCE", null), ("TERM", "dumb")))
+		{
+			TerminalEnvironmentClassifier.IsAnsiOptOutEnvironment()
+				.Should().BeTrue(because: "TERM=dumb alone is a documented opt-out");
+		}
+	}
+
+	[TestMethod]
 	[Description("Multiplexer detection recognizes GNU screen via the TERM prefix even without a TMUX variable.")]
 	public void When_TermReportsScreen_Then_MultiplexerSessionIsDetected()
 	{

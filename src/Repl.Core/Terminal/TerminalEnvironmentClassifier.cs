@@ -49,11 +49,24 @@ internal static class TerminalEnvironmentClassifier
 		string.Equals(Environment.GetEnvironmentVariable("TERM_PROGRAM"), "vscode", StringComparison.OrdinalIgnoreCase);
 
 	/// <summary>
-	/// True when the environment explicitly opts out of ANSI output (NO_COLOR, TERM=dumb) —
-	/// the documented end-user escape hatches, which must win over any capability-based
-	/// fallback the way they already win for styled output.
+	/// True when the environment explicitly opts out of ANSI output — the documented
+	/// end-user escape hatches, with the same precedence styled output applies:
+	/// NO_COLOR wins over everything, CLICOLOR_FORCE=1 overrides TERM=dumb. Shared by
+	/// <c>OutputOptions.IsAnsiEnabled</c> and the hosted capability fallback
+	/// (<c>TerminalAnsiCapability</c>) so the two gates cannot drift.
 	/// </summary>
-	public static bool IsAnsiOptOutEnvironment() =>
-		!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NO_COLOR"))
-		|| string.Equals(Environment.GetEnvironmentVariable("TERM"), "dumb", StringComparison.OrdinalIgnoreCase);
+	public static bool IsAnsiOptOutEnvironment()
+	{
+		if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NO_COLOR")))
+		{
+			return true;
+		}
+
+		if (string.Equals(Environment.GetEnvironmentVariable("CLICOLOR_FORCE"), "1", StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		return string.Equals(Environment.GetEnvironmentVariable("TERM"), "dumb", StringComparison.OrdinalIgnoreCase);
+	}
 }
