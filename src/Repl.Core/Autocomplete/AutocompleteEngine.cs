@@ -11,6 +11,15 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 {
 	internal const string AutocompleteModeSessionStateKey = "__repl.autocomplete.mode";
 
+	private static readonly string[] StaticInteractiveGlobalOptionTokens =
+	[
+		"--help",
+		"--interactive",
+		"--no-interactive",
+		"--no-logo",
+		"--output:",
+	];
+
 	internal AutocompleteMode ResolveEffectiveAutocompleteMode(IServiceProvider serviceProvider)
 	{
 		var sessionState = serviceProvider.GetService(typeof(IReplSessionState)) as IReplSessionState;
@@ -199,6 +208,10 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				serviceProvider,
 				cancellationToken)
 			.ConfigureAwait(false);
+		var optionCandidates = CollectOptionAutocompleteCandidates(
+			matchingRoutes,
+			commandPrefix,
+			currentTokenPrefix);
 		var contextCandidates = app.OptionsSnapshot.Interactive.Autocomplete.ShowContextAlternatives
 			? CollectContextAutocompleteCandidates(commandPrefix, currentTokenPrefix, prefixComparison, activeGraph.Contexts)
 			: [];
@@ -216,6 +229,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		var candidates = DeduplicateSuggestions(
 			commandCandidates
 				.Concat(dynamicCandidates)
+				.Concat(optionCandidates)
 				.Concat(contextCandidates)
 				.Concat(ambientCandidates)
 				.Concat(ambientContinuationCandidates),
@@ -307,6 +321,105 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 
 		return suggestions;
 	}
+
+
+	private List<ConsoleLineReader.AutocompleteSuggestion> CollectOptionAutocompleteCandidates(
+		IReadOnlyList<RouteDefinition> matchingRoutes,
+		string[] commandPrefix,
+		string currentTokenPrefix)
+	{
+		if (!IsGlobalOptionToken(currentTokenPrefix))
+		{
+			return [];
+		}
+
+		var comparison = ResolveOptionStringComparison();
+		var comparer = ResolveOptionStringComparer();
+		var suggestions = new List<ConsoleLineReader.AutocompleteSuggestion>();
+		var dedupe = new HashSet<string>(comparer);
+		AddGlobalOptionAutocompleteCandidates(currentTokenPrefix, comparison, dedupe, suggestions);
+
+		foreach (var route in matchingRoutes.Where(route => route.Template.Segments.Count == commandPrefix.Length))
+		{
+			AddRouteOptionAutocompleteCandidates(route, currentTokenPrefix, comparison, dedupe, suggestions);
+		}
+
+		suggestions.Sort((left, right) => string.Compare(left.DisplayText, right.DisplayText, comparison));
+		return suggestions;
+	}
+
+	private void AddGlobalOptionAutocompleteCandidates(
+		string currentTokenPrefix,
+		StringComparison comparison,
+		HashSet<string> dedupe,
+		List<ConsoleLineReader.AutocompleteSuggestion> suggestions)
+	{
+		var options = app.OptionsSnapshot;
+		foreach (var option in StaticInteractiveGlobalOptionTokens)
+		{
+			TryAddOptionAutocompleteCandidate(option, currentTokenPrefix, comparison, dedupe, suggestions);
+		}
+
+		foreach (var alias in options.Output.Aliases.Keys)
+		{
+			TryAddOptionAutocompleteCandidate($"--{alias}", currentTokenPrefix, comparison, dedupe, suggestions);
+		}
+
+		foreach (var format in options.Output.Transformers.Keys)
+		{
+			TryAddOptionAutocompleteCandidate($"--output:{format}", currentTokenPrefix, comparison, dedupe, suggestions);
+		}
+
+		foreach (var custom in options.Parsing.GlobalOptions.Values)
+		{
+			TryAddOptionAutocompleteCandidate(custom.CanonicalToken, currentTokenPrefix, comparison, dedupe, suggestions);
+
+			foreach (var alias in custom.Aliases)
+			{
+				TryAddOptionAutocompleteCandidate(alias, currentTokenPrefix, comparison, dedupe, suggestions);
+			}
+		}
+	}
+
+	private static void AddRouteOptionAutocompleteCandidates(
+		RouteDefinition route,
+		string currentTokenPrefix,
+		StringComparison comparison,
+		HashSet<string> dedupe,
+		List<ConsoleLineReader.AutocompleteSuggestion> suggestions)
+	{
+		foreach (var token in route.OptionSchema.KnownTokens)
+		{
+			TryAddOptionAutocompleteCandidate(token, currentTokenPrefix, comparison, dedupe, suggestions);
+		}
+	}
+
+	private static void TryAddOptionAutocompleteCandidate(
+		string token,
+		string currentTokenPrefix,
+		StringComparison comparison,
+		HashSet<string> dedupe,
+		List<ConsoleLineReader.AutocompleteSuggestion> suggestions)
+	{
+		if (!token.StartsWith(currentTokenPrefix, comparison) || !dedupe.Add(token))
+		{
+			return;
+		}
+
+		suggestions.Add(new ConsoleLineReader.AutocompleteSuggestion(
+			token,
+			Kind: ConsoleLineReader.AutocompleteSuggestionKind.Parameter));
+	}
+
+	private StringComparison ResolveOptionStringComparison() =>
+		app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+			? StringComparison.OrdinalIgnoreCase
+			: StringComparison.Ordinal;
+
+	private StringComparer ResolveOptionStringComparer() =>
+		app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+			? StringComparer.OrdinalIgnoreCase
+			: StringComparer.Ordinal;
 
 	private List<ConsoleLineReader.AutocompleteSuggestion> CollectAmbientContinuationAutocompleteCandidates(
 		string[] commandPrefix,
@@ -677,11 +790,6 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		string currentTokenPrefix,
 		int maxAlternatives)
 	{
-		if (IsGlobalOptionToken(currentTokenPrefix))
-		{
-			return null;
-		}
-
 		var selectable = suggestions.Where(static suggestion => suggestion.IsSelectable).ToArray();
 		var hintAlternatives = suggestions
 			.Where(static suggestion =>
