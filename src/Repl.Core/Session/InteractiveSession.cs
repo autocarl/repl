@@ -260,7 +260,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	/// <summary>
 	/// Runs one committed input line inside its shell-integration lifecycle: opens the
 	/// output region, dispatches, and guarantees the cycle is closed on every path.
-	/// The input is resolved exactly once (<see cref="ResolveCommittedInput"/>) and that
+	/// The input is resolved exactly once (<see cref="CommittedInputResolver"/>) and that
 	/// single result drives both the passthrough mark decision and dispatch, so the two
 	/// can never disagree across a concurrent routing-graph invalidation.
 	/// </summary>
@@ -271,7 +271,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		CancellationToken cancellationToken)
 	{
 		var marks = cycle.Marks;
-		var resolution = ResolveCommittedInput(inputTokens, cycle.ScopeTokens);
+		var resolution = CommittedResolver.Resolve(inputTokens, cycle.ScopeTokens);
 
 		// A protocol-passthrough command turns the output stream into a protocol
 		// channel: no mark may precede or trail its payload. A/B were already
@@ -341,131 +341,60 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		}
 	}
 
-	private enum CommittedKind
-	{
-		Ambient,
-		Help,
-		Ambiguous,
-		Routed,
-	}
+	private CommittedInputResolver? _committedInputResolver;
+
+	// Ambient classification is injected so the resolver and the ambient dispatch table
+	// share the loop's single authority.
+	private CommittedInputResolver CommittedResolver =>
+		_committedInputResolver ??= new(app, IsAmbientCommandInvocation);
 
 	/// <summary>
-	/// The single resolution of one committed input line: whether it is an ambient
-	/// command, a help request, an ambiguous prefix, or a resolved route — captured
-	/// against one routing-graph snapshot and reused by both the mark decision and dispatch.
-	/// Built through the per-kind factories so which fields are populated is structural:
-	/// the guarded accessors throw on a kind mismatch instead of null-forgiving reads.
+	/// Everything an ambient handler may need for one invocation, so table entries share
+	/// one signature.
 	/// </summary>
-	private readonly struct CommittedResolution
-	{
-		private readonly GlobalInvocationOptions? _options;
-		private readonly ActiveRoutingGraph? _graph;
-		private readonly PrefixResolutionResult? _prefix;
-		private readonly RouteResolver.RouteResolutionResult? _routes;
+	private sealed record AmbientCommandInvocation(
+		IReadOnlyList<string> InputTokens,
+		List<string> ScopeTokens,
+		IServiceProvider ServiceProvider,
+		bool IsInteractiveSession,
+		CancellationToken CancellationToken);
 
-		private CommittedResolution(
-			CommittedKind kind,
-			GlobalInvocationOptions? options,
-			ActiveRoutingGraph? graph,
-			PrefixResolutionResult? prefix,
-			RouteResolver.RouteResolutionResult? routes)
-		{
-			Kind = kind;
-			_options = options;
-			_graph = graph;
-			_prefix = prefix;
-			_routes = routes;
-		}
+	/// <summary>One ambient command: its match rule and its handler.</summary>
+	private sealed record AmbientCommandEntry(
+		Func<InteractiveSession, IReadOnlyList<string>, bool> Matches,
+		Func<InteractiveSession, AmbientCommandInvocation, ValueTask<AmbientCommandOutcome>> HandleAsync);
 
-		public static CommittedResolution Ambient() =>
-			new(CommittedKind.Ambient, options: null, graph: null, prefix: null, routes: null);
-
-		public static CommittedResolution Ambiguous(
-			GlobalInvocationOptions options,
-			ActiveRoutingGraph graph,
-			PrefixResolutionResult prefix) =>
-			new(CommittedKind.Ambiguous, options, graph, prefix, routes: null);
-
-		public static CommittedResolution Help(
-			GlobalInvocationOptions options,
-			ActiveRoutingGraph graph,
-			PrefixResolutionResult prefix) =>
-			new(CommittedKind.Help, options, graph, prefix, routes: null);
-
-		public static CommittedResolution Routed(
-			GlobalInvocationOptions options,
-			ActiveRoutingGraph graph,
-			PrefixResolutionResult prefix,
-			RouteResolver.RouteResolutionResult routes) =>
-			new(CommittedKind.Routed, options, graph, prefix, routes);
-
-		public CommittedKind Kind { get; }
-
-		public GlobalInvocationOptions Options =>
-			_options ?? throw new InvalidOperationException("An ambient resolution captures no global options.");
-
-		public ActiveRoutingGraph Graph =>
-			_graph ?? throw new InvalidOperationException("An ambient resolution captures no routing graph.");
-
-		public PrefixResolutionResult Prefix =>
-			_prefix ?? throw new InvalidOperationException("An ambient resolution captures no prefix result.");
-
-		public RouteResolver.RouteResolutionResult Routes =>
-			_routes ?? throw new InvalidOperationException($"A {Kind} resolution captures no route match.");
-
-		public bool IsProtocolPassthrough =>
-			Kind == CommittedKind.Routed && _routes?.Match?.Route.Command.IsProtocolPassthrough == true;
-	}
-
-	/// <summary>
-	/// Resolves the committed input once, against a single <see cref="CoreReplApp.ResolveActiveRoutingGraph"/>
-	/// snapshot — prefix expansion, help scoping, and the route match all use that one
-	/// snapshot, so the passthrough classification and the eventual execution can never
-	/// diverge. Ambient classification uses <see cref="IsAmbientCommandInvocation"/>, the
-	/// single authority also consulted by <see cref="TryHandleAmbientCommandAsync"/>.
-	/// </summary>
-	private CommittedResolution ResolveCommittedInput(IReadOnlyList<string> inputTokens, IReadOnlyList<string> scopeTokens)
-	{
-		if (IsAmbientCommandInvocation(inputTokens))
-		{
-			// Ambient commands win over routes sharing the same token and produce
-			// normal terminal output, never a protocol payload.
-			return CommittedResolution.Ambient();
-		}
-
-		var invocationTokens = scopeTokens.Concat(inputTokens).ToArray();
-		var globalOptions = GlobalOptionParser.Parse(invocationTokens, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing);
-
-		// Apply the parsed globals to the snapshot BEFORE resolving routes: module-presence
-		// predicates read IGlobalOptionsAccessor during ResolveActiveRoutingGraph, so a
-		// per-command global (e.g. `secret --env prod`) must be visible to routing or a
-		// gated command looks missing / a passthrough route is misclassified.
-		app.GlobalOptionsSnapshotInstance.Update(globalOptions.CustomGlobalNamedOptions);
-		var graph = app.ResolveActiveRoutingGraph();
-
-		// Resolve prefixes against the captured graph BEFORE deciding help or matching, so
-		// an abbreviation (`ser` -> `server`) is expanded consistently and `ser --help`
-		// scopes help to the resolved command — matching the non-interactive path.
-		var prefixResolution = app.ResolveUniquePrefixes(globalOptions.RemainingTokens, graph);
-		if (prefixResolution.IsAmbiguous)
-		{
-			return CommittedResolution.Ambiguous(globalOptions, graph, prefixResolution);
-		}
-
-		var resolvedOptions = globalOptions with { RemainingTokens = prefixResolution.Tokens };
-		if (resolvedOptions.HelpRequested)
-		{
-			return CommittedResolution.Help(resolvedOptions, graph, prefixResolution);
-		}
-
-		var routes = app.ResolveWithDiagnostics(resolvedOptions.RemainingTokens, graph.Routes);
-		return CommittedResolution.Routed(resolvedOptions, graph, prefixResolution, routes);
-	}
+	// The single table driving BOTH classification (IsAmbientCommandInvocation) and
+	// dispatch (TryHandleAmbientCommandAsync): a new ambient command is one entry, so a
+	// dispatch branch can no longer exist without its classification or vice versa.
+	// Entries are static (instance state reaches them through the session parameter)
+	// so the table is built once per process.
+	private static readonly AmbientCommandEntry[] AmbientCommands =
+	[
+		new(static (_, tokens) => CoreReplApp.IsHelpToken(tokens[0]),
+			static (session, invocation) => session.HandleHelpAmbientAsync(invocation)),
+		new(static (_, tokens) => tokens.Count == 1 && string.Equals(tokens[0], UpAmbientToken, StringComparison.Ordinal),
+			static (_, invocation) => HandleUpAmbientCommandAsync(invocation.ScopeTokens, invocation.IsInteractiveSession)),
+		new(static (_, tokens) => tokens.Count == 1 && string.Equals(tokens[0], ExitAmbientToken, StringComparison.OrdinalIgnoreCase),
+			static (session, _) => session.HandleExitAmbientCommandAsync()),
+		new(static (_, tokens) => string.Equals(tokens[0], CompleteAmbientToken, StringComparison.OrdinalIgnoreCase),
+			static (session, invocation) => session.HandleCompleteAmbientAsync(invocation)),
+		new(static (_, tokens) => string.Equals(tokens[0], AutocompleteAmbientToken, StringComparison.OrdinalIgnoreCase),
+			static (session, invocation) => session.HandleAutocompleteAmbientCommandAsync(
+				[.. invocation.InputTokens.Skip(1)], invocation.ServiceProvider, invocation.IsInteractiveSession)),
+		new(static (_, tokens) => string.Equals(tokens[0], HistoryAmbientToken, StringComparison.OrdinalIgnoreCase),
+			static (_, invocation) => HandleHistoryAmbientCommandAsync(
+				[.. invocation.InputTokens.Skip(1)], invocation.ServiceProvider, invocation.IsInteractiveSession, invocation.CancellationToken)),
+		// Custom ambients share the options dictionary between match and dispatch, so the
+		// two always agree on token casing by construction.
+		new(static (session, tokens) => session.IsCustomAmbientToken(tokens[0]),
+			static (session, invocation) => session.HandleCustomAmbientAsync(invocation)),
+	];
 
 	/// <summary>
 	/// Single authority for "is this input handled as an ambient command?", consulted by
-	/// both <see cref="ResolveCommittedInput"/> and the guard in
-	/// <see cref="TryHandleAmbientCommandAsync"/> so the two can never disagree.
+	/// both <see cref="CommittedInputResolver"/> (via the injected predicate) and
+	/// <see cref="TryHandleAmbientCommandAsync"/> — both walk the same table.
 	/// </summary>
 	private bool IsAmbientCommandInvocation(IReadOnlyList<string> inputTokens)
 	{
@@ -474,15 +403,19 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			return false;
 		}
 
-		var token = inputTokens[0];
-		return CoreReplApp.IsHelpToken(token)
-			|| (inputTokens.Count == 1 && string.Equals(token, UpAmbientToken, StringComparison.Ordinal))
-			|| (inputTokens.Count == 1 && string.Equals(token, ExitAmbientToken, StringComparison.OrdinalIgnoreCase))
-			|| string.Equals(token, CompleteAmbientToken, StringComparison.OrdinalIgnoreCase)
-			|| string.Equals(token, AutocompleteAmbientToken, StringComparison.OrdinalIgnoreCase)
-			|| string.Equals(token, HistoryAmbientToken, StringComparison.OrdinalIgnoreCase)
-			|| app.OptionsSnapshot.AmbientCommands.CustomCommands.ContainsKey(token);
+		foreach (var entry in AmbientCommands)
+		{
+			if (entry.Matches(this, inputTokens))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
+
+	private bool IsCustomAmbientToken(string token) =>
+		app.OptionsSnapshot.AmbientCommands.CustomCommands.ContainsKey(token);
 
 	private static void SetCommandTokenOnChannel(IServiceProvider serviceProvider, CancellationToken ct)
 	{
@@ -581,10 +514,6 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		return 1;
 	}
 
-	[SuppressMessage(
-		"Maintainability",
-		"MA0051:Method is too long",
-		Justification = "Ambient command routing keeps dispatch table explicit and easy to scan.")]
 	internal async ValueTask<AmbientCommandOutcome> TryHandleAmbientCommandAsync(
 		IReadOnlyList<string> inputTokens,
 		List<string> scopeTokens,
@@ -592,73 +521,56 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		bool isInteractiveSession,
 		CancellationToken cancellationToken)
 	{
-		if (!IsAmbientCommandInvocation(inputTokens))
+		if (inputTokens.Count == 0)
 		{
-			// Single classification authority (shared with ResolveCommittedInput): if the
-			// input is not an ambient command, none of the branches below would match it.
 			return AmbientCommandOutcome.NotHandled;
 		}
 
-		var token = inputTokens[0];
-		if (CoreReplApp.IsHelpToken(token))
+		foreach (var entry in AmbientCommands)
 		{
-			var helpTokens = scopeTokens.Concat(inputTokens.Skip(1)).ToArray();
-			var globalOptions = GlobalOptionParser.Parse(
-				helpTokens,
-				app.OptionsSnapshot.Output,
-				app.OptionsSnapshot.Parsing);
-			var helpRendered = await app.RenderHelpAsync(globalOptions, cancellationToken).ConfigureAwait(false);
-			return helpRendered ? AmbientCommandOutcome.Handled : AmbientCommandOutcome.HandledError;
-		}
-
-		if (inputTokens.Count == 1 && string.Equals(token, UpAmbientToken, StringComparison.Ordinal))
-		{
-			return await HandleUpAmbientCommandAsync(scopeTokens, isInteractiveSession).ConfigureAwait(false);
-		}
-
-		if (inputTokens.Count == 1 && string.Equals(token, ExitAmbientToken, StringComparison.OrdinalIgnoreCase))
-		{
-			return await HandleExitAmbientCommandAsync().ConfigureAwait(false);
-		}
-
-		if (string.Equals(token, CompleteAmbientToken, StringComparison.OrdinalIgnoreCase))
-		{
-			var completionSucceeded = await HandleCompletionAmbientCommandAsync(
-					inputTokens.Skip(1).ToArray(),
-					scopeTokens,
-					serviceProvider,
-					cancellationToken)
-				.ConfigureAwait(false);
-			return completionSucceeded ? AmbientCommandOutcome.Handled : AmbientCommandOutcome.HandledError;
-		}
-
-		if (string.Equals(token, AutocompleteAmbientToken, StringComparison.OrdinalIgnoreCase))
-		{
-			return await HandleAutocompleteAmbientCommandAsync(
-					inputTokens.Skip(1).ToArray(),
-					serviceProvider,
-					isInteractiveSession)
-				.ConfigureAwait(false);
-		}
-
-		if (string.Equals(token, HistoryAmbientToken, StringComparison.OrdinalIgnoreCase))
-		{
-			return await HandleHistoryAmbientCommandAsync(
-					inputTokens.Skip(1).ToArray(),
-					serviceProvider,
-					isInteractiveSession,
-					cancellationToken)
-				.ConfigureAwait(false);
-		}
-
-		if (app.OptionsSnapshot.AmbientCommands.CustomCommands.TryGetValue(token, out var customAmbient))
-		{
-			await ExecuteCustomAmbientCommandAsync(customAmbient, serviceProvider, cancellationToken)
-				.ConfigureAwait(false);
-			return AmbientCommandOutcome.Handled;
+			if (entry.Matches(this, inputTokens))
+			{
+				var invocation = new AmbientCommandInvocation(
+					inputTokens, scopeTokens, serviceProvider, isInteractiveSession, cancellationToken);
+				return await entry.HandleAsync(this, invocation).ConfigureAwait(false);
+			}
 		}
 
 		return AmbientCommandOutcome.NotHandled;
+	}
+
+	private async ValueTask<AmbientCommandOutcome> HandleHelpAmbientAsync(AmbientCommandInvocation invocation)
+	{
+		var helpTokens = invocation.ScopeTokens.Concat(invocation.InputTokens.Skip(1)).ToArray();
+		var globalOptions = GlobalOptionParser.Parse(
+			helpTokens,
+			app.OptionsSnapshot.Output,
+			app.OptionsSnapshot.Parsing);
+		var helpRendered = await app.RenderHelpAsync(globalOptions, invocation.CancellationToken).ConfigureAwait(false);
+		return helpRendered ? AmbientCommandOutcome.Handled : AmbientCommandOutcome.HandledError;
+	}
+
+	private async ValueTask<AmbientCommandOutcome> HandleCompleteAmbientAsync(AmbientCommandInvocation invocation)
+	{
+		var completionSucceeded = await HandleCompletionAmbientCommandAsync(
+				[.. invocation.InputTokens.Skip(1)],
+				invocation.ScopeTokens,
+				invocation.ServiceProvider,
+				invocation.CancellationToken)
+			.ConfigureAwait(false);
+		return completionSucceeded ? AmbientCommandOutcome.Handled : AmbientCommandOutcome.HandledError;
+	}
+
+	private async ValueTask<AmbientCommandOutcome> HandleCustomAmbientAsync(AmbientCommandInvocation invocation)
+	{
+		if (!app.OptionsSnapshot.AmbientCommands.CustomCommands.TryGetValue(invocation.InputTokens[0], out var customAmbient))
+		{
+			return AmbientCommandOutcome.NotHandled;
+		}
+
+		await ExecuteCustomAmbientCommandAsync(customAmbient, invocation.ServiceProvider, invocation.CancellationToken)
+			.ConfigureAwait(false);
+		return AmbientCommandOutcome.Handled;
 	}
 
 	internal static async ValueTask<AmbientCommandOutcome> HandleUpAmbientCommandAsync(
