@@ -416,6 +416,71 @@ public sealed class Given_ShellIntegrationMarkEmitter
 	}
 
 	[TestMethod]
+	[Description("The session opener (lone D) only fixes a process-start anchor: when the FIRST enabled prompt used the generic backend and the client re-identifies as VS Code mid-session, no opener may fire between commands — a stray aborted D in a live stream can spawn a phantom command in VS Code's navigation state.")]
+	public async Task When_BackendFlipsToVsCodeMidSession_Then_NoOpenerIsEmittedBetweenCommands()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		using var session = ReplSessionIO.SetSession(
+			output: harness.Writer,
+			input: TextReader.Null,
+			ansiMode: AnsiMode.Always);
+		ReplSessionIO.TerminalIdentity = "Windows Terminal";
+		var emitter = CreateEmitter(ShellIntegrationMode.Auto);
+		await RunFullLifecycleAsync(emitter);
+		harness.RawOutput.Should().Contain("]133;A", because: "sanity: cycle 1 ran on the generic backend");
+
+		ReplSessionIO.TerminalIdentity = "vscode";
+		await RunFullLifecycleAsync(emitter);
+
+		var raw = harness.RawOutput;
+		var first633CommandEnd = raw.IndexOf("]633;D", StringComparison.Ordinal);
+		var first633PromptStart = raw.IndexOf("]633;A", StringComparison.Ordinal);
+		first633PromptStart.Should().BeGreaterThanOrEqualTo(0, because: "cycle 2 runs on the VS Code backend");
+		first633CommandEnd.Should().BeGreaterThan(
+			first633PromptStart,
+			because: "the first 633 D must be cycle 2's own command end, not a mid-session opener");
+	}
+
+	[TestMethod]
+	[Description("CLICOLOR_FORCE=1 overrides TERM=dumb in the hosted capability fallback, matching styled output's precedence: with an ANSI-incapable server console, a capable hosted client still gets marks when the operator explicitly forced color.")]
+	public async Task When_ClicolorForceOverridesDumbTerm_Then_HostedCapabilityFallbackEmitsMarks()
+	{
+		using var env = new EnvironmentVariableScope(
+			("NO_COLOR", null),
+			("CLICOLOR_FORCE", "1"),
+			("TMUX", null),
+			("TERM", "dumb"),
+			("WT_SESSION", null),
+			("ConEmuANSI", null),
+			("TERM_PROGRAM", null));
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		using var session = ReplSessionIO.SetSession(
+			output: harness.Writer,
+			input: TextReader.Null);
+		ReplSessionIO.TerminalCapabilities = TerminalCapabilities.Ansi | TerminalCapabilities.ShellIntegrationMarks;
+		var outputOptions = new OutputOptions();
+		// An ANSI-incapable server console: forces IsAnsiEnabled onto its host-detection
+		// branch so the capability fallback (the code under test) is what decides.
+		outputOptions.SetHostAnsiSupportResolver(static () => false);
+		var emitter = ShellIntegrationMarkEmitter.Create(
+			new TerminalIntegrationOptions { ShellIntegration = ShellIntegrationMode.Auto },
+			outputOptions);
+
+		await RunFullLifecycleAsync(emitter);
+
+		harness.RawOutput.Should().Contain("]133;A");
+		harness.RawOutput.Should().Contain("]133;D;0");
+	}
+
+	[TestMethod]
+	[Description("The IsWindows property bytes are pinned exactly: the emission branch only runs on a local Windows console, which the hosted test harness cannot exercise, so a typo in the literal would otherwise ship undetected.")]
+	public void When_CheckingWindowsPtyPropertyBytes_Then_SequenceIsExact()
+	{
+		ShellIntegrationMarkEmitter.WindowsPtyProperty.Should().Be("\x1b]633;P;IsWindows=True\x07");
+	}
+
+	[TestMethod]
 	[Description("A hosted client advertising ShellIntegrationMarks after the session started (Telnet TTYPE, control messages) gets marks from the next prompt cycle: enablement is re-evaluated per cycle, not frozen at session start.")]
 	public async Task When_HostedSessionAdvertisesMarksMidSession_Then_MarksAppearOnNextPromptCycle()
 	{

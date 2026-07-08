@@ -22,6 +22,12 @@ internal sealed class ShellIntegrationMarkEmitter
 
 	private const string Bell = "\x07";
 
+	// Declared to VS Code before the first prompt on a local Windows console (see
+	// ReportVsCodePromptContextAsync). Internal so a test can pin the exact bytes: the
+	// emission branch itself only runs on a local console, which the hosted test harness
+	// cannot exercise, so a typo here would otherwise ship undetected.
+	internal const string WindowsPtyProperty = "\x1b]633;P;IsWindows=True\x07";
+
 	// The A/B/C/D-no-code marks are constant per backend; precomputed so the per-prompt
 	// path allocates no throw-away interpolated strings. Only the variable-payload marks
 	// still format per call: D-with-exit-code and the 633;E command-line report.
@@ -80,18 +86,24 @@ internal sealed class ShellIntegrationMarkEmitter
 			return;
 		}
 
+		// The opener below only fixes a process-start anchor, so the latch is taken on the
+		// FIRST enabled prompt of the session whatever the backend: a mid-session backend
+		// flip to VS Code (client re-identification) must not fire a stray aborted D
+		// between live commands.
+		var isFirstEnabledPrompt = !_sessionOpened;
+		_sessionOpened = true;
+
 		if (_isVsCodeBackend)
 		{
-			// Nested-terminal handshake, once per session: when this app was launched from
-			// an integrated shell, that shell's command (this very process) is still open
-			// from VS Code's point of view, and handlePromptStart would anchor our first
-			// prompt at that command's stale end position — the first gutter decoration
-			// then lands on the banner. A lone command-end (aborted form: the outer exit
-			// code is unknowable) closes it at the true cursor position first. Real shells
-			// don't need this because they are not nested; harmless when nothing was open.
-			if (!_sessionOpened)
+			// Nested-terminal handshake: when this app was launched from an integrated
+			// shell, that shell's command (this very process) is still open from VS Code's
+			// point of view, and handlePromptStart would anchor our first prompt at that
+			// command's stale end position — the first gutter decoration then lands on the
+			// banner. A lone command-end (aborted form: the outer exit code is unknowable)
+			// closes it at the true cursor position first. Real shells don't need this
+			// because they are not nested; harmless when nothing was open.
+			if (isFirstEnabledPrompt)
 			{
-				_sessionOpened = true;
 				await ReplSessionIO.Output.WriteAsync(_marks.CommandEndNoCode).ConfigureAwait(false);
 			}
 
@@ -116,7 +128,7 @@ internal sealed class ShellIntegrationMarkEmitter
 			_windowsPtyReported = true;
 			if (ShouldReportWindowsConPty())
 			{
-				await ReplSessionIO.Output.WriteAsync("\x1b]633;P;IsWindows=True\x07").ConfigureAwait(false);
+				await ReplSessionIO.Output.WriteAsync(WindowsPtyProperty).ConfigureAwait(false);
 			}
 		}
 
@@ -334,8 +346,10 @@ internal sealed class ShellIntegrationMarkEmitter
 
 	// The escape set is backslash, semicolon, space + C0 controls (0x00–0x20), DEL (0x7f),
 	// and the C1 controls (0x80–0x9f); built programmatically to keep raw control bytes
-	// out of the source file. Chars above 0x9f are never in the set, so EscapeCommandLine's
-	// forbidden-control check needs no explicit upper bound.
+	// out of the source file. The set never contains chars above 0x9f — but the
+	// IsForbiddenControl predicate, which runs on EVERY char once the builder path opens,
+	// still needs its explicit 0x9f ceiling (see its comment and the 'é' regression test);
+	// only the SearchValues set itself is bound-free by construction.
 	private static SearchValues<char> CreateEscapedCommandLineChars()
 	{
 		// 2 punctuation + 33 (0x00–0x20) + 1 (DEL) + 32 (0x80–0x9f) = 68.
