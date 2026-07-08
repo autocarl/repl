@@ -54,6 +54,28 @@ public sealed class Given_SpectreTerminalDetection
 	}
 
 	[TestMethod]
+	[Description("Spectre's built-in CI profile enrichers (GitHub Actions and friends) force ANSI back on and must not override the host's detection: with GITHUB_ACTIONS set and an ANSI-incapable host, the render still carries no escape sequences.")]
+	public void When_RunningUnderGitHubActions_Then_HostDetectionStillWins()
+	{
+		using var env = new EnvironmentVariableScope([.. NeutralAnsiEnvironment, ("GITHUB_ACTIONS", "true")]);
+		var sut = ReplApp.Create(services => services.AddSpectreConsole())
+			.UseSpectreConsole();
+		sut.Options(o => o.Output.SetHostAnsiSupportResolver(static () => false));
+		sut.Map("wardrobe", () => new[]
+		{
+			new WardrobeRow("bib overalls", 42),
+			new WardrobeRow("denim jacket", 7),
+		});
+
+		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["wardrobe", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().NotContain(
+			AnsiIntroducer,
+			because: "CI enrichers must not override the host's ANSI verdict");
+	}
+
+	[TestMethod]
 	[Description("A hosted client advertising ANSI through capability flags (no AnsiSupport override) keeps Spectre colors: the same hosted capability fallback that drives marks and advanced progress applies to Spectre rendering.")]
 	public void When_HostedClientAdvertisesAnsiViaCapabilities_Then_SpectreKeepsColors()
 	{

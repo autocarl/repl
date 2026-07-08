@@ -37,6 +37,10 @@ internal static class SessionAnsiConsole
 		var settings = new AnsiConsoleSettings
 		{
 			Out = new SessionAnsiConsoleOutput(),
+			// Spectre's default profile enrichers (GitHub Actions, GitLab, TeamCity, …)
+			// force ANSI back on under CI, overriding the explicit Ansi/ColorSystem below;
+			// the host detection is authoritative here, so enrichment is disabled.
+			Enrichment = new ProfileEnrichment { UseDefaultEnrichers = false },
 		};
 		ApplyTerminalDetection(settings, outputOptions, origin: "session");
 
@@ -52,6 +56,8 @@ internal static class SessionAnsiConsole
 		var settings = new AnsiConsoleSettings
 		{
 			Out = new WriterAnsiConsoleOutput(writer, width),
+			// Same rationale as Create: CI enrichers must not override the host detection.
+			Enrichment = new ProfileEnrichment { UseDefaultEnrichers = false },
 		};
 		ApplyTerminalDetection(settings, outputOptions, origin: "writer");
 
