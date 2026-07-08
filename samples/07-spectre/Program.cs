@@ -420,6 +420,19 @@ app.Map("terminal",
 	[Description("Show what the terminal-integration layer detected for this session")]
 	(IAnsiConsole console, IReplSessionInfo session) =>
 	{
+		// Local trial-encode mirroring the framework's box-drawing gate: encodes a
+		// box glyph and checks the roundtrip (a legacy codepage best-fits it to '?').
+		var probeEncoding = Console.OutputEncoding;
+		bool boxDrawingCapable;
+		try
+		{
+			boxDrawingCapable = string.Equals(probeEncoding.GetString(probeEncoding.GetBytes("\u256d")), "\u256d", StringComparison.Ordinal);
+		}
+		catch (Exception)
+		{
+			boxDrawingCapable = false;
+		}
+
 		var table = new Table().Border(TableBorder.Rounded).BorderColor(Color.Blue)
 			.AddColumn("Property").AddColumn("Detected");
 		table.AddRow("Shell integration", session.ShellIntegrationStatus ?? "no prompt cycle yet (CLI one-shot?)");
@@ -427,6 +440,9 @@ app.Map("terminal",
 		table.AddRow("Capabilities", session.TerminalCapabilities.ToString());
 		table.AddRow("ANSI", session.AnsiSupported ? "yes" : "no");
 		table.AddRow("Window size", session.WindowSize is { } size ? $"{size.Width}x{size.Height}" : "unknown");
+		table.AddRow("Output encoding", $"{probeEncoding.WebName} (cp{probeEncoding.CodePage})");
+		table.AddRow("Redirected (out/in)", $"{Console.IsOutputRedirected}/{Console.IsInputRedirected}");
+		table.AddRow("Box drawing", boxDrawingCapable ? "encodable" : "not encodable");
 		console.Write(table);
 		return Results.Success("Terminal detection displayed.");
 	});

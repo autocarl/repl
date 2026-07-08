@@ -8,9 +8,10 @@ namespace Repl.IntegrationTests;
 [DoNotParallelize]
 public sealed class Given_SpectreTerminalDetection
 {
-	// Built from the char code so no raw control byte lives in the source file.
-	private static readonly string AnsiIntroducer = $"{(char)0x1b}[";
+	private const string AnsiIntroducer = "\u001b[";
 
+	// Kept in sync by hand with Repl.Tests' TerminalTestEnvironments.Neutral (the two
+	// test projects deliberately share no code).
 	private static readonly (string Name, string? Value)[] NeutralAnsiEnvironment =
 	[
 		("NO_COLOR", null),
@@ -18,6 +19,7 @@ public sealed class Given_SpectreTerminalDetection
 		("TERM", null),
 		("TMUX", null),
 		("WT_SESSION", null),
+		("ConEmuANSI", null),
 		("TERM_PROGRAM", null),
 	];
 
@@ -101,8 +103,8 @@ public sealed class Given_SpectreTerminalDetection
 	}
 
 	[TestMethod]
-	[Description("Unicode box drawing follows the output sink's encoding: a handler-authored bordered table rendered into a session writer that cannot carry box-drawing glyphs falls back to Spectre's ASCII-safe border — the mojibake half of issue #46.")]
-	public void When_SessionWriterCannotCarryBoxDrawing_Then_BorderedTableFallsBackToAscii()
+	[Description("Unicode box drawing follows the output sink's encoding: a handler-authored rounded table rendered into a sink that cannot carry the rounded glyph falls back to Spectre's safe border (square box glyphs, present in legacy OEM codepages) — the mojibake half of issue #46.")]
+	public void When_SessionWriterCannotCarryBoxDrawing_Then_BorderedTableFallsBackToSafeBorder()
 	{
 		using var env = new EnvironmentVariableScope(NeutralAnsiEnvironment);
 		var writer = new AsciiStringWriter();
@@ -126,7 +128,8 @@ public sealed class Given_SpectreTerminalDetection
 		exitCode.Should().Be(0);
 		var text = writer.ToString();
 		text.Should().Contain("bib overalls");
-		text.Should().NotContain("╭", because: "the ASCII sink cannot carry box-drawing glyphs; Spectre's safe border must apply");
+		text.Should().NotContain("╭", because: "the sink cannot carry the rounded glyph; Spectre's safe border must apply");
+		text.Should().Contain("┌", because: "Spectre's safe border (square, carried by OEM codepages) must actually be present, not just the rounded one absent");
 	}
 
 	[TestMethod]
