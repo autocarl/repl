@@ -139,12 +139,14 @@ internal static class ReplSessionIO
 					sessionId,
 					session =>
 					{
-						var updated = value switch
+						var updated = session;
+						if (value is { } ansiSupported)
 						{
-							true => session.WithExplicitCapabilities(TerminalCapabilities.Ansi),
-							false => session.WithoutCapabilities(TerminalCapabilities.Ansi),
-							_ => session,
-						};
+							updated = ansiSupported
+								? session.WithExplicitCapabilities(TerminalCapabilities.Ansi)
+								: session.WithoutCapabilities(TerminalCapabilities.Ansi);
+						}
+
 						return updated with { AnsiSupport = value };
 					});
 			}

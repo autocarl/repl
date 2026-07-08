@@ -121,14 +121,15 @@ public sealed class StreamedReplHost : IReplSessionHost, IAsyncDisposable
 			return;
 		}
 
+		var isAnsiSupported = ansiSupported.Value;
 		ReplSessionIO.UpdateSession(
 			SessionId,
 			session =>
 			{
-				var updated = ansiSupported.Value
+				var updated = isAnsiSupported
 					? session.WithExplicitCapabilities(TerminalCapabilities.Ansi)
 					: session.WithoutCapabilities(TerminalCapabilities.Ansi);
-				return updated with { AnsiSupport = ansiSupported.Value };
+				return updated with { AnsiSupport = isAnsiSupported };
 			});
 	}
 
