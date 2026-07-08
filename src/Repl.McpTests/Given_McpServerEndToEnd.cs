@@ -487,6 +487,26 @@ public sealed class Given_McpServerEndToEnd
 		text.Should().Contain("Diagnose: missing data");
 	}
 
+	[TestMethod]
+	[Description("prompts/get unwraps JSON string literals so prompt text is plain text.")]
+	public async Task When_PromptReturnsString_Then_TextIsPlainString()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Map("ops troubleshoot {symptom}", static (string symptom) =>
+					$"Investigate the checkout service for this symptom: '{symptom}'. Start with ops_status, inspect failed checks, then propose the smallest safe next step.")
+				.AsPrompt();
+		});
+
+		var result = await fixture.Client.GetPromptAsync(
+			"ops_troubleshoot",
+			new Dictionary<string, object?>(StringComparer.Ordinal) { ["symptom"] = "queue depth rising" });
+
+		result.Messages.Should().ContainSingle();
+		var text = (result.Messages[0].Content as TextContentBlock)?.Text;
+		text.Should().Be("Investigate the checkout service for this symptom: 'queue depth rising'. Start with ops_status, inspect failed checks, then propose the smallest safe next step.");
+	}
+
 	// ── Options group camelCase naming ─────────────────────────────────
 
 	[TestMethod]

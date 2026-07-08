@@ -84,7 +84,7 @@ internal sealed partial class ReplMcpServerUiResource : McpServerResource
 				{
 					Uri = request.Params.Uri,
 					MimeType = McpAppValidation.ResourceMimeType,
-					Text = UnwrapJsonString(text),
+					Text = McpJsonStringOutput.UnwrapJsonStringLiteral(text),
 					Meta = McpAppMetadata.BuildResourceMeta(_options.ResourceOptions),
 				},
 			],
@@ -159,22 +159,6 @@ internal sealed partial class ReplMcpServerUiResource : McpServerResource
 		return [.. variableNames];
 	}
 
-	private static string UnwrapJsonString(string text)
-	{
-		if (text.Length == 0 || text[0] != '"')
-		{
-			return text;
-		}
-
-		try
-		{
-			return JsonSerializer.Deserialize(text, McpJsonContext.Default.String) ?? text;
-		}
-		catch (JsonException)
-		{
-			return text;
-		}
-	}
 
 	private static string BuildDefaultResourceName(string path)
 	{
