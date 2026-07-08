@@ -26,9 +26,14 @@ public sealed class Given_SpectreTerminalDetection
 	public void When_HostConsoleCannotRenderAnsi_Then_SpectreRendersWithoutAnsi()
 	{
 		using var env = new EnvironmentVariableScope(NeutralAnsiEnvironment);
+		OutputOptions? configuredOutput = null;
 		var sut = ReplApp.Create(services => services.AddSpectreConsole())
 			.UseSpectreConsole();
-		sut.Options(o => o.Output.SetHostAnsiSupportResolver(static () => false));
+		sut.Options(o =>
+		{
+			o.Output.SetHostAnsiSupportResolver(static () => false);
+			configuredOutput = o.Output;
+		});
 		sut.Map("wardrobe", () => new[]
 		{
 			new WardrobeRow("bib overalls", 42),
@@ -39,7 +44,12 @@ public sealed class Given_SpectreTerminalDetection
 
 		output.ExitCode.Should().Be(0);
 		output.Text.Should().Contain("bib overalls");
-		output.Text.Should().NotContain(AnsiIntroducer, because: "a console that does not interpret ANSI must not receive escape sequences");
+		var gateVerdict = configuredOutput is { } configured
+			? $"gate={TerminalAnsiCapability.IsAnsiCapableForTerminalSequences(configured)}, ansiEnabled={configured.IsAnsiEnabled()}"
+			: "options not captured";
+		output.Text.Should().NotContain(
+			AnsiIntroducer,
+			because: $"a console that does not interpret ANSI must not receive escape sequences ({gateVerdict}, redirected={Console.IsOutputRedirected})");
 	}
 
 	[TestMethod]
