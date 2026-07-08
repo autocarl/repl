@@ -58,7 +58,7 @@ An input that only *looks* like it targets a passthrough route but does not actu
 ## Disabling marks
 
 - **Per app**: `options.ShellIntegration = ShellIntegrationMode.Never` (or simply never calling `UseTerminalIntegration`).
-- **Per run, by the end user**: `NO_COLOR=1` or `TERM=dumb` disables marks — but as collateral of disabling all ANSI styling, since marks ride the same ANSI gate. There is no mark-only runtime switch; if a terminal is misdetected and shows raw `]133;…`, `NO_COLOR` is the escape hatch.
+- **Per run, by the end user**: `NO_COLOR=1` or `TERM=dumb` disables marks — but as collateral of disabling all ANSI styling, since marks ride the same ANSI gate (`CLICOLOR_FORCE=1` overrides `TERM=dumb`, matching styled output). There is no mark-only runtime switch; on a **local console**, if a terminal is misdetected and shows raw `]133;…`, `NO_COLOR` is the escape hatch. For **hosted sessions** these variables live in the *server* process environment: a remote user cannot set them, and setting them server-side disables ANSI for every connected session — a misdetected hosted client is better fixed by correcting the identity/capabilities it advertises (or `ShellIntegrationMode.Never` app-side).
 
 ## Backend selection
 
@@ -76,12 +76,19 @@ Hosted sessions (WebSocket, Telnet) receive marks when their reported terminal i
 
 ## Troubleshooting
 
-The enablement decision emits no runtime diagnostics, but it is deterministic: the gates are evaluated in a fixed order and the first failing gate decides. In order: integration configured → not in protocol passthrough → ANSI capable → output not redirected (local only) → mode (`Always`/`Never`) → capability advertised (hosted) or terminal recognized (local). When marks misbehave, walk that chain — the first gate that fails explains the symptom:
+Ask the running app first: `IReplSessionInfo.ShellIntegrationStatus` reports the detection outcome for the current prompt cycle — the active dialect (`"OSC 133"`, `"OSC 633 (VS Code)"`) or `"off (<gate>)"` naming the gate that disabled emission. A three-line debug command surfaces it:
+
+```csharp
+app.Map("terminal", (IReplSessionInfo session) =>
+    session.ShellIntegrationStatus ?? "no prompt cycle yet");
+```
+
+The decision is also deterministic, so it can be walked by hand: gates are evaluated in a fixed order and the first failing gate decides. In order: integration configured → not in protocol passthrough → ANSI capable → output not redirected (local only) → mode (`Always`/`Never`) → capability advertised (hosted) or terminal recognized (local). When marks misbehave, walk that chain — the first gate that fails explains the symptom:
 
 | Symptom | Gate to check |
 |---|---|
 | Marks emitted but nothing visible in Windows Terminal | Terminal-side setup: unlike VS Code, Windows Terminal (≥ 1.21) exposes mark features only through settings — `"showMarksOnScrollbar": true` on the profile for scrollbar pips, and `scrollToMark` actions bound to keys (e.g. Ctrl+Up/Down) for command navigation; neither is on by default. |
-| Raw `]133;…` / `]633;…` text on screen | The terminal does not render marks. Set `ShellIntegrationMode.Never`, or `NO_COLOR=1` as an end-user escape hatch. |
+| Raw `]133;…` / `]633;…` text on screen | The terminal does not render marks. Set `ShellIntegrationMode.Never`, or `NO_COLOR=1` as a local end-user escape hatch; for a hosted client, fix the identity/capabilities it advertises (server-side `NO_COLOR` affects every session — see Disabling marks). |
 | No marks at all (expected some) | `ShellIntegration` mode (`Never`?); then `UseTerminalIntegration` actually called?; then the ANSI gate (`NO_COLOR`, `TERM=dumb`, `AnsiMode.Never`, redirected output with no hosted session). |
 | No marks under Auto specifically | Detection: locally `WT_SESSION`/`TERM_PROGRAM`; under tmux/screen Auto stays off; for a hosted client, the advertised `ShellIntegrationMarks` capability. |
 | Command navigation works but wrong dialect | Backend selection: OSC 633 only when VS Code is detected (`TERM_PROGRAM=vscode` locally or a `vscode` hosted identity), else OSC 133. |
