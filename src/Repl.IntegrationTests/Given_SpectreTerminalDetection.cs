@@ -22,12 +22,13 @@ public sealed class Given_SpectreTerminalDetection
 	];
 
 	[TestMethod]
-	[Description("On a redirected console with no hosted session (e.g. an IDE Run window), Spectre rendering follows the host's ANSI detection and emits no escape sequences — the raw-escapes half of issue #46.")]
-	public void When_ConsoleIsRedirectedWithoutSession_Then_SpectreRendersWithoutAnsi()
+	[Description("On a host whose console cannot render ANSI (e.g. an IDE Run window), Spectre rendering follows the host's detection and emits no escape sequences — the raw-escapes half of issue #46. The host verdict is pinned through the resolver because the process console state (redirected or headless) differs between dev machines and CI runners.")]
+	public void When_HostConsoleCannotRenderAnsi_Then_SpectreRendersWithoutAnsi()
 	{
 		using var env = new EnvironmentVariableScope(NeutralAnsiEnvironment);
 		var sut = ReplApp.Create(services => services.AddSpectreConsole())
 			.UseSpectreConsole();
+		sut.Options(o => o.Output.SetHostAnsiSupportResolver(static () => false));
 		sut.Map("wardrobe", () => new[]
 		{
 			new WardrobeRow("bib overalls", 42),
@@ -55,6 +56,9 @@ public sealed class Given_SpectreTerminalDetection
 			new WardrobeRow("denim jacket", 7),
 		});
 		using var session = ReplSessionIO.SetSession(writer, TextReader.Null);
+		// A fixed size keeps Spectre off Console.WindowWidth, which headless CI consoles
+		// report as 0.
+		ReplSessionIO.WindowSize = (80, 24);
 		ReplSessionIO.TerminalCapabilities = TerminalCapabilities.Ansi;
 
 		var exitCode = sut.Run(["wardrobe", "--no-logo"]);
@@ -80,6 +84,9 @@ public sealed class Given_SpectreTerminalDetection
 			return Results.Success("Wardrobe displayed.");
 		});
 		using var session = ReplSessionIO.SetSession(writer, TextReader.Null);
+		// A fixed size keeps Spectre off Console.WindowWidth, which headless CI consoles
+		// report as 0 — a zero-width profile would render the table as nothing.
+		ReplSessionIO.WindowSize = (80, 24);
 
 		var exitCode = sut.Run(["wardrobe", "--no-logo"]);
 

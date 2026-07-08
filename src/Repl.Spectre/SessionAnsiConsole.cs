@@ -121,14 +121,17 @@ internal static class SessionAnsiConsole
 
 		private static int ResolveWidth()
 		{
-			if (ReplSessionIO.WindowSize is { } size)
+			if (ReplSessionIO.WindowSize is { } size && size.Width > 0)
 			{
 				return size.Width;
 			}
 
 			try
 			{
-				return Console.WindowWidth;
+				// Headless consoles (CI runners) can report 0 without throwing; a
+				// zero-width profile makes Spectre render nothing, so fall back.
+				var width = Console.WindowWidth;
+				return width > 0 ? width : 120;
 			}
 			catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or InvalidOperationException)
 			{
@@ -138,14 +141,16 @@ internal static class SessionAnsiConsole
 
 		private static int ResolveHeight()
 		{
-			if (ReplSessionIO.WindowSize is { } size)
+			if (ReplSessionIO.WindowSize is { } size && size.Height > 0)
 			{
 				return size.Height;
 			}
 
 			try
 			{
-				return Console.WindowHeight;
+				// Same headless-console guard as ResolveWidth.
+				var height = Console.WindowHeight;
+				return height > 0 ? height : 24;
 			}
 			catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or InvalidOperationException)
 			{
