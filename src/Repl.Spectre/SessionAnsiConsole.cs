@@ -23,16 +23,23 @@ internal static class SessionAnsiConsole
 	internal static SpectreConsoleOptions Options { get; set; } = new();
 
 	/// <summary>
+	/// Gets or sets the host output options pushed by
+	/// <see cref="SpectreReplExtensions.UseSpectreConsole"/>, so the creation sites that
+	/// don't go through DI (interaction handler, output transformer) can consult the
+	/// host's terminal detection. Same process-wide caveat as <see cref="Options"/>.
+	/// </summary>
+	internal static OutputOptions? HostOutputOptions { get; set; }
+
+	/// <summary>
 	/// Creates a new <see cref="IAnsiConsole"/> bound to the current session I/O.
 	/// </summary>
-	public static IAnsiConsole Create()
+	public static IAnsiConsole Create(OutputOptions? outputOptions = null)
 	{
 		var settings = new AnsiConsoleSettings
 		{
-			Ansi = AnsiSupport.Yes,
-			ColorSystem = ColorSystemSupport.TrueColor,
 			Out = new SessionAnsiConsoleOutput(),
 		};
+		ApplyTerminalDetection(settings, outputOptions);
 
 		return ApplyOptions(AnsiConsole.Create(settings));
 	}
@@ -45,18 +52,63 @@ internal static class SessionAnsiConsole
 	{
 		var settings = new AnsiConsoleSettings
 		{
-			Ansi = AnsiSupport.Yes,
-			ColorSystem = ColorSystemSupport.TrueColor,
 			Out = new WriterAnsiConsoleOutput(writer, width),
 		};
+		ApplyTerminalDetection(settings, outputOptions: null);
 
 		return ApplyOptions(AnsiConsole.Create(settings));
 	}
 
+	// Issue #46: the profile follows the host's terminal detection instead of hardcoding
+	// ANSI + TrueColor. The gate is the same one driving shell-integration marks and
+	// advanced progress: IsAnsiEnabled first, then the hosted capability fallback, with
+	// the NO_COLOR > CLICOLOR_FORCE > TERM=dumb escape hatches honored. When no
+	// OutputOptions is reachable (bare AddSpectreConsole without UseSpectreConsole and
+	// outside a Repl DI container), the legacy always-on behavior is preserved so
+	// standalone consumers do not regress.
+	private static void ApplyTerminalDetection(AnsiConsoleSettings settings, OutputOptions? outputOptions)
+	{
+		var effectiveOptions = outputOptions ?? HostOutputOptions;
+		if (effectiveOptions is null)
+		{
+			settings.Ansi = AnsiSupport.Yes;
+			settings.ColorSystem = ColorSystemSupport.TrueColor;
+			return;
+		}
+
+		var ansiCapable = TerminalAnsiCapability.IsAnsiCapableForTerminalSequences(effectiveOptions);
+		settings.Ansi = ansiCapable ? AnsiSupport.Yes : AnsiSupport.No;
+		settings.ColorSystem = ansiCapable ? ColorSystemSupport.TrueColor : ColorSystemSupport.NoColors;
+	}
+
 	private static IAnsiConsole ApplyOptions(IAnsiConsole console)
 	{
-		console.Profile.Capabilities.Unicode = Options.Unicode;
+		// Unicode is gated on the FINAL sink's encoding, not the immediate writer: the
+		// transformer renders into a UTF-16 StringWriter whose content is later written to
+		// the session output, so the session writer (or Console.Out locally — the fallback
+		// of ReplSessionIO.Output) is the encoding that actually has to carry the glyphs.
+		console.Profile.Capabilities.Unicode =
+			Options.Unicode && CanRenderBoxDrawing(ReplSessionIO.Output.Encoding);
 		return console;
+	}
+
+	/// <summary>
+	/// True when <paramref name="encoding"/> can carry Spectre's box-drawing glyphs.
+	/// Trial-encodes a representative glyph and checks the roundtrip: a legacy codepage
+	/// with a best-fit/replacement fallback turns it into '?', which is exactly the
+	/// mojibake this guards against — cheaper and more truthful than a codepage allowlist.
+	/// </summary>
+	internal static bool CanRenderBoxDrawing(Encoding encoding)
+	{
+		const string probe = "╭";
+		try
+		{
+			return string.Equals(encoding.GetString(encoding.GetBytes(probe)), probe, StringComparison.Ordinal);
+		}
+		catch (EncoderFallbackException)
+		{
+			return false;
+		}
 	}
 
 	private sealed class SessionAnsiConsoleOutput : IAnsiConsoleOutput

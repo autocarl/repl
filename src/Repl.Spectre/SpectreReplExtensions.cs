@@ -22,7 +22,10 @@ public static class SpectreReplExtensions
 		services.TryAddSingleton<SpectreInteractionPresenter>();
 		services.TryAddSingleton<IReplInteractionPresenter>(sp => sp.GetRequiredService<SpectreInteractionPresenter>());
 		services.AddSingleton<IReplInteractionHandler, SpectreInteractionHandler>();
-		services.TryAddTransient<IAnsiConsole>(_ => SessionAnsiConsole.Create());
+		// The container carries the app's OutputOptions (registered by ReplApp), so the
+		// injected console follows the host's terminal detection even when
+		// UseSpectreConsole was not called.
+		services.TryAddTransient<IAnsiConsole>(sp => SessionAnsiConsole.Create(sp.GetService<OutputOptions>()));
 		return services;
 	}
 
@@ -49,6 +52,9 @@ public static class SpectreReplExtensions
 
 		app.Options(o =>
 		{
+			// Lets the non-DI console creation sites (interaction handler, output
+			// transformer) consult the host's terminal detection — see issue #46.
+			SessionAnsiConsole.HostOutputOptions = o.Output;
 			o.Output.AddTransformer("spectre", new SpectreHumanOutputTransformer(o.Output.ResolveHumanRenderSettings));
 			o.Output.AddHelpOutputFactory(
 				"spectre",

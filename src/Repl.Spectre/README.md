@@ -139,6 +139,20 @@ app.WithBanner((IAnsiConsole console) =>
 When `Unicode` is enabled, `UseSpectreConsole()` sets `Console.OutputEncoding` to UTF-8 to ensure
 Unicode characters (progress bars, spinners, box-drawing) render correctly on Windows.
 
+### Terminal detection
+
+Spectre rendering follows the same terminal detection as the rest of the framework — no
+configuration required:
+
+- **ANSI**: colors are emitted only when the host detection allows them (the shared gate also
+  driving shell-integration marks and advanced progress). `NO_COLOR`, `CLICOLOR_FORCE`, and
+  `TERM=dumb` are honored with the usual precedence, hosted clients can advertise ANSI through
+  capability flags, and a redirected console (an IDE Run window, a pipe) gets plain text instead
+  of raw escape sequences. When ANSI is off, the color system degrades to `NoColors`.
+- **Unicode**: box-drawing glyphs are used only when the actual output sink's encoding can carry
+  them (checked per console creation); otherwise Spectre falls back to its ASCII-safe borders
+  instead of producing mojibake.
+
 ## Docs
 
 - [Cookbook: Spectre.Console](https://repl.yllibed.org/cookbook/spectre/) — setup, prompts, renderables, capture, banners
