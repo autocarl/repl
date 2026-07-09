@@ -7,14 +7,6 @@ namespace Repl;
 /// </summary>
 internal sealed class ShellCompletionEngine(CoreReplApp app)
 {
-	private static readonly string[] StaticShellGlobalOptions =
-	[
-		"--help",
-		"--interactive",
-		"--no-interactive",
-		"--no-logo",
-		"--output:",
-	];
 
 	public string[] ResolveShellCompletionCandidates(string line, int cursor)
 	{
@@ -224,47 +216,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		var comparison = options.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? StringComparison.OrdinalIgnoreCase
 			: StringComparison.Ordinal;
-		foreach (var option in StaticShellGlobalOptions)
-		{
-			if (option.StartsWith(currentTokenPrefix, comparison))
-			{
-				TryAddShellCompletionCandidate(option, dedupe, candidates);
-			}
-		}
-
-		foreach (var alias in options.Output.Aliases.Keys)
-		{
-			var opt = $"--{alias}";
-			if (opt.StartsWith(currentTokenPrefix, comparison))
-			{
-				TryAddShellCompletionCandidate(opt, dedupe, candidates);
-			}
-		}
-
-		foreach (var format in options.Output.Transformers.Keys)
-		{
-			var opt = $"--output:{format}";
-			if (opt.StartsWith(currentTokenPrefix, comparison))
-			{
-				TryAddShellCompletionCandidate(opt, dedupe, candidates);
-			}
-		}
-
-		foreach (var custom in options.Parsing.GlobalOptions.Values)
-		{
-			if (custom.CanonicalToken.StartsWith(currentTokenPrefix, comparison))
-			{
-				TryAddShellCompletionCandidate(custom.CanonicalToken, dedupe, candidates);
-			}
-
-			foreach (var alias in custom.Aliases)
-			{
-				if (alias.StartsWith(currentTokenPrefix, comparison))
-				{
-					TryAddShellCompletionCandidate(alias, dedupe, candidates);
-				}
-			}
-		}
+		OptionTokenCompletionSource.CollectGlobalOptionTokens(options, currentTokenPrefix, comparison, dedupe, candidates);
 	}
 
 	private void AddRouteShellOptionCandidates(
@@ -276,13 +228,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		var comparison = app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? StringComparison.OrdinalIgnoreCase
 			: StringComparison.Ordinal;
-		foreach (var token in route.OptionSchema.KnownTokens)
-		{
-			if (token.StartsWith(currentTokenPrefix, comparison))
-			{
-				TryAddShellCompletionCandidate(token, dedupe, candidates);
-			}
-		}
+		OptionTokenCompletionSource.CollectRouteOptionTokens(route, currentTokenPrefix, comparison, dedupe, candidates);
 	}
 
 	internal static ShellCompletionInputState AnalyzeShellCompletionInput(string input, int cursor)

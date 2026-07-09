@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using Repl.Internal.Options;
 
 namespace Repl;
 
@@ -10,15 +11,6 @@ namespace Repl;
 internal sealed class AutocompleteEngine(CoreReplApp app)
 {
 	internal const string AutocompleteModeSessionStateKey = "__repl.autocomplete.mode";
-
-	private static readonly string[] StaticInteractiveGlobalOptionTokens =
-	[
-		"--help",
-		"--interactive",
-		"--no-interactive",
-		"--no-logo",
-		"--output:",
-	];
 
 	internal AutocompleteMode ResolveEffectiveAutocompleteMode(IServiceProvider serviceProvider)
 	{
@@ -110,6 +102,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				matchingRoutes,
 				state.CommandPrefix,
 				state.CurrentTokenPrefix,
+				state.OptionsTerminated,
 				scopeTokens.Count,
 				activeGraph,
 				prefixComparison,
@@ -156,6 +149,16 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 	{
 		var state = AnalyzeAutocompleteInput(request.Input, request.Cursor);
 		var commandPrefix = scopeTokens.Concat(state.PriorTokens).ToArray();
+		// Mirror execution: committed tokens go through the same unique-prefix/alias
+		// expansion the router applies ("i" resolves to "install"), so route options and
+		// child suggestions describe what would actually run. An ambiguous shorthand is
+		// left as typed — the menu then shows the competing alternatives.
+		var prefixResolution = app.ResolveUniquePrefixes(commandPrefix, activeGraph);
+		if (!prefixResolution.IsAmbiguous)
+		{
+			commandPrefix = prefixResolution.Tokens;
+		}
+
 		var currentTokenPrefix = state.CurrentTokenPrefix;
 		var replaceStart = state.ReplaceStart;
 		var replaceLength = state.ReplaceLength;
@@ -173,20 +176,23 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				commandPrefix,
 				currentTokenPrefix,
 				replaceStart,
-				replaceLength);
+				replaceLength,
+				state.OptionsTerminated);
 		}
 
 		return new AutocompleteResolutionState(
 			commandPrefix.Concat([currentTokenPrefix]).ToArray(),
 			string.Empty,
 			request.Cursor,
-			0);
+			0,
+			state.OptionsTerminated);
 	}
 
 	private async ValueTask<ConsoleLineReader.AutocompleteSuggestion[]> CollectAutocompleteSuggestionsAsync(
 		IReadOnlyList<RouteDefinition> matchingRoutes,
 		string[] commandPrefix,
 		string currentTokenPrefix,
+		bool optionsTerminated,
 		int scopeTokenCount,
 		ActiveRoutingGraph activeGraph,
 		StringComparison prefixComparison,
@@ -211,7 +217,8 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		var optionCandidates = CollectOptionAutocompleteCandidates(
 			matchingRoutes,
 			commandPrefix,
-			currentTokenPrefix);
+			currentTokenPrefix,
+			optionsTerminated);
 		var contextCandidates = app.OptionsSnapshot.Interactive.Autocomplete.ShowContextAlternatives
 			? CollectContextAutocompleteCandidates(commandPrefix, currentTokenPrefix, prefixComparison, activeGraph.Contexts)
 			: [];
@@ -326,100 +333,63 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 	private List<ConsoleLineReader.AutocompleteSuggestion> CollectOptionAutocompleteCandidates(
 		IReadOnlyList<RouteDefinition> matchingRoutes,
 		string[] commandPrefix,
-		string currentTokenPrefix)
+		string currentTokenPrefix,
+		bool optionsTerminated)
 	{
-		if (!IsGlobalOptionToken(currentTokenPrefix))
+		if (optionsTerminated || !IsOptionPrefixToken(currentTokenPrefix))
 		{
 			return [];
 		}
 
 		var comparison = ResolveOptionStringComparison();
-		var comparer = ResolveOptionStringComparer();
-		var suggestions = new List<ConsoleLineReader.AutocompleteSuggestion>();
+		var comparer = StringComparer.FromComparison(comparison);
+		var tokens = new List<string>();
 		var dedupe = new HashSet<string>(comparer);
-		AddGlobalOptionAutocompleteCandidates(currentTokenPrefix, comparison, dedupe, suggestions);
+		OptionTokenCompletionSource.CollectGlobalOptionTokens(
+			app.OptionsSnapshot, currentTokenPrefix, comparison, dedupe, tokens);
 
-		foreach (var route in matchingRoutes.Where(route => route.Template.Segments.Count == commandPrefix.Length))
+		foreach (var route in matchingRoutes)
 		{
-			AddRouteOptionAutocompleteCandidates(route, currentTokenPrefix, comparison, dedupe, suggestions);
+			// Options may appear before trailing positional arguments (the invocation
+			// parser accepts them anywhere), so route options are offered as soon as the
+			// command WORDS are fully typed; only dynamic argument segments may be missing.
+			if (AllRemainingSegmentsAreDynamic(route, commandPrefix.Length))
+			{
+				OptionTokenCompletionSource.CollectRouteOptionTokens(
+					route, currentTokenPrefix, comparison, dedupe, tokens);
+			}
 		}
 
-		suggestions.Sort((left, right) => string.Compare(left.DisplayText, right.DisplayText, comparison));
+		tokens.Sort(comparer);
+		var suggestions = new List<ConsoleLineReader.AutocompleteSuggestion>(tokens.Count);
+		foreach (var token in tokens)
+		{
+			suggestions.Add(new ConsoleLineReader.AutocompleteSuggestion(
+				token,
+				Kind: ConsoleLineReader.AutocompleteSuggestionKind.Parameter));
+		}
+
 		return suggestions;
 	}
 
-	private void AddGlobalOptionAutocompleteCandidates(
-		string currentTokenPrefix,
-		StringComparison comparison,
-		HashSet<string> dedupe,
-		List<ConsoleLineReader.AutocompleteSuggestion> suggestions)
+	private static bool AllRemainingSegmentsAreDynamic(RouteDefinition route, int typedSegmentCount)
 	{
-		var options = app.OptionsSnapshot;
-		foreach (var option in StaticInteractiveGlobalOptionTokens)
+		var segments = route.Template.Segments;
+		for (var i = typedSegmentCount; i < segments.Count; i++)
 		{
-			TryAddOptionAutocompleteCandidate(option, currentTokenPrefix, comparison, dedupe, suggestions);
-		}
-
-		foreach (var alias in options.Output.Aliases.Keys)
-		{
-			TryAddOptionAutocompleteCandidate($"--{alias}", currentTokenPrefix, comparison, dedupe, suggestions);
-		}
-
-		foreach (var format in options.Output.Transformers.Keys)
-		{
-			TryAddOptionAutocompleteCandidate($"--output:{format}", currentTokenPrefix, comparison, dedupe, suggestions);
-		}
-
-		foreach (var custom in options.Parsing.GlobalOptions.Values)
-		{
-			TryAddOptionAutocompleteCandidate(custom.CanonicalToken, currentTokenPrefix, comparison, dedupe, suggestions);
-
-			foreach (var alias in custom.Aliases)
+			if (segments[i] is LiteralRouteSegment)
 			{
-				TryAddOptionAutocompleteCandidate(alias, currentTokenPrefix, comparison, dedupe, suggestions);
+				return false;
 			}
 		}
-	}
 
-	private static void AddRouteOptionAutocompleteCandidates(
-		RouteDefinition route,
-		string currentTokenPrefix,
-		StringComparison comparison,
-		HashSet<string> dedupe,
-		List<ConsoleLineReader.AutocompleteSuggestion> suggestions)
-	{
-		foreach (var token in route.OptionSchema.KnownTokens)
-		{
-			TryAddOptionAutocompleteCandidate(token, currentTokenPrefix, comparison, dedupe, suggestions);
-		}
-	}
-
-	private static void TryAddOptionAutocompleteCandidate(
-		string token,
-		string currentTokenPrefix,
-		StringComparison comparison,
-		HashSet<string> dedupe,
-		List<ConsoleLineReader.AutocompleteSuggestion> suggestions)
-	{
-		if (!token.StartsWith(currentTokenPrefix, comparison) || !dedupe.Add(token))
-		{
-			return;
-		}
-
-		suggestions.Add(new ConsoleLineReader.AutocompleteSuggestion(
-			token,
-			Kind: ConsoleLineReader.AutocompleteSuggestionKind.Parameter));
+		return true;
 	}
 
 	private StringComparison ResolveOptionStringComparison() =>
 		app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? StringComparison.OrdinalIgnoreCase
 			: StringComparison.Ordinal;
-
-	private StringComparer ResolveOptionStringComparer() =>
-		app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
-			? StringComparer.OrdinalIgnoreCase
-			: StringComparer.Ordinal;
 
 	private List<ConsoleLineReader.AutocompleteSuggestion> CollectAmbientContinuationAutocompleteCandidates(
 		string[] commandPrefix,
@@ -558,7 +528,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				continue;
 			}
 
-			if (!MatchesRoutePrefix(route.Template, commandPrefix, comparison, app.OptionsSnapshot.Parsing))
+			if (!MatchesRoutePrefix(route, commandPrefix, comparison, app.OptionsSnapshot.Parsing))
 			{
 				continue;
 			}
@@ -748,7 +718,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			.Where(route =>
 				!route.Command.IsHidden
 				&& !app.IsRouteSuppressedForDiscovery(route.Template, contexts, commandPrefix, prefixComparison)
-				&& MatchesRoutePrefix(route.Template, commandPrefix, prefixComparison, app.OptionsSnapshot.Parsing))
+				&& MatchesRoutePrefix(route, commandPrefix, prefixComparison, app.OptionsSnapshot.Parsing))
 			.ToList();
 		if (commandPrefix.Length == 0)
 		{
@@ -922,10 +892,17 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
+		// Providers complete parameter VALUES; an option-prefix token is asking for option
+		// names, and provider output would only pollute that menu.
+		if (IsOptionPrefixToken(currentTokenPrefix))
+		{
+			return [];
+		}
+
 		var exactRoute = matchingRoutes.FirstOrDefault(route =>
 			route.Template.Segments.Count == commandPrefix.Length
-			&& MatchesTemplatePrefix(
-				route.Template,
+			&& MatchesRoutePrefix(
+				route,
 				commandPrefix,
 				prefixComparison,
 				parsingOptions));
@@ -986,7 +963,9 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		var output = new List<ConsoleLineReader.TokenClassification>(tokenSpans.Count);
 		for (var i = 0; i < tokenSpans.Count; i++)
 		{
-			if (IsGlobalOptionToken(tokenSpans[i].Value))
+			// Single-dash short aliases classify as options too; a signed numeric literal
+			// stays a positional (IsOptionPrefixToken mirrors the parser's rule).
+			if (IsOptionPrefixToken(tokenSpans[i].Value))
 			{
 				output.Add(new ConsoleLineReader.TokenClassification(
 					tokenSpans[i].Start,
@@ -997,7 +976,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 
 			var prefix = scopeTokens.Concat(
 				tokenSpans.Take(i)
-					.Where(static token => !IsGlobalOptionToken(token.Value))
+					.Where(static token => !IsOptionPrefixToken(token.Value))
 					.Select(static token => token.Value)).ToArray();
 			var kind = ClassifyToken(
 				prefix,
@@ -1017,7 +996,19 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 	}
 
 	internal static bool IsGlobalOptionToken(string token) =>
-		token.StartsWith("--", StringComparison.Ordinal) && token.Length >= 2;
+		token.StartsWith("--", StringComparison.Ordinal);
+
+	/// <summary>
+	/// True when <paramref name="token"/> reads as the beginning of an option for
+	/// SUGGESTION purposes — distinct from <see cref="IsGlobalOptionToken"/> (the parser's
+	/// classifier for double-dash options): a single dash already announces an option
+	/// (short aliases like <c>-f</c>), but a signed numeric literal (<c>-42</c>) is a
+	/// positional argument, mirroring the invocation parser's rule.
+	/// </summary>
+	internal static bool IsOptionPrefixToken(string token) =>
+		token.Length > 0
+		&& token[0] == '-'
+		&& !InvocationOptionParser.IsSignedNumericLiteral(token);
 
 	[SuppressMessage(
 		"Maintainability",
@@ -1195,13 +1186,65 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		return false;
 	}
 
+	// Alias-aware variant for ROUTE prefixes: the router accepts command aliases on the
+	// terminal literal segment (RouteResolver.IsLiteralMatch), so autocomplete must too —
+	// otherwise an alias invocation loses its route's option suggestions.
 	private static bool MatchesRoutePrefix(
-		RouteTemplate template,
+		RouteDefinition route,
 		string[] prefixTokens,
 		StringComparison comparison,
 		ParsingOptions parsingOptions)
 	{
-		return MatchesTemplatePrefix(template, prefixTokens, comparison, parsingOptions);
+		var segments = route.Template.Segments;
+		if (prefixTokens.Length > segments.Count)
+		{
+			return false;
+		}
+
+		for (var i = 0; i < prefixTokens.Length; i++)
+		{
+			var token = prefixTokens[i];
+			switch (segments[i])
+			{
+				case LiteralRouteSegment literal
+					when !IsRouteLiteralMatch(route, literal, token, i, comparison):
+					return false;
+				case DynamicRouteSegment dynamic
+					when !RouteConstraintEvaluator.IsMatch(dynamic, token, parsingOptions):
+					return false;
+			}
+		}
+
+		return true;
+	}
+
+	// Mirrors RouteResolver.IsLiteralMatch: aliases bind only to the terminal command segment.
+	private static bool IsRouteLiteralMatch(
+		RouteDefinition route,
+		LiteralRouteSegment literal,
+		string token,
+		int segmentIndex,
+		StringComparison comparison)
+	{
+		if (string.Equals(literal.Value, token, comparison))
+		{
+			return true;
+		}
+
+		if (segmentIndex != route.Template.Segments.Count - 1)
+		{
+			return false;
+		}
+
+		foreach (var alias in route.Command.Aliases)
+		{
+			if (string.Equals(alias, token, comparison))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private static bool MatchesContextPrefix(
@@ -1313,37 +1356,87 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			}
 
 			var prefix = input[token.Start..cursor];
-			var prior = tokens.Take(i)
-				.Where(static tokenSpan => !IsGlobalOptionToken(tokenSpan.Value))
-				.Select(static tokenSpan => tokenSpan.Value).ToArray();
+			var prior = NormalizePriorTokens(tokens, i, out var optionsTerminated);
 			return new AutocompleteInputState(
 				prior,
 				prefix,
 				token.Start,
-				token.End - token.Start);
+				token.End - token.Start,
+				optionsTerminated);
 		}
 
-		var trailingPrior = tokens
-			.Where(token => token.End <= cursor && !IsGlobalOptionToken(token.Value))
-			.Select(static token => token.Value).ToArray();
+		var trailingCount = 0;
+		for (var i = 0; i < tokens.Count; i++)
+		{
+			if (tokens[i].End <= cursor)
+			{
+				trailingCount++;
+			}
+		}
+
+		var trailingPrior = NormalizePriorTokens(tokens, trailingCount, out var trailingOptionsTerminated);
 		return new AutocompleteInputState(
 			trailingPrior,
 			CurrentTokenPrefix: string.Empty,
 			ReplaceStart: cursor,
-			ReplaceLength: 0);
+			ReplaceLength: 0,
+			trailingOptionsTerminated);
+	}
+
+	/// <summary>
+	/// Reduces the tokens before the cursor to the positional command prefix, the same way
+	/// the shell-completion path does: the permissive invocation parser consumes option
+	/// VALUES (so "--channel beta" does not leave a stray "beta" that breaks route
+	/// matching) and honors the bare "--" end-of-options separator. Single-dash option-like
+	/// tokens (short aliases such as -f) are positional to that parser, so they are dropped
+	/// explicitly — a typed short flag must not break route prefix matching either.
+	/// </summary>
+	private static string[] NormalizePriorTokens(List<TokenSpan> tokens, int count, out bool optionsTerminated)
+	{
+		optionsTerminated = false;
+		if (count == 0)
+		{
+			return [];
+		}
+
+		var values = new string[count];
+		for (var i = 0; i < count; i++)
+		{
+			values[i] = tokens[i].Value;
+			if (string.Equals(values[i], "--", StringComparison.Ordinal))
+			{
+				// POSIX end-of-options: everything after this prior token is positional,
+				// so no option name may be suggested for the current token.
+				optionsTerminated = true;
+			}
+		}
+
+		var positionals = InvocationOptionParser.Parse(values).PositionalArguments;
+		var result = new List<string>(positionals.Count);
+		foreach (var positional in positionals)
+		{
+			if (!IsOptionPrefixToken(positional))
+			{
+				result.Add(positional);
+			}
+		}
+
+		return [.. result];
 	}
 
 	private readonly record struct AutocompleteInputState(
 		string[] PriorTokens,
 		string CurrentTokenPrefix,
 		int ReplaceStart,
-		int ReplaceLength);
+		int ReplaceLength,
+		bool OptionsTerminated);
 
 	private readonly record struct AutocompleteResolutionState(
 		string[] CommandPrefix,
 		string CurrentTokenPrefix,
 		int ReplaceStart,
-		int ReplaceLength);
+		int ReplaceLength,
+		bool OptionsTerminated);
 
 	internal readonly record struct TokenSpan(string Value, int Start, int End);
 }

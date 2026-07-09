@@ -1,0 +1,120 @@
+namespace Repl.Internal.Options;
+
+/// <summary>
+/// Single source of option-name completion candidates, shared by the interactive
+/// autocomplete engine and the shell-completion engine so the two surfaces can never
+/// drift: a global option or output format added here reaches both at once.
+/// </summary>
+internal static class OptionTokenCompletionSource
+{
+	/// <summary>Framework-level options that exist regardless of app configuration.</summary>
+	internal static readonly string[] StaticGlobalOptionTokens =
+	[
+		"--help",
+		"--interactive",
+		"--no-interactive",
+		"--no-logo",
+		"--output:",
+	];
+
+	/// <summary>
+	/// Collects the global option tokens matching <paramref name="currentTokenPrefix"/>:
+	/// static framework options, output-format aliases, <c>--output:&lt;format&gt;</c>
+	/// selectors, and custom global options with their aliases.
+	/// </summary>
+	internal static void CollectGlobalOptionTokens(
+		ReplOptions options,
+		string currentTokenPrefix,
+		StringComparison comparison,
+		HashSet<string> dedupe,
+		List<string> results)
+	{
+		foreach (var option in StaticGlobalOptionTokens)
+		{
+			TryAdd(option, currentTokenPrefix, comparison, dedupe, results);
+		}
+
+		foreach (var alias in options.Output.Aliases.Keys)
+		{
+			TryAddComposed("--", alias, currentTokenPrefix, comparison, dedupe, results);
+		}
+
+		foreach (var format in options.Output.Transformers.Keys)
+		{
+			TryAddComposed("--output:", format, currentTokenPrefix, comparison, dedupe, results);
+		}
+
+		foreach (var custom in options.Parsing.GlobalOptions.Values)
+		{
+			TryAdd(custom.CanonicalToken, currentTokenPrefix, comparison, dedupe, results);
+
+			foreach (var alias in custom.Aliases)
+			{
+				TryAdd(alias, currentTokenPrefix, comparison, dedupe, results);
+			}
+		}
+	}
+
+	/// <summary>Collects the route's declared option tokens matching the prefix.</summary>
+	internal static void CollectRouteOptionTokens(
+		RouteDefinition route,
+		string currentTokenPrefix,
+		StringComparison comparison,
+		HashSet<string> dedupe,
+		List<string> results)
+	{
+		foreach (var token in route.OptionSchema.KnownTokens)
+		{
+			TryAdd(token, currentTokenPrefix, comparison, dedupe, results);
+		}
+	}
+
+	private static void TryAdd(
+		string token,
+		string currentTokenPrefix,
+		StringComparison comparison,
+		HashSet<string> dedupe,
+		List<string> results)
+	{
+		if (!token.StartsWith(currentTokenPrefix, comparison) || !dedupe.Add(token))
+		{
+			return;
+		}
+
+		results.Add(token);
+	}
+
+	// Composes "head + tail" candidates (e.g. "--" + alias) only when they can match:
+	// the prefix test runs over the two parts so non-matching candidates never allocate
+	// a throwaway string in this per-keystroke path.
+	private static void TryAddComposed(
+		string head,
+		string tail,
+		string currentTokenPrefix,
+		StringComparison comparison,
+		HashSet<string> dedupe,
+		List<string> results)
+	{
+		if (!ComposedStartsWith(head, tail, currentTokenPrefix, comparison))
+		{
+			return;
+		}
+
+		var token = head + tail;
+		if (dedupe.Add(token))
+		{
+			results.Add(token);
+		}
+	}
+
+	private static bool ComposedStartsWith(string head, string tail, string prefix, StringComparison comparison)
+	{
+		if (prefix.Length <= head.Length)
+		{
+			return head.StartsWith(prefix, comparison);
+		}
+
+		return prefix.AsSpan(0, head.Length).Equals(head, comparison)
+			&& tail.AsSpan().StartsWith(prefix.AsSpan(head.Length), comparison);
+	}
+}
