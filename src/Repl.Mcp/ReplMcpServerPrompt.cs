@@ -78,12 +78,13 @@ internal sealed class ReplMcpServerPrompt : McpServerPrompt
 		{
 			var errorText = result.Content?.OfType<TextContentBlock>().FirstOrDefault()?.Text
 				?? "Prompt execution failed.";
-			throw new McpException(errorText);
+			throw new McpException(McpJsonStringOutput.UnwrapJsonStringLiteral(errorText));
 		}
 
-		var text = result.Content?.OfType<TextContentBlock>().FirstOrDefault()?.Text
-			?? _command.Description
-			?? _protocolPrompt.Name;
+		var outputText = result.Content?.OfType<TextContentBlock>().FirstOrDefault()?.Text;
+		var text = outputText is null
+			? _command.Description ?? _protocolPrompt.Name
+			: McpJsonStringOutput.UnwrapJsonStringLiteral(outputText);
 
 		return new GetPromptResult
 		{
