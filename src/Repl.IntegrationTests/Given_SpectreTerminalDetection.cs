@@ -195,8 +195,7 @@ public sealed class Given_SpectreTerminalDetection
 
 		var resolved = sut.Services.GetService(typeof(OutputOptions)) as OutputOptions;
 
-		resolved.Should().NotBeNull();
-		resolved!.Should().BeSameAs(configuredOutput);
+		resolved.Should().NotBeNull().And.BeSameAs(configuredOutput);
 	}
 
 	[TestMethod]
