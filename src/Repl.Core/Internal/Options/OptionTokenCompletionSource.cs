@@ -7,6 +7,20 @@ namespace Repl.Internal.Options;
 /// </summary>
 internal static class OptionTokenCompletionSource
 {
+	/// <summary>
+	/// Parser profile for normalizing completion-time tokens. Response files must NEVER be
+	/// expanded on a completion path: interactive autocomplete runs per keystroke on lines
+	/// that are remote-controlled in hosted sessions, so a '@file' token would mean
+	/// server-side file reads (UNC probes included) driven by keystrokes — the execution
+	/// pipeline gates expansion on !isInteractiveSession for exactly that reason. Shared by
+	/// both completion engines; never mutated.
+	/// </summary>
+	internal static readonly ParsingOptions CompletionParsingOptions = new()
+	{
+		AllowUnknownOptions = true,
+		AllowResponseFiles = false,
+	};
+
 	/// <summary>Framework-level options that exist regardless of app configuration.</summary>
 	internal static readonly string[] StaticGlobalOptionTokens =
 	[

@@ -178,6 +178,90 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 		result.HintLine.Should().Contain("--force");
 	}
 
+	[TestMethod]
+	[Description("Autocomplete must NEVER touch the filesystem: a '@file' prior token stays a literal token instead of being expanded as a response file. Hosted sessions feed remote-controlled lines through this path on every keystroke — expansion would mean server-side file reads (UNC probes included) driven by keystrokes.")]
+	public async Task When_PriorTokenLooksLikeResponseFile_Then_ItIsNotExpanded()
+	{
+		var responseFile = Path.GetTempFileName();
+		try
+		{
+			// If the parser expanded this, the prefix would gain three tokens and the
+			// route would no longer match — observable as the route options vanishing.
+			await File.WriteAllTextAsync(responseFile, "ga bu zo").ConfigureAwait(false);
+			var sut = CoreReplApp.Create();
+			sut.Map("install {skillName}", static string (string skillName, [ReplOption] bool force) => skillName)
+				.WithDescription("Install a skill.");
+
+			var result = await ResolveAutocompleteAsync(sut, $"install @{responseFile} --").ConfigureAwait(false);
+
+			var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+			values.Should().Contain("--force", because: "the @token must be treated as a plain positional, not expanded from disk");
+		}
+		finally
+		{
+			File.Delete(responseFile);
+		}
+	}
+
+	[TestMethod]
+	[Description("Tokens after the end-of-options separator are positional even when they look like flags: in 'deploy -- -f ' the '-f' fills the {target} segment, so the exact-route completion provider must fire — dropping it would desync the segment count.")]
+	public async Task When_DashTokenFollowsSeparator_Then_ItCountsAsPositional()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion("target", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["zo-profile"]))
+			.WithDescription("Deploy a target.");
+
+		var result = await ResolveAutocompleteAsync(sut, "deploy -- -f ").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		values.Should().Contain("zo-profile", because: "'-f' after '--' is a positional filling {target}, making the route exact for the provider");
+	}
+
+	[TestMethod]
+	[Description("Parity contract between the two completion surfaces: for the same app and the same '--' input, the interactive menu and the shell-completion candidates carry the same option tokens. The shared token source is only half the guarantee — the gates must agree too, and this pin catches a divergent reimplementation on either side.")]
+	public async Task When_ComparingInteractiveAndShellOnDoubleDash_Then_CandidatesMatch()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options => options.Parsing.AddGlobalOption<string>("tenant", aliases: ["--org"]));
+		sut.Map("install {skillName}", static string (string skillName, [ReplOption] bool force) => skillName)
+			.WithDescription("Install a skill.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string shellLine = "app install bib-overalls --";
+
+		var interactive = await ResolveAutocompleteAsync(sut, "install bib-overalls --").ConfigureAwait(false);
+		var shell = shellEngine.ResolveShellCompletionCandidates(shellLine, shellLine.Length);
+
+		var interactiveOptions = interactive.Suggestions
+			.Where(static suggestion => suggestion.IsSelectable)
+			.Select(static suggestion => suggestion.Value)
+			.ToArray();
+		interactiveOptions.Should().BeEquivalentTo(shell);
+	}
+
+	[TestMethod]
+	[Description("Parity contract for the single-dash gate: shell completion must surface short option aliases (-f) from '-' exactly like the interactive menu does — the two surfaces answering the same question differently is operator-visible confusion.")]
+	public async Task When_ComparingInteractiveAndShellOnSingleDash_Then_CandidatesMatch()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+				"install {skillName}",
+				static string (string skillName, [ReplOption(Aliases = ["-f"])] bool force) => skillName)
+			.WithDescription("Install a skill.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string shellLine = "app install bib-overalls -";
+
+		var interactive = await ResolveAutocompleteAsync(sut, "install bib-overalls -").ConfigureAwait(false);
+		var shell = shellEngine.ResolveShellCompletionCandidates(shellLine, shellLine.Length);
+
+		var interactiveOptions = interactive.Suggestions
+			.Where(static suggestion => suggestion.IsSelectable)
+			.Select(static suggestion => suggestion.Value)
+			.ToArray();
+		interactiveOptions.Should().Contain("-f");
+		interactiveOptions.Should().BeEquivalentTo(shell);
+	}
+
 	private static async Task<ConsoleLineReader.AutocompleteResult> ResolveAutocompleteAsync(CoreReplApp app, string input)
 	{
 		var result = await app.Autocomplete.ResolveAutocompleteAsync(

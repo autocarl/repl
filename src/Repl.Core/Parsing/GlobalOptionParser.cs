@@ -351,19 +351,8 @@ internal static class GlobalOptionParser
 		return true;
 	}
 
-	private static bool IsSignedNumericLiteral(string token)
-	{
-		if (token.Length < 2 || token[0] != '-')
-		{
-			return false;
-		}
-
-		return double.TryParse(
-			token,
-			System.Globalization.NumberStyles.Float,
-			System.Globalization.CultureInfo.InvariantCulture,
-			out _);
-	}
+	private static bool IsSignedNumericLiteral(string token) =>
+		InvocationOptionParser.IsSignedNumericLiteral(token);
 
 	private static bool TrySplitToken(
 		string token,

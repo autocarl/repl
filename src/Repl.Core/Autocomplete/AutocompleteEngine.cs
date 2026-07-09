@@ -148,17 +148,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		ActiveRoutingGraph activeGraph)
 	{
 		var state = AnalyzeAutocompleteInput(request.Input, request.Cursor);
-		var commandPrefix = scopeTokens.Concat(state.PriorTokens).ToArray();
-		// Mirror execution: committed tokens go through the same unique-prefix/alias
-		// expansion the router applies ("i" resolves to "install"), so route options and
-		// child suggestions describe what would actually run. An ambiguous shorthand is
-		// left as typed — the menu then shows the competing alternatives.
-		var prefixResolution = app.ResolveUniquePrefixes(commandPrefix, activeGraph);
-		if (!prefixResolution.IsAmbiguous)
-		{
-			commandPrefix = prefixResolution.Tokens;
-		}
-
+		var commandPrefix = ExpandCommittedPrefix([.. scopeTokens, .. state.PriorTokens], activeGraph);
 		var currentTokenPrefix = state.CurrentTokenPrefix;
 		var replaceStart = state.ReplaceStart;
 		var replaceLength = state.ReplaceLength;
@@ -181,11 +171,50 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		}
 
 		return new AutocompleteResolutionState(
-			commandPrefix.Concat([currentTokenPrefix]).ToArray(),
+			[.. commandPrefix, currentTokenPrefix],
 			string.Empty,
 			request.Cursor,
 			0,
 			state.OptionsTerminated);
+	}
+
+	/// <summary>
+	/// Mirrors execution: committed tokens go through the same unique-prefix/alias
+	/// expansion the router applies ("i" resolves to "install"), so route options and
+	/// child suggestions describe what would actually run. An ambiguous committed
+	/// shorthand is left as typed — it matches no route, exactly like execution would
+	/// refuse it. Expansion is bounded by the deepest template: beyond that depth no
+	/// literal can match, and the per-index candidate derivation must not scale with the
+	/// token count of a remote-controlled line (hosted sessions autocomplete per keystroke).
+	/// </summary>
+	private string[] ExpandCommittedPrefix(string[] commandPrefix, ActiveRoutingGraph activeGraph)
+	{
+		if (commandPrefix.Length == 0)
+		{
+			return commandPrefix;
+		}
+
+		var expansionDepth = 0;
+		foreach (var route in activeGraph.Routes)
+		{
+			expansionDepth = Math.Max(expansionDepth, route.Template.Segments.Count);
+		}
+
+		foreach (var context in activeGraph.Contexts)
+		{
+			expansionDepth = Math.Max(expansionDepth, context.Template.Segments.Count);
+		}
+
+		if (commandPrefix.Length <= expansionDepth)
+		{
+			var resolution = app.ResolveUniquePrefixes(commandPrefix, activeGraph);
+			return resolution.IsAmbiguous ? commandPrefix : resolution.Tokens;
+		}
+
+		var headResolution = app.ResolveUniquePrefixes(commandPrefix[..expansionDepth], activeGraph);
+		return headResolution.IsAmbiguous
+			? commandPrefix
+			: [.. headResolution.Tokens, .. commandPrefix[expansionDepth..]];
 	}
 
 	private async ValueTask<ConsoleLineReader.AutocompleteSuggestion[]> CollectAutocompleteSuggestionsAsync(
@@ -387,9 +416,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 	}
 
 	private StringComparison ResolveOptionStringComparison() =>
-		app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
-			? StringComparison.OrdinalIgnoreCase
-			: StringComparison.Ordinal;
+		app.OptionsSnapshot.Parsing.OptionCaseSensitivity.ToStringComparison();
 
 	private List<ConsoleLineReader.AutocompleteSuggestion> CollectAmbientContinuationAutocompleteCandidates(
 		string[] commandPrefix,
@@ -1222,34 +1249,14 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		return true;
 	}
 
-	// Mirrors RouteResolver.IsLiteralMatch: aliases bind only to the terminal command segment.
+	// Delegates to the router's own literal/alias rule so the two can never drift.
 	private static bool IsRouteLiteralMatch(
 		RouteDefinition route,
 		LiteralRouteSegment literal,
 		string token,
 		int segmentIndex,
-		StringComparison comparison)
-	{
-		if (string.Equals(literal.Value, token, comparison))
-		{
-			return true;
-		}
-
-		if (segmentIndex != route.Template.Segments.Count - 1)
-		{
-			return false;
-		}
-
-		foreach (var alias in route.Command.Aliases)
-		{
-			if (string.Equals(alias, token, comparison))
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
+		StringComparison comparison) =>
+		RouteResolver.IsLiteralMatch(route, literal, token, segmentIndex, route.Template.Segments.Count, comparison);
 
 	private static bool MatchesContextPrefix(
 		RouteTemplate template,
@@ -1393,7 +1400,8 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 	/// VALUES (so "--channel beta" does not leave a stray "beta" that breaks route
 	/// matching) and honors the bare "--" end-of-options separator. Single-dash option-like
 	/// tokens (short aliases such as -f) are positional to that parser, so they are dropped
-	/// explicitly — a typed short flag must not break route prefix matching either.
+	/// before parsing — but only ahead of the "--" separator: after it they ARE positional
+	/// arguments and must keep their place in the route prefix.
 	/// </summary>
 	private static string[] NormalizePriorTokens(List<TokenSpan> tokens, int count, out bool optionsTerminated)
 	{
@@ -1403,29 +1411,32 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
-		var values = new string[count];
+		var values = new List<string>(count);
 		for (var i = 0; i < count; i++)
 		{
-			values[i] = tokens[i].Value;
-			if (string.Equals(values[i], "--", StringComparison.Ordinal))
+			var value = tokens[i].Value;
+			if (!optionsTerminated && string.Equals(value, "--", StringComparison.Ordinal))
 			{
 				// POSIX end-of-options: everything after this prior token is positional,
-				// so no option name may be suggested for the current token.
+				// so no option name may be suggested for the current token. The separator
+				// itself goes to the parser, which switches to positional mode on it.
 				optionsTerminated = true;
 			}
-		}
-
-		var positionals = InvocationOptionParser.Parse(values).PositionalArguments;
-		var result = new List<string>(positionals.Count);
-		foreach (var positional in positionals)
-		{
-			if (!IsOptionPrefixToken(positional))
+			else if (!optionsTerminated && IsOptionPrefixToken(value) && !IsGlobalOptionToken(value))
 			{
-				result.Add(positional);
+				// Short flag (-f): positional to the permissive parser, dropped here so it
+				// does not break route prefix matching. Its separated value, if any, stays —
+				// without a schema the arity is unknowable (same limitation as the shell path).
+				continue;
 			}
+
+			values.Add(value);
 		}
 
-		return [.. result];
+		var positionals = InvocationOptionParser
+			.Parse(values, OptionTokenCompletionSource.CompletionParsingOptions, knownOptionNames: null)
+			.PositionalArguments;
+		return positionals as string[] ?? [.. positionals];
 	}
 
 	private readonly record struct AutocompleteInputState(

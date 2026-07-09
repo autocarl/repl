@@ -17,15 +17,11 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			return [];
 		}
 
-		var parsed = state.PriorTokens.Length <= 1
-			? InvocationOptionParser.Parse(Array.Empty<string>())
-			: InvocationOptionParser.Parse(new ArraySegment<string>(
-				state.PriorTokens,
-				offset: 1,
-				count: state.PriorTokens.Length - 1));
-		var commandPrefix = parsed.PositionalArguments as string[] ?? [.. parsed.PositionalArguments];
+		var commandPrefix = NormalizeShellPriorTokens(state.PriorTokens);
 		var currentTokenPrefix = state.CurrentTokenPrefix;
-		var currentTokenIsOption = AutocompleteEngine.IsGlobalOptionToken(currentTokenPrefix);
+		// Same gate as the interactive menu: single-dash prefixes surface short option
+		// aliases (-f); signed numeric literals stay positional.
+		var currentTokenIsOption = AutocompleteEngine.IsOptionPrefixToken(currentTokenPrefix);
 		var routeMatch = app.Resolve(commandPrefix, activeGraph.Routes);
 		var hasTerminalRoute = routeMatch is not null && routeMatch.RemainingTokens.Count == 0;
 		var dedupe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -65,6 +61,19 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 
 		candidates.Sort(StringComparer.OrdinalIgnoreCase);
 		return [.. candidates];
+	}
+
+	// The first prior token is the executable name; the rest reduces to the positional
+	// command prefix through the shared completion parser profile (no response files).
+	private static string[] NormalizeShellPriorTokens(string[] priorTokens)
+	{
+		var parsed = priorTokens.Length <= 1
+			? InvocationOptionParser.Parse([], OptionTokenCompletionSource.CompletionParsingOptions, knownOptionNames: null)
+			: InvocationOptionParser.Parse(
+				new ArraySegment<string>(priorTokens, offset: 1, count: priorTokens.Length - 1),
+				OptionTokenCompletionSource.CompletionParsingOptions,
+				knownOptionNames: null);
+		return parsed.PositionalArguments as string[] ?? [.. parsed.PositionalArguments];
 	}
 
 	private bool TryAddRouteEnumValueCandidates(
@@ -213,10 +222,12 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		List<string> candidates)
 	{
 		var options = app.OptionsSnapshot;
-		var comparison = options.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
-			? StringComparison.OrdinalIgnoreCase
-			: StringComparison.Ordinal;
-		OptionTokenCompletionSource.CollectGlobalOptionTokens(options, currentTokenPrefix, comparison, dedupe, candidates);
+		OptionTokenCompletionSource.CollectGlobalOptionTokens(
+			options,
+			currentTokenPrefix,
+			options.Parsing.OptionCaseSensitivity.ToStringComparison(),
+			dedupe,
+			candidates);
 	}
 
 	private void AddRouteShellOptionCandidates(
@@ -225,10 +236,12 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		HashSet<string> dedupe,
 		List<string> candidates)
 	{
-		var comparison = app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
-			? StringComparison.OrdinalIgnoreCase
-			: StringComparison.Ordinal;
-		OptionTokenCompletionSource.CollectRouteOptionTokens(route, currentTokenPrefix, comparison, dedupe, candidates);
+		OptionTokenCompletionSource.CollectRouteOptionTokens(
+			route,
+			currentTokenPrefix,
+			app.OptionsSnapshot.Parsing.OptionCaseSensitivity.ToStringComparison(),
+			dedupe,
+			candidates);
 	}
 
 	internal static ShellCompletionInputState AnalyzeShellCompletionInput(string input, int cursor)
