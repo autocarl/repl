@@ -17,16 +17,19 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			return [];
 		}
 
-		var commandPrefix = NormalizeShellPriorTokens(state.PriorTokens);
+		var optionsTerminated = false;
+		var commandPrefix = BuildShellCommandPrefix(state.PriorTokens, activeGraph, ref optionsTerminated);
 		var currentTokenPrefix = state.CurrentTokenPrefix;
 		// Same gate as the interactive menu: single-dash prefixes surface short option
-		// aliases (-f); signed numeric literals stay positional.
-		var currentTokenIsOption = AutocompleteEngine.IsOptionPrefixToken(currentTokenPrefix);
+		// aliases (-f); signed numeric literals stay positional. After the POSIX "--"
+		// separator no option names may be offered — everything is positional.
+		var currentTokenIsOption = !optionsTerminated && AutocompleteEngine.IsOptionPrefixToken(currentTokenPrefix);
 		var routeMatch = app.Resolve(commandPrefix, activeGraph.Routes);
 		var hasTerminalRoute = routeMatch is not null && routeMatch.RemainingTokens.Count == 0;
 		var dedupe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var candidates = new List<string>(capacity: 16);
 		if (!currentTokenIsOption
+			&& !optionsTerminated
 			&& hasTerminalRoute
 			&& TryAddRouteEnumValueCandidates(
 				routeMatch!.Route,
@@ -50,7 +53,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 				candidates);
 		}
 
-		if (currentTokenIsOption || (string.IsNullOrEmpty(currentTokenPrefix) && hasTerminalRoute))
+		if (!optionsTerminated && (currentTokenIsOption || (string.IsNullOrEmpty(currentTokenPrefix) && hasTerminalRoute)))
 		{
 			AddShellOptionCandidates(
 				hasTerminalRoute ? routeMatch!.Route : null,
@@ -63,17 +66,55 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		return [.. candidates];
 	}
 
-	// The first prior token is the executable name; the rest reduces to the positional
-	// command prefix through the shared completion parser profile (no response files).
-	private static string[] NormalizeShellPriorTokens(string[] priorTokens)
+	// The first prior token is the executable name. The rest reduces to the positional
+	// command prefix the way execution does — without guessing option arities: global
+	// options are stripped by the parser that knows their arities, the bare "--" separator
+	// is recorded and removed, then the route is resolved so a matched route contributes
+	// exactly its own segments (a valued short alias like "-f value" leaves both tokens in
+	// the route's trailing options, never in the prefix).
+	private string[] BuildShellCommandPrefix(
+		string[] priorTokens,
+		ActiveRoutingGraph activeGraph,
+		ref bool optionsTerminated)
 	{
-		var parsed = priorTokens.Length <= 1
-			? InvocationOptionParser.Parse([], OptionTokenCompletionSource.CompletionParsingOptions, knownOptionNames: null)
-			: InvocationOptionParser.Parse(
-				new ArraySegment<string>(priorTokens, offset: 1, count: priorTokens.Length - 1),
-				OptionTokenCompletionSource.CompletionParsingOptions,
-				knownOptionNames: null);
-		return parsed.PositionalArguments as string[] ?? [.. parsed.PositionalArguments];
+		if (priorTokens.Length <= 1)
+		{
+			return [];
+		}
+
+		var afterExecutable = new ArraySegment<string>(priorTokens, offset: 1, count: priorTokens.Length - 1);
+		var stripped = GlobalOptionParser
+			.Parse(afterExecutable, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing)
+			.RemainingTokens;
+
+		var positional = new List<string>(stripped.Count);
+		foreach (var token in stripped)
+		{
+			if (string.Equals(token, "--", StringComparison.Ordinal))
+			{
+				optionsTerminated = true;
+				continue;
+			}
+
+			positional.Add(token);
+		}
+
+		var prefix = positional.ToArray();
+		if (app.Resolve(prefix, activeGraph.Routes) is { } match)
+		{
+			return prefix[..match.Route.Template.Segments.Count];
+		}
+
+		var commandWords = new List<string>(prefix.Length);
+		foreach (var token in prefix)
+		{
+			if (!AutocompleteEngine.IsOptionPrefixToken(token))
+			{
+				commandWords.Add(token);
+			}
+		}
+
+		return [.. commandWords];
 	}
 
 	private bool TryAddRouteEnumValueCandidates(

@@ -90,8 +90,8 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 	}
 
 	[TestMethod]
-	[Description("Options are accepted anywhere by the parser, so route options must be offered as soon as the command WORDS are fully typed — even when positional arguments are still missing ('install --' must offer --force).")]
-	public async Task When_PositionalArgumentsAreStillMissing_Then_RouteOptionsAreSuggested()
+	[Description("Route options wait until required positionals are filled: 'install --' (with {skillName} unfilled) must NOT offer --force, because accepting it yields 'install --force', which does not run cleanly. Global options still appear.")]
+	public async Task When_RequiredPositionalIsStillMissing_Then_RouteOptionsAreNotSuggested()
 	{
 		var sut = CoreReplApp.Create();
 		sut.Map("install {skillName}", static string (string skillName, [ReplOption] bool force) => skillName)
@@ -100,7 +100,8 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 		var result = await ResolveAutocompleteAsync(sut, "install --").ConfigureAwait(false);
 
 		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
-		values.Should().Contain("--force", because: "the parser accepts options before trailing positionals");
+		values.Should().NotContain("--force", because: "a required positional is unfilled — 'install --force' does not run cleanly, so route options wait until the arguments are satisfied");
+		values.Should().Contain("--help", because: "global options remain available regardless of positional state");
 	}
 
 	[TestMethod]
@@ -165,16 +166,16 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 	}
 
 	[TestMethod]
-	[Description("In option-prefix mode the live hint must describe the option alternatives, not the pending positional parameter: 'install --' lists --force/--help in the menu, so a 'Param skillName' hint would contradict what the user is looking at.")]
-	public async Task When_OptionPrefixWithMissingPositional_Then_HintShowsOptionsNotParameter()
+	[Description("In option-prefix mode the live hint must describe the option alternatives, not a positional parameter: 'install bib-overalls --' lists --force in the menu, so a 'Param' hint would contradict what the user is looking at.")]
+	public async Task When_OptionPrefixOnTerminalRoute_Then_HintShowsOptionsNotParameter()
 	{
 		var sut = CoreReplApp.Create();
-		sut.Map("install {skillName}", static string (string skillName, [ReplOption] bool force) => skillName)
+		sut.Map("install {skillName} {version}", static string (string skillName, string version, [ReplOption] bool force) => skillName)
 			.WithDescription("Install a skill.");
 
-		var result = await ResolveAutocompleteAsync(sut, "install --").ConfigureAwait(false);
+		var result = await ResolveAutocompleteAsync(sut, "install bib-overalls 42 --").ConfigureAwait(false);
 
-		result.HintLine.Should().NotContain("skillName", because: "the user asked for options, not the positional parameter");
+		result.HintLine.Should().NotContain("Param", because: "the user asked for options, not a positional parameter");
 		result.HintLine.Should().Contain("--force");
 	}
 
@@ -260,6 +261,97 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 			.ToArray();
 		interactiveOptions.Should().Contain("-f");
 		interactiveOptions.Should().BeEquivalentTo(shell);
+	}
+
+	[TestMethod]
+	[Description("Overloaded routes select ONE route the way execution does: 'item 42 --' resolves to the int overload, so only its options appear, never the string overload's — accepting a string-only option would fail against the int route that actually runs.")]
+	public async Task When_RouteIsOverloaded_Then_OnlyTheSelectedOverloadsOptionsAreSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("item {value}", static string (string value, [ReplOption] bool tag) => value)
+			.WithDescription("String item.");
+		sut.Map("item {value:int}", static string (int value, [ReplOption] bool verbose) => $"{value}")
+			.WithDescription("Int item.");
+
+		var result = await ResolveAutocompleteAsync(sut, "item 42 --").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		values.Should().Contain("--verbose", because: "42 resolves to the int overload");
+		values.Should().NotContain("--tag", because: "the string overload is not the one that would run");
+	}
+
+	[TestMethod]
+	[Description("A valueless global flag before the command must not swallow the command word: '--no-logo install bib-overalls --' still resolves the install route (GlobalOptionParser knows --no-logo takes no value), so route options appear.")]
+	public async Task When_ValuelessGlobalFlagPrecedesCommand_Then_RouteOptionsAreStillSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("install {skillName}", static string (string skillName, [ReplOption] bool force) => skillName)
+			.WithDescription("Install a skill.");
+
+		var result = await ResolveAutocompleteAsync(sut, "--no-logo install bib-overalls --").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		values.Should().Contain("--force", because: "'--no-logo' is a valueless global and must not consume 'install' as its value");
+	}
+
+	[TestMethod]
+	[Description("A valued short option alias must not break route resolution: 'run -c beta --' keeps the terminal 'run' route (the router leaves '-c beta' as route-option tokens), so route options keep appearing after the alias value.")]
+	public async Task When_ValuedShortAliasPrecedesOptionPrefix_Then_RouteOptionsAreStillSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run", static string ([ReplOption(Aliases = ["-c"])] string? channel, [ReplOption] bool force) => channel ?? "none")
+			.WithDescription("Run something.");
+
+		var result = await ResolveAutocompleteAsync(sut, "run -c beta --").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		values.Should().Contain("--force", because: "'-c beta' are route-option tokens; the 'run' route stays terminal");
+	}
+
+	[TestMethod]
+	[Description("After the POSIX '--' separator a dash-prefixed current token is positional, so a value-completion provider must still run instead of being suppressed as an option prefix: 'deploy x -- -' asks the provider rather than treating '-' as an option name.")]
+	public async Task When_DashCurrentTokenFollowsSeparator_Then_ProviderStillRuns()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion("target", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["zo-profile"]))
+			.WithDescription("Deploy a target.");
+
+		var result = await ResolveAutocompleteAsync(sut, "deploy x -- -").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		values.Should().Contain("zo-profile", because: "after '--' the '-' token is positional, so the provider still runs");
+	}
+
+	[TestMethod]
+	[Description("Shell parity for a valued short alias: after 'app install pkg -f ' shell completion still offers the install route's options, matching what execution parses ('-f' is a route option, not a stray positional).")]
+	public void When_ShellCompletesAfterValuedShortAlias_Then_RouteOptionsAreStillOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("install {name}", static string (string name, [ReplOption(Aliases = ["-f"])] bool force) => name)
+			.WithDescription("Install a skill.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string line = "app install pkg -f --";
+
+		var candidates = shellEngine.ResolveShellCompletionCandidates(line, line.Length);
+
+		candidates.Should().Contain("--force", because: "'-f' is a route option; the install route stays terminal in shell completion too");
+	}
+
+	[TestMethod]
+	[Description("Shell parity for the POSIX separator: after 'app install pkg -- ' everything is positional, so shell completion offers no option names past '--'.")]
+	public void When_ShellCompletesAfterSeparator_Then_NoOptionIsOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("install {name}", static string (string name, [ReplOption] bool force) => name)
+			.WithDescription("Install a skill.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string line = "app install pkg -- --";
+
+		var candidates = shellEngine.ResolveShellCompletionCandidates(line, line.Length);
+
+		candidates.Should().NotContain("--force", because: "tokens after '--' are positional");
+		candidates.Should().NotContain("--help");
 	}
 
 	private static async Task<ConsoleLineReader.AutocompleteResult> ResolveAutocompleteAsync(CoreReplApp app, string input)
