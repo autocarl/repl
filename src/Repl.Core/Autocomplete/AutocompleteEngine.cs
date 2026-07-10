@@ -196,39 +196,29 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return committedTokens;
 		}
 
+		// Global options are stripped with the parser that knows their arities, then the
+		// remaining tokens are fed to route resolution EXACTLY as execution does
+		// (CommittedInputResolver passes GlobalOptionParser.RemainingTokens to RouteResolver):
+		// route resolution runs before option parsing, so a dash-prefixed token — including
+		// the bare "--" separator — binds to a route segment as a positional value. Removing
+		// or dropping those tokens here would diverge from what actually runs.
 		var stripped = GlobalOptionParser
 			.Parse(committedTokens, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing)
 			.RemainingTokens;
-
-		// The bare "--" separator is not a route segment.
-		var positional = new List<string>(stripped.Count);
-		foreach (var token in stripped)
-		{
-			if (!string.Equals(token, "--", StringComparison.Ordinal))
-			{
-				positional.Add(token);
-			}
-		}
-
-		var expanded = ExpandUniquePrefixes([.. positional], activeGraph);
+		var expanded = ExpandUniquePrefixes(stripped as string[] ?? [.. stripped], activeGraph);
 		if (app.Resolve(expanded) is { } match)
 		{
-			return expanded[..match.Route.Template.Segments.Count];
+			// A matched route consumes exactly its own segments; trailing tokens are its
+			// options. (Trailing optional segments can leave the prefix shorter than the
+			// template, hence the clamp.)
+			var segmentCount = Math.Min(match.Route.Template.Segments.Count, expanded.Length);
+			return expanded[..segmentCount];
 		}
 
 		// No terminal route yet (still typing command words, or a required positional is
-		// unfilled): keep only the positional path so command and child matching is not
-		// derailed by route-option tokens.
-		var commandWords = new List<string>(expanded.Length);
-		foreach (var token in expanded)
-		{
-			if (!IsOptionPrefixToken(token))
-			{
-				commandWords.Add(token);
-			}
-		}
-
-		return [.. commandWords];
+		// unfilled): keep the tokens as typed so a dash-prefixed positional still satisfies
+		// its segment and the next literal is suggested.
+		return expanded;
 	}
 
 	// Unique-prefix/alias expansion, bounded by the deepest template: beyond that depth no
@@ -431,7 +421,11 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		if (app.Resolve(commandPrefix) is { RemainingTokens.Count: 0 } match)
 		{
 			OptionTokenCompletionSource.CollectRouteOptionTokens(
-				match.Route, currentTokenPrefix, comparison, dedupe, tokens);
+				match.Route,
+				currentTokenPrefix,
+				app.OptionsSnapshot.Parsing.OptionCaseSensitivity,
+				dedupe,
+				tokens);
 		}
 
 		tokens.Sort(comparer);

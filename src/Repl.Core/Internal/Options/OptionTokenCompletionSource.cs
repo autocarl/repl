@@ -73,13 +73,28 @@ internal static class OptionTokenCompletionSource
 	internal static void CollectRouteOptionTokens(
 		RouteDefinition route,
 		string currentTokenPrefix,
-		StringComparison comparison,
+		ReplCaseSensitivity globalCaseSensitivity,
+		HashSet<string> dedupe,
+		List<string> results) =>
+		CollectRouteOptionTokens(route.OptionSchema, currentTokenPrefix, globalCaseSensitivity, dedupe, results);
+
+	// Filters against the schema entries — not the flattened KnownTokens — so each option's
+	// own case sensitivity is honored: an entry declared case-insensitive is offered for a
+	// differently-cased prefix even under a case-sensitive global default (and vice versa),
+	// matching exactly what the invocation parser accepts.
+	internal static void CollectRouteOptionTokens(
+		OptionSchema schema,
+		string currentTokenPrefix,
+		ReplCaseSensitivity globalCaseSensitivity,
 		HashSet<string> dedupe,
 		List<string> results)
 	{
-		foreach (var token in route.OptionSchema.KnownTokens)
+		foreach (var entry in schema.Entries)
 		{
-			TryAdd(token, currentTokenPrefix, comparison, dedupe, results);
+			var comparison = (entry.CaseSensitivity ?? globalCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive
+				? StringComparison.OrdinalIgnoreCase
+				: StringComparison.Ordinal;
+			TryAdd(entry.Token, currentTokenPrefix, comparison, dedupe, results);
 		}
 	}
 

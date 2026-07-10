@@ -87,34 +87,27 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			.Parse(afterExecutable, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing)
 			.RemainingTokens;
 
-		var positional = new List<string>(stripped.Count);
+		// The bare "--" separator only records the end-of-options state; it stays in the
+		// tokens fed to route resolution, which — running before option parsing — binds it
+		// (and any other dash-prefixed token) to a route segment as a positional value,
+		// exactly as execution does.
 		foreach (var token in stripped)
 		{
 			if (string.Equals(token, "--", StringComparison.Ordinal))
 			{
 				optionsTerminated = true;
-				continue;
+				break;
 			}
-
-			positional.Add(token);
 		}
 
-		var prefix = positional.ToArray();
+		var prefix = stripped as string[] ?? [.. stripped];
 		if (app.Resolve(prefix, activeGraph.Routes) is { } match)
 		{
-			return prefix[..match.Route.Template.Segments.Count];
+			var segmentCount = Math.Min(match.Route.Template.Segments.Count, prefix.Length);
+			return prefix[..segmentCount];
 		}
 
-		var commandWords = new List<string>(prefix.Length);
-		foreach (var token in prefix)
-		{
-			if (!AutocompleteEngine.IsOptionPrefixToken(token))
-			{
-				commandWords.Add(token);
-			}
-		}
-
-		return [.. commandWords];
+		return prefix;
 	}
 
 	private bool TryAddRouteEnumValueCandidates(
@@ -173,7 +166,9 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		}
 
 		var previousToken = commandTokens[^1];
-		if (!AutocompleteEngine.IsGlobalOptionToken(previousToken))
+		// A single dash is enough: short option aliases (e.g. "-m") take values too, and the
+		// schema resolves them like any other token below.
+		if (!AutocompleteEngine.IsOptionPrefixToken(previousToken))
 		{
 			return false;
 		}
@@ -280,7 +275,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		OptionTokenCompletionSource.CollectRouteOptionTokens(
 			route,
 			currentTokenPrefix,
-			app.OptionsSnapshot.Parsing.OptionCaseSensitivity.ToStringComparison(),
+			app.OptionsSnapshot.Parsing.OptionCaseSensitivity,
 			dedupe,
 			candidates);
 	}

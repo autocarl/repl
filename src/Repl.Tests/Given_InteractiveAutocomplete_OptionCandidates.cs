@@ -354,6 +354,83 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 		candidates.Should().NotContain("--help");
 	}
 
+	[TestMethod]
+	[Description("Route resolution runs before option parsing, so a dash-prefixed token can satisfy a required positional: 'remote -prod st' binds '-prod' to {name}, leaving the later literal 'status' as the completion — dropping '-prod' as if it were an option would hide it.")]
+	public async Task When_DashPrefixedTokenFillsRequiredPositional_Then_LaterLiteralIsSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("remote {name} status", static string (string name) => name)
+			.WithDescription("Remote status.");
+
+		var result = await ResolveAutocompleteAsync(sut, "remote -prod st").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		values.Should().Contain("status", because: "'-prod' binds to {name}; the next segment's literal must still be suggested");
+	}
+
+	[TestMethod]
+	[Description("The bare '--' separator is a positional value to route resolution (which runs before option parsing): 'remote -- st' binds '--' to {name}, so the later literal 'status' is still the completion.")]
+	public async Task When_SeparatorFillsRequiredPositional_Then_LaterLiteralIsSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("remote {name} status", static string (string name) => name)
+			.WithDescription("Remote status.");
+
+		var result = await ResolveAutocompleteAsync(sut, "remote -- st").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		values.Should().Contain("status", because: "'--' binds to {name} as a positional; the next literal must still be suggested");
+	}
+
+	[TestMethod]
+	[Description("Per-option case sensitivity is honored when filtering option-name candidates: an entry declared case-insensitive is offered for a differently-cased prefix ('--FO' offers '--force') even when the global default is case-sensitive, matching what the parser accepts. Exercised at the shared source because a per-option override is otherwise not expressible through the attribute.")]
+	public void When_SchemaEntryIsCaseInsensitive_Then_DifferentlyCasedPrefixStillMatches()
+	{
+		var entries = new[]
+		{
+			new Repl.Internal.Options.OptionSchemaEntry(
+				"--force",
+				"force",
+				Repl.Internal.Options.OptionSchemaTokenKind.BoolFlag,
+				ReplArity.ZeroOrOne,
+				CaseSensitivity: ReplCaseSensitivity.CaseInsensitive),
+		};
+		var schema = new Repl.Internal.Options.OptionSchema(
+			entries,
+			new Dictionary<string, Repl.Internal.Options.OptionSchemaParameter>(StringComparer.OrdinalIgnoreCase));
+
+		var results = new List<string>();
+		Repl.Internal.Options.OptionTokenCompletionSource.CollectRouteOptionTokens(
+			schema,
+			"--FO",
+			ReplCaseSensitivity.CaseSensitive,
+			new HashSet<string>(StringComparer.Ordinal),
+			results);
+
+		results.Should().Contain("--force", because: "the entry is case-insensitive, so '--FO' matches it even under a case-sensitive global default");
+	}
+
+	[TestMethod]
+	[Description("Shell enum-value completion recognizes short option aliases: after 'app run -m ' (where -m is a short alias for an enum option) the enum values are offered, matching what the parser accepts for '-m Debug'.")]
+	public void When_ShellCompletesEnumValueAfterShortAlias_Then_EnumNamesAreOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run", static string ([ReplOption(Aliases = ["-m"])] ProbeMode mode) => mode.ToString())
+			.WithDescription("Run.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string line = "app run -m ";
+
+		var candidates = shellEngine.ResolveShellCompletionCandidates(line, line.Length);
+
+		candidates.Should().Contain("Debug", because: "'-m' is a short alias for the enum option; its values must complete like '--mode' does");
+	}
+
+	private enum ProbeMode
+	{
+		Debug,
+		Release,
+	}
+
 	private static async Task<ConsoleLineReader.AutocompleteResult> ResolveAutocompleteAsync(CoreReplApp app, string input)
 	{
 		var result = await app.Autocomplete.ResolveAutocompleteAsync(
