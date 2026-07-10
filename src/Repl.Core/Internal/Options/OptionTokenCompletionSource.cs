@@ -56,9 +56,11 @@ internal static class OptionTokenCompletionSource
 			TryAddComposed("--", alias, currentTokenPrefix, StringComparison.OrdinalIgnoreCase, dedupe, results);
 		}
 
+		// Transformer names are also looked up through a case-insensitive dictionary, so
+		// GlobalOptionParser accepts "--output:JSON" whatever the global option case setting.
 		foreach (var format in options.Output.Transformers.Keys)
 		{
-			TryAddComposed("--output:", format, currentTokenPrefix, comparison, dedupe, results);
+			TryAddComposed("--output:", format, currentTokenPrefix, StringComparison.OrdinalIgnoreCase, dedupe, results);
 		}
 
 		foreach (var custom in options.Parsing.GlobalOptions.Values)

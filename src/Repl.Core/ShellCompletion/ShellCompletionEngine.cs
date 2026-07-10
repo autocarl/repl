@@ -10,7 +10,8 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 
 	public string[] ResolveShellCompletionCandidates(string line, int cursor)
 	{
-		var activeGraph = app.ResolveActiveRoutingGraph();
+		// Completion must not poison the durable routing cache (see the interactive path).
+		var activeGraph = app.ResolveActiveRoutingGraph(useDurableCache: false);
 		var state = AnalyzeShellCompletionInput(line, cursor);
 		if (state.PriorTokens.Length == 0)
 		{
@@ -61,7 +62,6 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			AddShellOptionCandidates(
 				hasTerminalRoute ? routeMatch!.Route : null,
 				currentTokenPrefix,
-				dedupe,
 				candidates);
 		}
 
@@ -264,17 +264,24 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	private void AddShellOptionCandidates(
 		RouteDefinition? route,
 		string currentTokenPrefix,
-		HashSet<string> dedupe,
 		List<string> candidates)
 	{
-		AddGlobalShellOptionCandidates(currentTokenPrefix, dedupe, candidates);
+		// Option candidates dedupe with the PARSER's case semantics, not the command/UI
+		// OrdinalIgnoreCase set: under case-sensitive option parsing, "-m" and "-M" can bind
+		// to different parameters and both are executable, so they must not collapse. (Option
+		// tokens start with '-' and never collide with command names, so a separate set is safe.)
+		var optionDedupe = new HashSet<string>(
+			app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+				? StringComparer.OrdinalIgnoreCase
+				: StringComparer.Ordinal);
+		AddGlobalShellOptionCandidates(currentTokenPrefix, optionDedupe, candidates);
 
 		if (route is null)
 		{
 			return;
 		}
 
-		AddRouteShellOptionCandidates(route, currentTokenPrefix, dedupe, candidates);
+		AddRouteShellOptionCandidates(route, currentTokenPrefix, optionDedupe, candidates);
 	}
 
 	private void AddGlobalShellOptionCandidates(

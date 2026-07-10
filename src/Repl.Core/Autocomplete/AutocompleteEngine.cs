@@ -85,7 +85,9 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
-		var activeGraph = app.ResolveActiveRoutingGraph();
+		// Completion must not poison the durable routing cache: its module-presence view can
+		// differ from execution's (the line's globals are not applied here).
+		var activeGraph = app.ResolveActiveRoutingGraph(useDurableCache: false);
 		var comparer = app.OptionsSnapshot.Interactive.Autocomplete.CaseSensitive
 			? StringComparer.Ordinal
 			: StringComparer.OrdinalIgnoreCase;
@@ -1008,10 +1010,22 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		StringComparer comparer)
 	{
 		var seen = new HashSet<string>(comparer);
+		// Option tokens dedupe case-sensitively so that, under case-sensitive option parsing,
+		// distinct executable aliases like "-m" and "-M" both survive the UI-level dedupe
+		// (which otherwise uses the case-insensitive autocomplete comparer).
+		var seenOptions = new HashSet<string>(StringComparer.Ordinal);
 		var distinct = new List<ConsoleLineReader.AutocompleteSuggestion>();
 		foreach (var suggestion in suggestions)
 		{
-			if (string.IsNullOrWhiteSpace(suggestion.DisplayText) || !seen.Add(suggestion.DisplayText))
+			if (string.IsNullOrWhiteSpace(suggestion.DisplayText))
+			{
+				continue;
+			}
+
+			var isOptionToken = IsOptionPrefixToken(suggestion.DisplayText);
+			if (isOptionToken
+				? !seenOptions.Add(suggestion.DisplayText)
+				: !seen.Add(suggestion.DisplayText))
 			{
 				continue;
 			}
@@ -1041,59 +1055,110 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
-		var committed = new string[scopeTokens.Count + tokenSpans.Count];
-		for (var i = 0; i < scopeTokens.Count; i++)
-		{
-			committed[i] = scopeTokens[i];
-		}
-
+		var rawValues = new string[tokenSpans.Count];
 		for (var i = 0; i < tokenSpans.Count; i++)
 		{
-			committed[scopeTokens.Count + i] = tokenSpans[i].Value;
+			rawValues[i] = tokenSpans[i].Value;
 		}
 
+		// Global-option tokens colour as options regardless of the route region (a leading
+		// "--no-logo" is executable before the command).
+		var isGlobal = MarkGlobalOptionTokens(rawValues);
+
+		// Resolve the positional path ONCE (not per token): route resolution gives the segment
+		// boundary that separates positionals from the trailing option region. Everything below
+		// derives from this single result, so classification cannot drift from completion and
+		// the per-keystroke cost stays flat instead of scaling with the token count.
+		var positional = new List<string>(scopeTokens.Count + tokenSpans.Count);
+		positional.AddRange(scopeTokens);
+		for (var i = 0; i < tokenSpans.Count; i++)
+		{
+			if (!isGlobal[i])
+			{
+				positional.Add(rawValues[i]);
+			}
+		}
+
+		var resolution = ResolveCommitted([.. positional], activeGraph);
+		return EmitTokenClassifications(
+			tokenSpans, rawValues, isGlobal, scopeTokens, comparison, routes, contexts, resolution);
+	}
+
+	private List<ConsoleLineReader.TokenClassification> EmitTokenClassifications(
+		List<TokenSpan> tokenSpans,
+		string[] rawValues,
+		bool[] isGlobal,
+		IReadOnlyList<string> scopeTokens,
+		StringComparison comparison,
+		IReadOnlyList<RouteDefinition> routes,
+		IReadOnlyList<ContextDefinition> contexts,
+		CommittedResolution resolution)
+	{
+		var segmentBoundary = resolution.CommandPrefix.Length;
 		var output = new List<ConsoleLineReader.TokenClassification>(tokenSpans.Count);
+		var runningPrefix = new List<string>(scopeTokens);
+		var positionalIndex = scopeTokens.Count;
 		for (var i = 0; i < tokenSpans.Count; i++)
 		{
-			// Resolve the tokens BEFORE this one through the same route-first pipeline as
-			// completion, so a dash-prefixed token bound to a route segment is classified as
-			// that positional (not blindly as an option), and a later literal is measured
-			// against the correct segment index.
-			var before = ResolveCommitted(committed[..(scopeTokens.Count + i)], activeGraph);
-			if (IsInTrailingOptionRegion(before, tokenSpans[i].Value))
+			var start = tokenSpans[i].Start;
+			var length = tokenSpans[i].End - start;
+			if (isGlobal[i])
 			{
 				output.Add(new ConsoleLineReader.TokenClassification(
-					tokenSpans[i].Start,
-					tokenSpans[i].End - tokenSpans[i].Start,
-					ConsoleLineReader.AutocompleteSuggestionKind.Parameter));
+					start, length, ConsoleLineReader.AutocompleteSuggestionKind.Parameter));
 				continue;
 			}
 
-			var kind = ClassifyToken(
-				before.CommandPrefix,
-				tokenSpans[i].Value,
-				comparison,
-				routes,
-				contexts,
-				scopeTokenCount: scopeTokens.Count,
-				isFirstInputToken: i == 0);
-			output.Add(new ConsoleLineReader.TokenClassification(
-				tokenSpans[i].Start,
-				tokenSpans[i].End - tokenSpans[i].Start,
-				kind));
+			var value = rawValues[i];
+
+			// Past the matched segments a dash token is a route option, not a positional.
+			// (A dash token still within the segments falls through to ClassifyToken and is
+			// classified as the positional it binds to.)
+			var kind = resolution.TerminalRoute is not null
+				&& positionalIndex >= segmentBoundary
+				&& !resolution.OptionsTerminated
+				&& IsOptionPrefixToken(value)
+				? ConsoleLineReader.AutocompleteSuggestionKind.Parameter
+				: ClassifyToken(
+					[.. runningPrefix],
+					value,
+					comparison,
+					routes,
+					contexts,
+					scopeTokenCount: scopeTokens.Count,
+					isFirstInputToken: positionalIndex == scopeTokens.Count);
+			output.Add(new ConsoleLineReader.TokenClassification(start, length, kind));
+			runningPrefix.Add(value);
+			positionalIndex++;
 		}
 
 		return output;
 	}
 
-	// A token colours as an option only once the route is terminal with every segment filled
-	// (so it sits in the trailing option region), or once the end-of-options separator has
-	// been seen. Before that, a dash-prefixed token is still a candidate positional value.
-	private static bool IsInTrailingOptionRegion(CommittedResolution before, string token) =>
-		IsOptionPrefixToken(token)
-		&& !before.OptionsTerminated
-		&& before.TerminalRoute is { } match
-		&& before.CommandPrefix.Length == match.Route.Template.Segments.Count;
+	// Marks which raw tokens the global-option parser consumes (a global flag or its value),
+	// so classification treats them as options and keeps them out of the positional command
+	// path. Sequence-matches the parser's surviving tokens against the raw ones.
+	private bool[] MarkGlobalOptionTokens(string[] rawValues)
+	{
+		var nonGlobal = GlobalOptionParser
+			.Parse(rawValues, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing)
+			.RemainingTokens;
+		var isGlobal = new bool[rawValues.Length];
+		var survivor = 0;
+		for (var i = 0; i < rawValues.Length; i++)
+		{
+			if (survivor < nonGlobal.Count && string.Equals(rawValues[i], nonGlobal[survivor], StringComparison.Ordinal))
+			{
+				survivor++;
+			}
+			else
+			{
+				isGlobal[i] = true;
+			}
+		}
+
+		return isGlobal;
+	}
 
 	internal static bool IsGlobalOptionToken(string token) =>
 		token.StartsWith("--", StringComparison.Ordinal);

@@ -517,6 +517,74 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 		candidates.Should().NotContain("Debug", because: "'-m' was bound to {target} by routing, so it is not a pending option here");
 	}
 
+	[TestMethod]
+	[Description("A valid leading global option keeps its option classification: '--no-logo show' classifies '--no-logo' as a Parameter (option), not Invalid — global options are executable before the command, independent of the route-option region.")]
+	public async Task When_GlobalOptionPrecedesCommand_Then_ItClassifiesAsOption()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("show", static string () => "ok").WithDescription("Show.");
+		const string input = "--no-logo show";
+
+		var result = await ResolveAutocompleteAsync(sut, input).ConfigureAwait(false);
+
+		var noLogo = result.TokenClassifications!.Single(c => c.Start == 0);
+		noLogo.Kind.Should().Be(ConsoleLineReader.AutocompleteSuggestionKind.Parameter,
+			because: "a global option before the command is valid, not Invalid");
+		var showStart = input.IndexOf("show", StringComparison.Ordinal);
+		result.TokenClassifications!.Single(c => c.Start == showStart).Kind
+			.Should().Be(ConsoleLineReader.AutocompleteSuggestionKind.Command);
+	}
+
+	[TestMethod]
+	[Description("Classification cost stays flat per completion rather than scaling with the token count: a long trailing token run must not blow up (it previously re-resolved the whole prefix per token). This pins that a wide input still classifies quickly and correctly.")]
+	public async Task When_ManyTrailingTokens_Then_ClassificationStaysBounded()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run {name}", static string (string name, [ReplOption] bool force) => name).WithDescription("Run.");
+		var input = "run zo " + string.Join(' ', Enumerable.Range(0, 200).Select(static i => $"a{i}"));
+
+		var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+		var result = await ResolveAutocompleteAsync(sut, input).ConfigureAwait(false);
+		stopwatch.Stop();
+
+		result.TokenClassifications!.Should().HaveCount(202);
+		stopwatch.ElapsedMilliseconds.Should().BeLessThan(500,
+			because: "classification resolves once, not once per token");
+	}
+
+	[TestMethod]
+	[Description("The '--output:<format>' transformer selector is offered for a differently-cased prefix ('--output:J' offers '--output:json'), because transformer names resolve through a case-insensitive dictionary like output aliases.")]
+	public async Task When_OutputSelectorPrefixIsDifferentlyCased_Then_TransformerIsSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseSensitive);
+		sut.Map("show", static string () => "ok").WithDescription("Show.");
+
+		var result = await ResolveAutocompleteAsync(sut, "show --output:J").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("--output:json",
+			because: "transformer names resolve case-insensitively");
+	}
+
+	[TestMethod]
+	[Description("Shell completion preserves case-distinct executable option aliases under case-sensitive option parsing: a route with '-m' and '-M' bound to different parameters offers BOTH, rather than collapsing them with a case-insensitive dedupe.")]
+	public void When_OptionsAreCaseSensitive_Then_ShellKeepsBothCaseDistinctAliases()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseSensitive);
+		sut.Map(
+				"run",
+				static string ([ReplOption(Aliases = ["-m"])] string? mode, [ReplOption(Aliases = ["-M"])] string? mask) => mode ?? mask ?? "none")
+			.WithDescription("Run.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string line = "app run -";
+
+		var candidates = shellEngine.ResolveShellCompletionCandidates(line, line.Length);
+
+		candidates.Should().Contain("-m").And.Contain("-M",
+			because: "case-sensitive parsing binds -m and -M to different parameters; both are executable");
+	}
+
 	private enum ProbeMode
 	{
 		Debug,
