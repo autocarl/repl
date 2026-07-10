@@ -102,6 +102,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				matchingRoutes,
 				state.CommandPrefix,
 				state.CurrentTokenPrefix,
+				state.TerminalRoute,
 				state.OptionsTerminated,
 				scopeTokens.Count,
 				activeGraph,
@@ -131,6 +132,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			request.Input,
 			scopeTokens,
 			prefixComparison,
+			activeGraph,
 			discoverableRoutes,
 			discoverableContexts);
 		return new ConsoleLineReader.AutocompleteResult(
@@ -148,78 +150,93 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		ActiveRoutingGraph activeGraph)
 	{
 		var state = AnalyzeAutocompleteInput(request.Input, request.Cursor);
-		var commandPrefix = BuildCommandPrefix([.. scopeTokens, .. state.PriorTokens], activeGraph);
+		var committed = new string[scopeTokens.Count + state.PriorTokens.Length];
+		for (var i = 0; i < scopeTokens.Count; i++)
+		{
+			committed[i] = scopeTokens[i];
+		}
+
+		state.PriorTokens.CopyTo(committed, scopeTokens.Count);
+
+		var resolution = ResolveCommitted(committed, activeGraph);
 		var currentTokenPrefix = state.CurrentTokenPrefix;
-		var replaceStart = state.ReplaceStart;
-		var replaceLength = state.ReplaceLength;
 		if (!ShouldAdvanceToNextToken(
-				commandPrefix,
+				resolution.CommandPrefix,
 				currentTokenPrefix,
-				replaceStart,
-				replaceLength,
+				state.ReplaceStart,
+				state.ReplaceLength,
 				request.Cursor,
 				comparison,
 				activeGraph.Routes,
 				activeGraph.Contexts))
 		{
 			return new AutocompleteResolutionState(
-				commandPrefix,
+				resolution.CommandPrefix,
 				currentTokenPrefix,
-				replaceStart,
-				replaceLength,
-				state.OptionsTerminated);
+				state.ReplaceStart,
+				state.ReplaceLength,
+				resolution.TerminalRoute,
+				resolution.OptionsTerminated);
 		}
 
+		// The current token is complete (whitespace follows): commit it and re-resolve so the
+		// route, option boundary, and terminated state describe the advanced prefix.
+		var advanced = ResolveCommitted([.. committed, currentTokenPrefix], activeGraph);
 		return new AutocompleteResolutionState(
-			[.. commandPrefix, currentTokenPrefix],
+			advanced.CommandPrefix,
 			string.Empty,
 			request.Cursor,
 			0,
-			state.OptionsTerminated);
+			advanced.TerminalRoute,
+			advanced.OptionsTerminated);
 	}
 
-	/// <summary>
-	/// Reduces the committed tokens to the positional command prefix the way execution does,
-	/// without guessing option arities: global options are stripped by the same parser
-	/// execution uses (which knows their arities — <c>--no-logo</c> takes no value,
-	/// <c>--output:</c> does), then the route is resolved. A matched route consumes its own
-	/// segments and leaves every route option in its trailing tokens, so the command prefix
-	/// is exactly the matched segments (a valued short alias like <c>-c beta</c> can never
-	/// leak its value into the prefix). Command/alias unique-prefix expansion mirrors the
-	/// router ("i" → "install"); an ambiguous shorthand is left as typed and matches no
-	/// route, exactly as execution would refuse it.
-	/// </summary>
-	private string[] BuildCommandPrefix(string[] committedTokens, ActiveRoutingGraph activeGraph)
+	// Single source of truth for a completion pass: resolves the committed tokens the way
+	// execution does (global options stripped by the arity-aware parser, then RouteResolver
+	// on the remaining tokens — route resolution runs BEFORE option parsing, so dash tokens
+	// and the bare "--" bind to segments as positionals). Everything downstream — the command
+	// prefix, route-option sourcing, provider gating, token classification, and the
+	// end-of-options state — is derived from this one result against the one captured graph,
+	// so the surfaces cannot drift from each other or from the executor.
+	private CommittedResolution ResolveCommitted(string[] committedTokens, ActiveRoutingGraph activeGraph)
 	{
 		if (committedTokens.Length == 0)
 		{
-			return committedTokens;
+			return new CommittedResolution([], TerminalRoute: null, OptionsTerminated: false);
 		}
 
-		// Global options are stripped with the parser that knows their arities, then the
-		// remaining tokens are fed to route resolution EXACTLY as execution does
-		// (CommittedInputResolver passes GlobalOptionParser.RemainingTokens to RouteResolver):
-		// route resolution runs before option parsing, so a dash-prefixed token — including
-		// the bare "--" separator — binds to a route segment as a positional value. Removing
-		// or dropping those tokens here would diverge from what actually runs.
 		var stripped = GlobalOptionParser
 			.Parse(committedTokens, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing)
 			.RemainingTokens;
 		var expanded = ExpandUniquePrefixes(stripped as string[] ?? [.. stripped], activeGraph);
-		if (app.Resolve(expanded) is { } match)
+		if (app.Resolve(expanded, activeGraph.Routes) is { } match)
 		{
-			// A matched route consumes exactly its own segments; trailing tokens are its
-			// options. (Trailing optional segments can leave the prefix shorter than the
-			// template, hence the clamp.)
 			var segmentCount = Math.Min(match.Route.Template.Segments.Count, expanded.Length);
-			return expanded[..segmentCount];
+			// The end-of-options separator only counts when it lands among the route's
+			// trailing option tokens; a "--" consumed as a positional segment value does not
+			// terminate options.
+			var optionsTerminated = false;
+			foreach (var trailing in match.RemainingTokens)
+			{
+				if (string.Equals(trailing, "--", StringComparison.Ordinal))
+				{
+					optionsTerminated = true;
+					break;
+				}
+			}
+
+			return new CommittedResolution(expanded[..segmentCount], match, optionsTerminated);
 		}
 
-		// No terminal route yet (still typing command words, or a required positional is
-		// unfilled): keep the tokens as typed so a dash-prefixed positional still satisfies
-		// its segment and the next literal is suggested.
-		return expanded;
+		// No terminal route yet (still typing command words, or a positional is unfilled):
+		// keep the tokens as typed so a dash-prefixed positional still satisfies its segment.
+		return new CommittedResolution(expanded, TerminalRoute: null, OptionsTerminated: false);
 	}
+
+	private readonly record struct CommittedResolution(
+		string[] CommandPrefix,
+		RouteMatch? TerminalRoute,
+		bool OptionsTerminated);
 
 	// Unique-prefix/alias expansion, bounded by the deepest template: beyond that depth no
 	// literal can match, and the per-index candidate derivation must not scale with the
@@ -258,6 +275,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		IReadOnlyList<RouteDefinition> matchingRoutes,
 		string[] commandPrefix,
 		string currentTokenPrefix,
+		RouteMatch? terminalRoute,
 		bool optionsTerminated,
 		int scopeTokenCount,
 		ActiveRoutingGraph activeGraph,
@@ -284,6 +302,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		var optionCandidates = CollectOptionAutocompleteCandidates(
 			commandPrefix,
 			currentTokenPrefix,
+			terminalRoute,
 			optionsTerminated);
 		var contextCandidates = app.OptionsSnapshot.Interactive.Autocomplete.ShowContextAlternatives
 			? CollectContextAutocompleteCandidates(commandPrefix, currentTokenPrefix, prefixComparison, activeGraph.Contexts)
@@ -399,6 +418,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 	private List<ConsoleLineReader.AutocompleteSuggestion> CollectOptionAutocompleteCandidates(
 		string[] commandPrefix,
 		string currentTokenPrefix,
+		RouteMatch? terminalRoute,
 		bool optionsTerminated)
 	{
 		if (optionsTerminated || !IsOptionPrefixToken(currentTokenPrefix))
@@ -413,12 +433,13 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		OptionTokenCompletionSource.CollectGlobalOptionTokens(
 			app.OptionsSnapshot, currentTokenPrefix, comparison, dedupe, tokens);
 
-		// Source route options from the single route execution would actually run for this
-		// prefix (RouteResolver picks one best overload) — and only when every required
-		// positional is filled: a resolved match with no leftover positional means the
-		// options belong to a command that runs cleanly. This is the same resolution
-		// execution performs, so autocomplete never offers an option the run would reject.
-		if (app.Resolve(commandPrefix) is { RemainingTokens.Count: 0 } match)
+		// Source route options from the single route this prefix resolves to (already
+		// computed for the whole pass), and only when EVERY positional segment — required or
+		// optional — is present: an unfilled trailing segment would capture the accepted
+		// option token as its value before option parsing runs, so the completed command
+		// would not behave as the menu implies.
+		if (terminalRoute is { } match
+			&& commandPrefix.Length == match.Route.Template.Segments.Count)
 		{
 			OptionTokenCompletionSource.CollectRouteOptionTokens(
 				match.Route,
@@ -1005,6 +1026,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		string input,
 		IReadOnlyList<string> scopeTokens,
 		StringComparison comparison,
+		ActiveRoutingGraph activeGraph,
 		IReadOnlyList<RouteDefinition> routes,
 		IReadOnlyList<ContextDefinition> contexts)
 	{
@@ -1019,12 +1041,26 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
+		var committed = new string[scopeTokens.Count + tokenSpans.Count];
+		for (var i = 0; i < scopeTokens.Count; i++)
+		{
+			committed[i] = scopeTokens[i];
+		}
+
+		for (var i = 0; i < tokenSpans.Count; i++)
+		{
+			committed[scopeTokens.Count + i] = tokenSpans[i].Value;
+		}
+
 		var output = new List<ConsoleLineReader.TokenClassification>(tokenSpans.Count);
 		for (var i = 0; i < tokenSpans.Count; i++)
 		{
-			// Single-dash short aliases classify as options too; a signed numeric literal
-			// stays a positional (IsOptionPrefixToken mirrors the parser's rule).
-			if (IsOptionPrefixToken(tokenSpans[i].Value))
+			// Resolve the tokens BEFORE this one through the same route-first pipeline as
+			// completion, so a dash-prefixed token bound to a route segment is classified as
+			// that positional (not blindly as an option), and a later literal is measured
+			// against the correct segment index.
+			var before = ResolveCommitted(committed[..(scopeTokens.Count + i)], activeGraph);
+			if (IsInTrailingOptionRegion(before, tokenSpans[i].Value))
 			{
 				output.Add(new ConsoleLineReader.TokenClassification(
 					tokenSpans[i].Start,
@@ -1033,12 +1069,8 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				continue;
 			}
 
-			var prefix = scopeTokens.Concat(
-				tokenSpans.Take(i)
-					.Where(static token => !IsOptionPrefixToken(token.Value))
-					.Select(static token => token.Value)).ToArray();
 			var kind = ClassifyToken(
-				prefix,
+				before.CommandPrefix,
 				tokenSpans[i].Value,
 				comparison,
 				routes,
@@ -1053,6 +1085,15 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 
 		return output;
 	}
+
+	// A token colours as an option only once the route is terminal with every segment filled
+	// (so it sits in the trailing option region), or once the end-of-options separator has
+	// been seen. Before that, a dash-prefixed token is still a candidate positional value.
+	private static bool IsInTrailingOptionRegion(CommittedResolution before, string token) =>
+		IsOptionPrefixToken(token)
+		&& !before.OptionsTerminated
+		&& before.TerminalRoute is { } match
+		&& before.CommandPrefix.Length == match.Route.Template.Segments.Count;
 
 	internal static bool IsGlobalOptionToken(string token) =>
 		token.StartsWith("--", StringComparison.Ordinal);
@@ -1395,13 +1436,12 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			}
 
 			var prefix = input[token.Start..cursor];
-			var prior = CollectPriorTokenValues(tokens, i, out var optionsTerminated);
+			var prior = CollectPriorTokenValues(tokens, i);
 			return new AutocompleteInputState(
 				prior,
 				prefix,
 				token.Start,
-				token.End - token.Start,
-				optionsTerminated);
+				token.End - token.Start);
 		}
 
 		var trailingCount = 0;
@@ -1413,21 +1453,19 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			}
 		}
 
-		var trailingPrior = CollectPriorTokenValues(tokens, trailingCount, out var trailingOptionsTerminated);
+		var trailingPrior = CollectPriorTokenValues(tokens, trailingCount);
 		return new AutocompleteInputState(
 			trailingPrior,
 			CurrentTokenPrefix: string.Empty,
 			ReplaceStart: cursor,
-			ReplaceLength: 0,
-			trailingOptionsTerminated);
+			ReplaceLength: 0);
 	}
 
-	// Collects the raw token VALUES before the cursor and detects the POSIX end-of-options
-	// separator. Normalization into a command prefix is deferred to BuildCommandPrefix,
-	// which resolves the route rather than guessing option arities.
-	private static string[] CollectPriorTokenValues(List<TokenSpan> tokens, int count, out bool optionsTerminated)
+	// Collects the raw token VALUES before the cursor. Normalization into a command prefix
+	// (and the end-of-options state) is deferred to ResolveCommitted, which resolves the
+	// route rather than guessing option arities or pre-classifying dash tokens.
+	private static string[] CollectPriorTokenValues(List<TokenSpan> tokens, int count)
 	{
-		optionsTerminated = false;
 		if (count == 0)
 		{
 			return [];
@@ -1437,10 +1475,6 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		for (var i = 0; i < count; i++)
 		{
 			values[i] = tokens[i].Value;
-			if (string.Equals(values[i], "--", StringComparison.Ordinal))
-			{
-				optionsTerminated = true;
-			}
 		}
 
 		return values;
@@ -1450,14 +1484,14 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		string[] PriorTokens,
 		string CurrentTokenPrefix,
 		int ReplaceStart,
-		int ReplaceLength,
-		bool OptionsTerminated);
+		int ReplaceLength);
 
 	private readonly record struct AutocompleteResolutionState(
 		string[] CommandPrefix,
 		string CurrentTokenPrefix,
 		int ReplaceStart,
 		int ReplaceLength,
+		RouteMatch? TerminalRoute,
 		bool OptionsTerminated);
 
 	internal readonly record struct TokenSpan(string Value, int Start, int End);

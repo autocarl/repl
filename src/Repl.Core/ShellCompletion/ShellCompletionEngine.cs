@@ -17,23 +17,26 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			return [];
 		}
 
-		var optionsTerminated = false;
-		var commandPrefix = BuildShellCommandPrefix(state.PriorTokens, activeGraph, ref optionsTerminated);
+		var resolution = ResolveShellCommitted(state.PriorTokens, activeGraph);
+		var commandPrefix = resolution.CommandPrefix;
+		var optionsTerminated = resolution.OptionsTerminated;
+		var routeMatch = resolution.Match;
 		var currentTokenPrefix = state.CurrentTokenPrefix;
 		// Same gate as the interactive menu: single-dash prefixes surface short option
 		// aliases (-f); signed numeric literals stay positional. After the POSIX "--"
 		// separator no option names may be offered — everything is positional.
 		var currentTokenIsOption = !optionsTerminated && AutocompleteEngine.IsOptionPrefixToken(currentTokenPrefix);
-		var routeMatch = app.Resolve(commandPrefix, activeGraph.Routes);
-		var hasTerminalRoute = routeMatch is not null && routeMatch.RemainingTokens.Count == 0;
+		// Terminal-for-options only when every positional segment (required or optional) is
+		// filled — an unfilled trailing segment would capture the accepted option/value.
+		var hasTerminalRoute = routeMatch is not null
+			&& commandPrefix.Length == routeMatch.Route.Template.Segments.Count;
 		var dedupe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var candidates = new List<string>(capacity: 16);
 		if (!currentTokenIsOption
 			&& !optionsTerminated
 			&& hasTerminalRoute
 			&& TryAddRouteEnumValueCandidates(
-				routeMatch!.Route,
-				state.PriorTokens,
+				routeMatch!,
 				currentTokenPrefix,
 				dedupe,
 				candidates))
@@ -66,63 +69,87 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		return [.. candidates];
 	}
 
-	// The first prior token is the executable name. The rest reduces to the positional
-	// command prefix the way execution does — without guessing option arities: global
-	// options are stripped by the parser that knows their arities, the bare "--" separator
-	// is recorded and removed, then the route is resolved so a matched route contributes
-	// exactly its own segments (a valued short alias like "-f value" leaves both tokens in
-	// the route's trailing options, never in the prefix).
-	private string[] BuildShellCommandPrefix(
-		string[] priorTokens,
-		ActiveRoutingGraph activeGraph,
-		ref bool optionsTerminated)
+	// Mirrors the interactive engine's single resolution: the first prior token is the
+	// executable name; global options are stripped with the arity-aware parser, unique
+	// command prefixes are expanded (so "i" resolves to "install" like execution does), and
+	// the route is resolved on the remaining tokens BEFORE option parsing — so dash tokens
+	// and the bare "--" bind to segments as positional values. The match's trailing tokens
+	// are the route's option region; a "--" among them terminates options, one bound to a
+	// segment does not.
+	private ShellResolution ResolveShellCommitted(string[] priorTokens, ActiveRoutingGraph activeGraph)
 	{
 		if (priorTokens.Length <= 1)
 		{
-			return [];
+			return new ShellResolution([], Match: null, OptionsTerminated: false);
 		}
 
 		var afterExecutable = new ArraySegment<string>(priorTokens, offset: 1, count: priorTokens.Length - 1);
 		var stripped = GlobalOptionParser
 			.Parse(afterExecutable, app.OptionsSnapshot.Output, app.OptionsSnapshot.Parsing)
 			.RemainingTokens;
-
-		// The bare "--" separator only records the end-of-options state; it stays in the
-		// tokens fed to route resolution, which — running before option parsing — binds it
-		// (and any other dash-prefixed token) to a route segment as a positional value,
-		// exactly as execution does.
-		foreach (var token in stripped)
+		var expanded = ExpandUniquePrefixes(stripped as string[] ?? [.. stripped], activeGraph);
+		if (app.Resolve(expanded, activeGraph.Routes) is { } match)
 		{
-			if (string.Equals(token, "--", StringComparison.Ordinal))
+			var segmentCount = Math.Min(match.Route.Template.Segments.Count, expanded.Length);
+			var optionsTerminated = false;
+			foreach (var trailing in match.RemainingTokens)
 			{
-				optionsTerminated = true;
-				break;
+				if (string.Equals(trailing, "--", StringComparison.Ordinal))
+				{
+					optionsTerminated = true;
+					break;
+				}
 			}
+
+			return new ShellResolution(expanded[..segmentCount], match, optionsTerminated);
 		}
 
-		var prefix = stripped as string[] ?? [.. stripped];
-		if (app.Resolve(prefix, activeGraph.Routes) is { } match)
+		return new ShellResolution(expanded, Match: null, OptionsTerminated: false);
+	}
+
+	// Bounded unique-prefix/alias expansion mirroring the interactive engine.
+	private string[] ExpandUniquePrefixes(string[] tokens, ActiveRoutingGraph activeGraph)
+	{
+		if (tokens.Length == 0)
 		{
-			var segmentCount = Math.Min(match.Route.Template.Segments.Count, prefix.Length);
-			return prefix[..segmentCount];
+			return tokens;
 		}
 
-		return prefix;
+		var expansionDepth = 0;
+		foreach (var route in activeGraph.Routes)
+		{
+			expansionDepth = Math.Max(expansionDepth, route.Template.Segments.Count);
+		}
+
+		foreach (var context in activeGraph.Contexts)
+		{
+			expansionDepth = Math.Max(expansionDepth, context.Template.Segments.Count);
+		}
+
+		if (tokens.Length <= expansionDepth)
+		{
+			var resolution = app.ResolveUniquePrefixes(tokens, activeGraph);
+			return resolution.IsAmbiguous ? tokens : resolution.Tokens;
+		}
+
+		var headResolution = app.ResolveUniquePrefixes(tokens[..expansionDepth], activeGraph);
+		return headResolution.IsAmbiguous
+			? tokens
+			: [.. headResolution.Tokens, .. tokens[expansionDepth..]];
 	}
 
 	private bool TryAddRouteEnumValueCandidates(
-		RouteDefinition route,
-		string[] priorTokens,
+		RouteMatch match,
 		string currentTokenPrefix,
 		HashSet<string> dedupe,
 		List<string> candidates)
 	{
-		if (!TryResolvePendingRouteOption(route, priorTokens, out var entry))
+		if (!TryResolvePendingRouteOption(match, out var entry))
 		{
 			return false;
 		}
 
-		if (!route.OptionSchema.TryGetParameter(entry.ParameterName, out var parameter))
+		if (!match.Route.OptionSchema.TryGetParameter(entry.ParameterName, out var parameter))
 		{
 			return false;
 		}
@@ -149,23 +176,21 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	}
 
 	private bool TryResolvePendingRouteOption(
-		RouteDefinition route,
-		string[] priorTokens,
+		RouteMatch match,
 		out OptionSchemaEntry entry)
 	{
 		entry = default!;
-		if (priorTokens.Length <= 1)
+
+		// The pending option is the LAST token in the route's trailing option region — not a
+		// dash-prefixed token that routing already bound to a positional segment. Deriving it
+		// from match.RemainingTokens (rather than the raw prior tokens) is what keeps
+		// "deploy -m" (where -m fills {target}) from being mistaken for a pending "-m" option.
+		if (match.RemainingTokens.Count == 0)
 		{
 			return false;
 		}
 
-		var commandTokens = priorTokens[1..];
-		if (commandTokens.Length == 0)
-		{
-			return false;
-		}
-
-		var previousToken = commandTokens[^1];
+		var previousToken = match.RemainingTokens[^1];
 		// A single dash is enough: short option aliases (e.g. "-m") take values too, and the
 		// schema resolves them like any other token below.
 		if (!AutocompleteEngine.IsOptionPrefixToken(previousToken))
@@ -179,7 +204,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			return false;
 		}
 
-		var matches = route.OptionSchema.ResolveToken(previousToken, app.OptionsSnapshot.Parsing.OptionCaseSensitivity);
+		var matches = match.Route.OptionSchema.ResolveToken(previousToken, app.OptionsSnapshot.Parsing.OptionCaseSensitivity);
 		var distinct = matches
 			.DistinctBy(candidate => (candidate.ParameterName, candidate.TokenKind, candidate.InjectedValue), ShellOptionSchemaEntryComparer.Instance)
 			.ToArray();
@@ -333,6 +358,11 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	internal readonly record struct ShellCompletionInputState(
 		string[] PriorTokens,
 		string CurrentTokenPrefix);
+
+	private readonly record struct ShellResolution(
+		string[] CommandPrefix,
+		RouteMatch? Match,
+		bool OptionsTerminated);
 
 	internal static string ResolveShellCompletionCommandName(
 		IReadOnlyList<string>? commandLineArgs,

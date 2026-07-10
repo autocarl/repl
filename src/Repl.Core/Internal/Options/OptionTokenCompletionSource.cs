@@ -48,9 +48,12 @@ internal static class OptionTokenCompletionSource
 			TryAdd(option, currentTokenPrefix, comparison, dedupe, results);
 		}
 
+		// Output-format aliases resolve through OutputOptions.Aliases, a case-insensitive
+		// dictionary, so GlobalOptionParser accepts "--JSON" whatever the global option
+		// case setting — completion must offer them on a differently-cased prefix too.
 		foreach (var alias in options.Output.Aliases.Keys)
 		{
-			TryAddComposed("--", alias, currentTokenPrefix, comparison, dedupe, results);
+			TryAddComposed("--", alias, currentTokenPrefix, StringComparison.OrdinalIgnoreCase, dedupe, results);
 		}
 
 		foreach (var format in options.Output.Transformers.Keys)

@@ -425,6 +425,98 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 		candidates.Should().Contain("Debug", because: "'-m' is a short alias for the enum option; its values must complete like '--mode' does");
 	}
 
+	[TestMethod]
+	[Description("Route options wait until OPTIONAL positionals are disambiguated too: 'run --' on 'run {profile?}' must not offer --force, because RouteResolver would bind --force to the optional {profile} before option parsing. Once the optional is filled ('run x --'), route options appear.")]
+	public async Task When_OptionalPositionalIsUnfilled_Then_RouteOptionsAreNotSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run {profile?}", static string (string? profile, [ReplOption] bool force) => profile ?? "none")
+			.WithDescription("Run.");
+
+		var unfilled = await ResolveAutocompleteAsync(sut, "run --").ConfigureAwait(false);
+		var filled = await ResolveAutocompleteAsync(sut, "run zo --").ConfigureAwait(false);
+
+		unfilled.Suggestions.Select(static s => s.Value).Should().NotContain("--force",
+			because: "an unfilled optional positional would capture --force as its value");
+		filled.Suggestions.Select(static s => s.Value).Should().Contain("--force",
+			because: "once the optional positional is filled, route options are safe");
+	}
+
+	[TestMethod]
+	[Description("A bare '--' bound to a positional does not terminate options: 'remote -- status --' binds '--' to {name}, the route is terminal, and the trailing current token asks for option names — the positional '--' must not suppress them.")]
+	public async Task When_SeparatorIsBoundAsPositional_Then_OptionsAreStillOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("remote {name} status", static string (string name, [ReplOption] bool force) => name)
+			.WithDescription("Remote status.");
+
+		var result = await ResolveAutocompleteAsync(sut, "remote -- status --").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("--force",
+			because: "the '--' was consumed as {name}, so it is not the end-of-options separator here");
+	}
+
+	[TestMethod]
+	[Description("Token classification uses the resolved route boundary: in 'remote -prod status' the '-prod' binds to {name}, so 'status' is classified against segment 2 as a Command literal, not mis-indexed to segment 1.")]
+	public async Task When_DashPositionalPrecedes_Then_LaterLiteralClassifiesAsCommand()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("remote {name} status", static string (string name) => name)
+			.WithDescription("Remote status.");
+		const string input = "remote -prod status";
+
+		var result = await ResolveAutocompleteAsync(sut, input).ConfigureAwait(false);
+
+		var statusStart = input.IndexOf("status", StringComparison.Ordinal);
+		var statusClass = result.TokenClassifications!.Single(c => c.Start == statusStart);
+		statusClass.Kind.Should().Be(ConsoleLineReader.AutocompleteSuggestionKind.Command,
+			because: "'-prod' fills {name}, so 'status' is the literal at segment 2");
+	}
+
+	[TestMethod]
+	[Description("Interactive option completion offers output-format aliases case-insensitively, matching how GlobalOptionParser resolves them (OutputOptions.Aliases is a case-insensitive dictionary): '--J' offers '--json' even under a case-sensitive global default.")]
+	public async Task When_OutputAliasPrefixIsDifferentlyCased_Then_AliasIsStillSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseSensitive);
+		sut.Map("show", static string () => "ok").WithDescription("Show.");
+
+		var result = await ResolveAutocompleteAsync(sut, "show --J").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("--json",
+			because: "output aliases resolve case-insensitively, so '--J' matches '--json'");
+	}
+
+	[TestMethod]
+	[Description("Shell completion expands unique command prefixes before resolving, like execution: 'app i pkg --' (where 'i' uniquely prefixes 'install') resolves the install route and offers its options.")]
+	public void When_ShellCompletesAfterUniquePrefix_Then_RouteOptionsAreOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("install {name}", static string (string name, [ReplOption] bool force) => name)
+			.WithDescription("Install a skill.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string line = "app i pkg --";
+
+		var candidates = shellEngine.ResolveShellCompletionCandidates(line, line.Length);
+
+		candidates.Should().Contain("--force", because: "'i' uniquely prefixes 'install', so its route options must be offered");
+	}
+
+	[TestMethod]
+	[Description("Shell enum completion must not fire for a dash token that routing consumed as a positional: 'app deploy -m ' binds '-m' to {target}, so no enum values are offered (accepting one would leave it as stray positional text).")]
+	public void When_DashTokenWasBoundAsPositional_Then_ShellOffersNoEnumValues()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {target}", static string (string target, [ReplOption(Aliases = ["-m"])] ProbeMode mode) => target)
+			.WithDescription("Deploy.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string line = "app deploy -m ";
+
+		var candidates = shellEngine.ResolveShellCompletionCandidates(line, line.Length);
+
+		candidates.Should().NotContain("Debug", because: "'-m' was bound to {target} by routing, so it is not a pending option here");
+	}
+
 	private enum ProbeMode
 	{
 		Debug,
