@@ -29,9 +29,6 @@ internal static class OptionTokenCompletionSource
 		"--no-interactive",
 		"--no-logo",
 		"--output:",
-		// GlobalOptionParser accepts "--answer:<name>[=value]" to prefill interactive prompts;
-		// surface the prefix so it completes like the other built-in globals.
-		"--answer:",
 		ReplResultFlowOptionNames.All,
 		ReplResultFlowOptionNames.PageSize,
 		ReplResultFlowOptionNames.Cursor,
@@ -54,6 +51,11 @@ internal static class OptionTokenCompletionSource
 		{
 			TryAdd(option, currentTokenPrefix, comparison, dedupe, results);
 		}
+
+		// GlobalOptionParser.TryParsePromptAnswer matches "--answer:" with OrdinalIgnoreCase
+		// regardless of the configured option case sensitivity, so it must be offered
+		// case-insensitively too (a case-sensitive filter would hide it from "--ANS").
+		TryAdd("--answer:", currentTokenPrefix, StringComparison.OrdinalIgnoreCase, dedupe, results);
 
 		// Output-format aliases resolve through OutputOptions.Aliases, a case-insensitive
 		// dictionary, so GlobalOptionParser accepts "--JSON" whatever the global option

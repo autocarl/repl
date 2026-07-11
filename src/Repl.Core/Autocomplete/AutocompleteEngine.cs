@@ -107,6 +107,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				state.TerminalRoute,
 				state.OptionsTerminated,
 				state.PendingOptionValue,
+				state.PendingOptionToken,
 				scopeTokens.Count,
 				activeGraph,
 				prefixComparison,
@@ -168,6 +169,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				resolution.OptionsTerminated)
 			{
 				PendingOptionValue = true,
+				PendingOptionToken = committed[^1],
 			};
 		}
 
@@ -367,6 +369,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		RouteMatch? terminalRoute,
 		bool optionsTerminated,
 		bool pendingOptionValue,
+		string? pendingOptionToken,
 		int scopeTokenCount,
 		ActiveRoutingGraph activeGraph,
 		StringComparison prefixComparison,
@@ -383,6 +386,8 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		{
 			var pendingCandidates = await CollectPendingOptionValueCandidatesAsync(
 					terminalRoute,
+					pendingOptionToken,
+					optionsTerminated,
 					currentTokenPrefix,
 					serviceProvider,
 					cancellationToken)
@@ -1160,22 +1165,28 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 	}
 
 	// Completes the VALUE of a pending route option by invoking ONLY that option's own provider.
-	// The pending token is the terminal route's last trailing option (e.g. "--channel"); its
-	// OptionSchema entry names the target parameter, and the command's completion for exactly
-	// that parameter is run. A pending GLOBAL option carries no per-command provider, so nothing
-	// is offered (terminalRoute is null or has no trailing tokens).
+	// It keys off the ACTUAL pending token (the last committed token), never the route match's
+	// trailing token: ResolveCommitted strips globals before route resolution, so for
+	// "run app --channel --tenant " the route's trailing token is still "--channel" while the
+	// pending value belongs to the global "--tenant" — which carries no per-command provider,
+	// so nothing is offered. Only a pending ROUTE option (same route-value condition the pending
+	// detector uses) resolves a target parameter and runs its completion.
 	private async ValueTask<IReadOnlyList<ConsoleLineReader.AutocompleteSuggestion>> CollectPendingOptionValueCandidatesAsync(
 		RouteMatch? terminalRoute,
+		string? pendingOptionToken,
+		bool optionsTerminated,
 		string currentTokenPrefix,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
-		if (terminalRoute is not { RemainingTokens.Count: > 0 } match)
+		if (optionsTerminated
+			|| pendingOptionToken is null
+			|| terminalRoute is not { } match
+			|| !IsPendingRouteOptionValue(pendingOptionToken, terminalRoute))
 		{
 			return [];
 		}
 
-		var pendingOptionToken = match.RemainingTokens[^1];
 		var entries = match.Route.OptionSchema.ResolveToken(
 			pendingOptionToken, app.OptionsSnapshot.Parsing.OptionCaseSensitivity);
 		foreach (var entry in entries)
@@ -1188,8 +1199,13 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			var completionContext = new CompletionContext(serviceProvider);
 			var provided = await completion(completionContext, currentTokenPrefix, cancellationToken)
 				.ConfigureAwait(false);
+			// Only surface values the invocation parser would consume as this option's separate
+			// value: a dash-prefixed candidate is read as the next option (accepting it would
+			// leave the option unset), while a signed numeric literal (-42) is bound as a value.
+			// Reuse the parser's own rule so completion and execution cannot drift.
 			return provided
-				.Where(static item => !string.IsNullOrWhiteSpace(item))
+				.Where(static item => !string.IsNullOrWhiteSpace(item)
+					&& InvocationOptionParser.ShouldConsumeFollowingTokenAsValue(item))
 				.Select(static item => new ConsoleLineReader.AutocompleteSuggestion(
 					item,
 					Kind: ConsoleLineReader.AutocompleteSuggestionKind.Parameter))
@@ -1761,6 +1777,12 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		// True when the current token is the value of a valued option still awaiting one:
 		// no command or option-name suggestions may be offered for this position.
 		public bool PendingOptionValue { get; init; }
+
+		// The actual option token awaiting a value (the last committed token) when
+		// PendingOptionValue is set — a route option or a global. The pending-value provider
+		// path keys off this, not the route match's trailing token, so a global pending after
+		// an earlier route option does not run that route option's provider.
+		public string? PendingOptionToken { get; init; }
 	}
 
 	internal readonly record struct TokenSpan(string Value, int Start, int End);

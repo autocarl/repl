@@ -867,6 +867,54 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 			because: "channel has no provider; the target positional's provider must not be invoked for it");
 	}
 
+	[TestMethod]
+	[Description("A pending GLOBAL value after a route option must not invoke the route option's provider: ResolveCommitted strips the global before route resolution, so terminalRoute.RemainingTokens can still end with an earlier route option ('--channel'). For 'run app --channel --tenant ' the pending value is the global tenant's, so channel's provider must NOT run.")]
+	public async Task When_PendingGlobalFollowsRouteOption_Then_RouteProviderIsNotInvoked()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options => options.Parsing.AddGlobalOption<string>("tenant"));
+		sut.Map("run {target}", static string (string target, [ReplOption] string? channel) => target)
+			.WithCompletion("channel", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["alpha", "beta"]))
+			.WithDescription("Run.");
+
+		var result = await ResolveAutocompleteAsync(sut, "run app --channel --tenant ").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().NotContain("alpha").And.NotContain("beta",
+			because: "the pending value is the global tenant's, not channel's — channel's provider must not run");
+	}
+
+	[TestMethod]
+	[Description("The '--answer:' prefill matches case-insensitively regardless of OptionCaseSensitivity: GlobalOptionParser.TryParsePromptAnswer accepts '--ANSWER:name' via OrdinalIgnoreCase even under CaseSensitive options, so 'show --ANS' must still surface '--answer:'.")]
+	public async Task When_AnswerPrefixIsUpperCasedUnderCaseSensitive_Then_AnswerOptionIsSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseSensitive);
+		sut.Map("show", static string () => "ok").WithDescription("Show.");
+
+		var result = await ResolveAutocompleteAsync(sut, "show --ANS").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("--answer:",
+			because: "TryParsePromptAnswer matches '--answer:' case-insensitively, so completion must too");
+	}
+
+	[TestMethod]
+	[Description("A pending option value completion drops values the invocation parser would not consume as a separate value: a dash-prefixed candidate ('--prod') is treated as the next option, so accepting it would leave the option unset. 'run --channel ' with a provider returning '--prod', 'alpha', '-42' offers 'alpha' and the signed numeric '-42' (the parser binds it as a value) but not '--prod'.")]
+	public async Task When_PendingOptionProviderReturnsDashValue_Then_ItIsNotOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run", static string ([ReplOption] string? channel) => channel ?? "none")
+			.WithCompletion("channel", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["--prod", "alpha", "-42"]))
+			.WithDescription("Run.");
+
+		var result = await ResolveAutocompleteAsync(sut, "run --channel ").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static s => s.Value).ToArray();
+		values.Should().Contain("alpha").And.Contain("-42",
+			because: "plain values and signed numeric literals are consumable as the option's separate value");
+		values.Should().NotContain("--prod",
+			because: "a dash-prefixed candidate is parsed as the next option, so it cannot fill --channel");
+	}
+
 private enum ProbeMode
 	{
 		Debug,
