@@ -123,7 +123,7 @@ If signals are conflicting or weak, result is `unknown` (no auto-install in `Aut
 
 - Command literals from the mapped graph.
 - Static command options from handler parameters (resolved terminal routes).
-- Static global options (`--help`, `--interactive`, `--no-interactive`, `--no-logo`, output aliases, `--output:<format>`).
+- Static global options (`--help`, `--interactive`, `--no-interactive`, `--no-logo`, output aliases, `--output:<format>`, `--answer:<name>`, and the result-flow flags `--result:page-size`, `--result:cursor`, `--result:pager`, `--result:all`).
 
 Not included:
 
