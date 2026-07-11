@@ -29,6 +29,10 @@ internal static class OptionTokenCompletionSource
 		"--no-interactive",
 		"--no-logo",
 		"--output:",
+		ReplResultFlowOptionNames.All,
+		ReplResultFlowOptionNames.PageSize,
+		ReplResultFlowOptionNames.Cursor,
+		ReplResultFlowOptionNames.Pager,
 	];
 
 	/// <summary>

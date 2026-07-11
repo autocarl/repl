@@ -33,9 +33,20 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			&& commandPrefix.Length == routeMatch.Route.Template.Segments.Count;
 		var dedupe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var candidates = new List<string>(capacity: 16);
+
+		// The pending option is whatever the LAST committed token is (the first prior token is
+		// the executable name). Enum-value completion only applies when that pending option is
+		// the route's own trailing option — not a valued global that the resolution stripped
+		// (e.g. "run --mode --tenant " is pending on --tenant, not --mode).
+		var afterExecutable = state.PriorTokens.Length > 1 ? state.PriorTokens[1..] : [];
+		var routeOptionIsLastCommitted = routeMatch is not null
+			&& routeMatch.RemainingTokens.Count > 0
+			&& afterExecutable.Length > 0
+			&& string.Equals(afterExecutable[^1], routeMatch.RemainingTokens[^1], StringComparison.Ordinal);
 		if (!currentTokenIsOption
 			&& !optionsTerminated
 			&& hasTerminalRoute
+			&& routeOptionIsLastCommitted
 			&& TryAddRouteEnumValueCandidates(
 				routeMatch!,
 				currentTokenPrefix,
@@ -46,10 +57,35 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			return [.. candidates];
 		}
 
-		if (!currentTokenIsOption)
+		// A valued option still awaiting its value (and not an enum, which the block above
+		// would have completed) makes the current token that value — offering a command or
+		// option name here would misparse.
+		if (app.Autocomplete.IsPendingOptionValue(afterExecutable, routeMatch, optionsTerminated, currentTokenPrefix))
+		{
+			return [];
+		}
+
+		AddShellCommandAndOptionCandidates(
+			resolution, activeGraph, currentTokenPrefix, currentTokenIsOption, hasTerminalRoute, dedupe, candidates);
+		candidates.Sort(StringComparer.OrdinalIgnoreCase);
+		return [.. candidates];
+	}
+
+	private void AddShellCommandAndOptionCandidates(
+		ShellResolution resolution,
+		ActiveRoutingGraph activeGraph,
+		string currentTokenPrefix,
+		bool currentTokenIsOption,
+		bool hasTerminalRoute,
+		HashSet<string> dedupe,
+		List<string> candidates)
+	{
+		// No subcommand can follow once a terminal route already carries trailing option
+		// tokens (see the interactive path).
+		if (!currentTokenIsOption && resolution.Match is not { RemainingTokens.Count: > 0 })
 		{
 			AddShellCommandCandidates(
-				commandPrefix,
+				resolution.CommandPrefix,
 				currentTokenPrefix,
 				activeGraph.Routes,
 				activeGraph.Contexts,
@@ -57,16 +93,14 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 				candidates);
 		}
 
-		if (!optionsTerminated && (currentTokenIsOption || (string.IsNullOrEmpty(currentTokenPrefix) && hasTerminalRoute)))
+		if (!resolution.OptionsTerminated
+			&& (currentTokenIsOption || (string.IsNullOrEmpty(currentTokenPrefix) && hasTerminalRoute)))
 		{
 			AddShellOptionCandidates(
-				hasTerminalRoute ? routeMatch!.Route : null,
+				hasTerminalRoute ? resolution.Match!.Route : null,
 				currentTokenPrefix,
 				candidates);
 		}
-
-		candidates.Sort(StringComparer.OrdinalIgnoreCase);
-		return [.. candidates];
 	}
 
 	// Mirrors the interactive engine's single resolution: the first prior token is the

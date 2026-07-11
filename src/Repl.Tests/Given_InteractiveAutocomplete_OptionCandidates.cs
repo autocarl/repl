@@ -58,18 +58,32 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 	}
 
 	[TestMethod]
-	[Description("Command aliases resolve for option suggestions like they do for execution: invoking an aliased command ('i' for 'install') must surface the route's options, mirroring RouteResolver's terminal-segment alias matching.")]
+	[Description("Command aliases resolve for option suggestions like they do for execution: a command whose TERMINAL literal is aliased ('ls' for 'list') surfaces the route's options when invoked through the alias, exercising RouteResolver's terminal-segment alias matching (not unique-prefix expansion).")]
 	public async Task When_CommandIsInvokedThroughAlias_Then_RouteOptionsAreSuggested()
 	{
 		var sut = CoreReplApp.Create();
+		sut.Map("contact list", static string ([ReplOption] bool verbose) => verbose.ToString())
+			.WithAlias("ls")
+			.WithDescription("List contacts.");
+
+		var result = await ResolveAutocompleteAsync(sut, "contact ls --").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		values.Should().Contain("--verbose", because: "the router accepts the terminal-segment alias, so autocomplete must too");
+	}
+
+	[TestMethod]
+	[Description("Unique command-prefix expansion feeds option suggestions like it feeds execution: typing a unique prefix of a command ('i' for 'install') resolves the route and surfaces its options.")]
+	public async Task When_CommandIsInvokedThroughUniquePrefix_Then_RouteOptionsAreSuggested()
+	{
+		var sut = CoreReplApp.Create();
 		sut.Map("install {skillName}", static string (string skillName, [ReplOption] bool force) => skillName)
-			.WithAlias("i")
 			.WithDescription("Install a skill.");
 
 		var result = await ResolveAutocompleteAsync(sut, "i bib-overalls --").ConfigureAwait(false);
 
 		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
-		values.Should().Contain("--force", because: "the router accepts the alias, so autocomplete must too");
+		values.Should().Contain("--force", because: "'i' uniquely prefixes 'install', so its route options must appear");
 	}
 
 	[TestMethod]
@@ -627,7 +641,9 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 		sut.Options(options => options.Parsing.AddGlobalOption<string>("tenant"));
 		sut.Map("install {skillName}", static string (string skillName) => skillName).WithDescription("Install.");
 
-		var result = await ResolveAutocompleteAsync(sut, "--tenant install").ConfigureAwait(false);
+		// Partial command token so the assertion is discriminating: a valued global suppresses
+		// it (it is the tenant value), whereas a bool global would still complete it.
+		var result = await ResolveAutocompleteAsync(sut, "--tenant ins").ConfigureAwait(false);
 
 		result.Suggestions.Select(static s => s.Value).Should().NotContain("install",
 			because: "the token after a pending valued global is its value, not a command");
@@ -647,7 +663,137 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 			because: "the token after a pending valued route option is its value, not another option");
 	}
 
-	private enum ProbeMode
+	[TestMethod]
+	[Description("Built-in result-flow options are offered in completion: typing '--res' surfaces '--result:page-size' and friends, matching what GlobalOptionParser accepts and help documents.")]
+	public async Task When_ResultFlowPrefixIsTyped_Then_ResultFlowOptionsAreSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("show", static string () => "ok").WithDescription("Show.");
+
+		var result = await ResolveAutocompleteAsync(sut, "show --res").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static s => s.Value).ToArray();
+		values.Should().Contain("--result:page-size").And.Contain("--result:cursor");
+	}
+
+	[TestMethod]
+	[Description("A pending valued built-in result-flow option suppresses command suggestions: after '--result:page-size ' the current token is its value, so a root command must not be offered (it would be consumed as the page size).")]
+	public async Task When_ResultFlowOptionAwaitsValue_Then_NoCommandIsSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("install {skillName}", static string (string skillName) => skillName).WithDescription("Install.");
+
+		var result = await ResolveAutocompleteAsync(sut, "--result:page-size install").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().NotContain("install",
+			because: "the token after a pending valued result-flow option is its value");
+	}
+
+	[TestMethod]
+	[Description("A pending valued global does NOT suppress completion when the current token is option-like: '--tenant --' offers options, because the global parser does not consume a dash-prefixed token as the value ('--tenant' takes its fallback and '--' is a separate token).")]
+	public async Task When_ValuedGlobalIsFollowedByOptionPrefix_Then_OptionsAreStillOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options => options.Parsing.AddGlobalOption<string>("tenant"));
+		sut.Map("show", static string () => "ok").WithDescription("Show.");
+
+		var result = await ResolveAutocompleteAsync(sut, "--tenant --").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("--help",
+			because: "'--tenant' cannot consume the option-like '--' as its value, so options remain available");
+	}
+
+	[TestMethod]
+	[Description("A pending valued route option that sits BEFORE a POSIX '--' does not suppress positional completion after the separator: 'deploy x -- -' completes the target value, because tokens after '--' are positional, not options awaiting a value.")]
+	public async Task When_SeparatorFollowsPendingLikeToken_Then_PositionalProviderStillRuns()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {target}", static string (string target, [ReplOption] string? channel) => target)
+			.WithCompletion("target", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["zo-profile"]))
+			.WithDescription("Deploy.");
+
+		var result = await ResolveAutocompleteAsync(sut, "deploy x -- -").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("zo-profile",
+			because: "after '--' the token is positional; no route option is pending a value");
+	}
+
+	[TestMethod]
+	[Description("Shell parity: a pending valued route option suppresses option-name candidates in shell completion too — 'app run --channel -' must not offer '-f' (which would leave --channel without a value).")]
+	public void When_ShellRouteOptionAwaitsValue_Then_NoOptionNameIsOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run", static string ([ReplOption(Aliases = ["-f"])] bool force, [ReplOption] string? channel) => channel ?? "none")
+			.WithDescription("Run.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string line = "app run --channel -";
+
+		var candidates = shellEngine.ResolveShellCompletionCandidates(line, line.Length);
+
+		candidates.Should().NotContain("-f", because: "--channel awaits a value; offering another option would misparse");
+	}
+
+	[TestMethod]
+	[Description("Shell parity: a pending valued global suppresses candidates in shell completion too — after 'app run --mode --tenant ' no enum value for --mode is offered (it would be consumed as the tenant value).")]
+	public void When_ShellGlobalAwaitsValue_Then_NoStaleEnumIsOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options => options.Parsing.AddGlobalOption<string>("tenant"));
+		sut.Map("run", static string ([ReplOption(Aliases = ["-m"])] ProbeMode mode) => mode.ToString())
+			.WithDescription("Run.");
+		var shellEngine = new ShellCompletionEngine(sut);
+		const string line = "app run --mode --tenant ";
+
+		var candidates = shellEngine.ResolveShellCompletionCandidates(line, line.Length);
+
+		candidates.Should().NotContain("Debug", because: "--tenant awaits its value; --mode's enum values must not leak here");
+	}
+
+	[TestMethod]
+	[Description("A pending valued option still offers its VALUE completions: with a WithCompletion provider on the option's target, 'run --channel ' returns the provider's values — only command and option-NAME candidates are suppressed, not the option's own value provider.")]
+	public async Task When_ValuedRouteOptionAwaitsValue_Then_ItsProviderStillCompletes()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run", static string ([ReplOption] string? channel) => channel ?? "none")
+			.WithCompletion("channel", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["alpha", "beta"]))
+			.WithDescription("Run.");
+
+		var result = await ResolveAutocompleteAsync(sut, "run --channel ").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static s => s.Value).ToArray();
+		values.Should().Contain("alpha").And.Contain("beta",
+			because: "the pending option's value provider must still run — only command/option names are suppressed");
+	}
+
+	[TestMethod]
+	[Description("A BOOL global is not a pending value, so a command still completes after it: '--verbose sh' offers 'show' (the bool consumes nothing). Resolving through the parser's token map — not an independent definition scan — keeps completion's verdict identical to the parser's even when aliases collide.")]
+	public async Task When_TokenResolvesToBoolGlobal_Then_CommandStillCompletes()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options => options.Parsing.AddGlobalOption<bool>("verbose"));
+		sut.Map("show", static string () => "ok").WithDescription("Show.");
+
+		var result = await ResolveAutocompleteAsync(sut, "--verbose sh").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("show",
+			because: "a bool global consumes no value, so the following partial token still completes as a command");
+	}
+
+	[TestMethod]
+	[Description("No subcommand is offered once a route option has been typed: for routes 'parent' ([ReplOption] bool force) and 'parent child', 'parent --force c' must not suggest 'child' — the option occupies the segment position and a bool flag would swallow the word, so the child route is unreachable there.")]
+	public async Task When_OptionPrecedesSubcommandPosition_Then_SubcommandIsNotSuggested()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("parent", static string ([ReplOption] bool force) => force.ToString()).WithDescription("Parent.");
+		sut.Map("parent child", static string () => "child").WithDescription("Child.");
+
+		var result = await ResolveAutocompleteAsync(sut, "parent --force c").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().NotContain("child",
+			because: "an option already occupies the position; 'parent --force child' would not invoke the child route");
+	}
+
+private enum ProbeMode
 	{
 		Debug,
 		Release,

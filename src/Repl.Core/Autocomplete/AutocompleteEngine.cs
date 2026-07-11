@@ -100,14 +100,13 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			prefixComparison,
 			activeGraph.Routes,
 			activeGraph.Contexts);
-		var candidates = state.PendingOptionValue
-			? []
-			: await CollectAutocompleteSuggestionsAsync(
+		var candidates = await CollectAutocompleteSuggestionsAsync(
 				matchingRoutes,
 				state.CommandPrefix,
 				state.CurrentTokenPrefix,
 				state.TerminalRoute,
 				state.OptionsTerminated,
+				state.PendingOptionValue,
 				scopeTokens.Count,
 				activeGraph,
 				prefixComparison,
@@ -158,7 +157,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		// current token is that VALUE — not a command or another option. Suggesting either
 		// would produce a different parse (e.g. "--tenant install" binds "install" as the
 		// value), so the whole menu is suppressed for this position.
-		if (IsPendingOptionValue(committed, resolution.TerminalRoute))
+		if (IsPendingOptionValue(committed, resolution.TerminalRoute, resolution.OptionsTerminated, state.CurrentTokenPrefix))
 		{
 			return new AutocompleteResolutionState(
 				resolution.CommandPrefix,
@@ -251,11 +250,13 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		RouteMatch? TerminalRoute,
 		bool OptionsTerminated);
 
-	// True when the last committed token is a valued option that has not received its value
-	// yet, so the current token is that value. Covers a valued route option in the terminal
-	// route's trailing region (run --channel …) and a valued custom global (--tenant …).
-	// An inline value (--opt=x / --opt:x) is already satisfied and never pending.
-	private bool IsPendingOptionValue(string[] committedTokens, RouteMatch? terminalRoute)
+	// True when the last committed token is a valued option still awaiting its value, so the
+	// current token is that value. Shared by the interactive engine and shell completion.
+	internal bool IsPendingOptionValue(
+		string[] committedTokens,
+		RouteMatch? terminalRoute,
+		bool optionsTerminated,
+		string currentTokenPrefix)
 	{
 		if (committedTokens.Length == 0)
 		{
@@ -263,48 +264,61 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		}
 
 		var last = committedTokens[^1];
-		if (!IsOptionPrefixToken(last) || last.IndexOfAny(['=', ':']) >= 0)
+		if (!IsOptionPrefixToken(last))
 		{
 			return false;
 		}
 
-		if (terminalRoute is { } match
-			&& match.RemainingTokens.Count > 0
-			&& string.Equals(match.RemainingTokens[^1], last, StringComparison.Ordinal))
+		// A valued ROUTE option in the terminal route's trailing region is pending regardless
+		// of the current token — the route parser will not consume a dash-prefixed token as
+		// its value, so "run --channel --force" would leave --channel empty. But only BEFORE a
+		// POSIX "--": after the separator the token is positional, not a route option.
+		if (!optionsTerminated && IsPendingRouteOptionValue(last, terminalRoute))
 		{
-			foreach (var entry in match.Route.OptionSchema.ResolveToken(last, app.OptionsSnapshot.Parsing.OptionCaseSensitivity))
-			{
-				if (entry.TokenKind == OptionSchemaTokenKind.NamedOption)
-				{
-					return true;
-				}
-			}
+			return true;
 		}
 
-		var comparison = app.OptionsSnapshot.Parsing.OptionCaseSensitivity.ToStringComparison();
-		foreach (var definition in app.OptionsSnapshot.Parsing.GlobalOptions.Values)
-		{
-			if (definition.ValueType == typeof(bool))
-			{
-				continue;
-			}
-
-			if (string.Equals(definition.CanonicalToken, last, comparison))
-			{
-				return true;
-			}
-
-			foreach (var alias in definition.Aliases)
-			{
-				if (string.Equals(alias, last, comparison))
-				{
-					return true;
-				}
-			}
-		}
-
-		return false;
+		// Global-scoped valued options (custom globals and built-in --result: suboptions) take
+		// a SEPARATE value only when the next token is not option-like — the global parser skips
+		// a dash-prefixed follower (so "--tenant --" is not pending; "--tenant acme" is).
+		return !IsOptionPrefixToken(currentTokenPrefix) && IsPendingGlobalOptionValue(last);
 	}
+
+	private bool IsPendingRouteOptionValue(string last, RouteMatch? terminalRoute) =>
+		!last.Contains('=', StringComparison.Ordinal)
+		&& terminalRoute is { } match
+		&& match.RemainingTokens.Count > 0
+		&& string.Equals(match.RemainingTokens[^1], last, StringComparison.Ordinal)
+		&& match.Route.OptionSchema
+			.ResolveToken(last, app.OptionsSnapshot.Parsing.OptionCaseSensitivity)
+			.Any(static entry => entry.TokenKind == OptionSchemaTokenKind.NamedOption);
+
+	private bool IsPendingGlobalOptionValue(string last)
+	{
+		if (IsPendingResultFlowOption(last))
+		{
+			return true;
+		}
+
+		if (last.Contains('=', StringComparison.Ordinal) || last.Contains(':', StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		// Resolve through the parser's own token map so a colliding alias picks the SAME
+		// (last-registered) definition the parser would — scanning definitions independently
+		// could pick a shadowed one with a different arity.
+		return GlobalOptionParser.TryResolveCustomGlobalDefinition(last, app.OptionsSnapshot.Parsing, out var definition)
+			&& definition.ValueType != typeof(bool);
+	}
+
+	// The built-in --result: suboptions that take a separate value (page-size/cursor/pager);
+	// --result:all is a flag. An inline value (--result:page-size=8) is already satisfied.
+	private static bool IsPendingResultFlowOption(string token) =>
+		(string.Equals(token, ReplResultFlowOptionNames.PageSize, StringComparison.Ordinal)
+			|| string.Equals(token, ReplResultFlowOptionNames.Cursor, StringComparison.Ordinal)
+			|| string.Equals(token, ReplResultFlowOptionNames.Pager, StringComparison.Ordinal))
+		&& !token.Contains('=', StringComparison.Ordinal);
 
 	// Unique-prefix/alias expansion, bounded by the deepest template: beyond that depth no
 	// literal can match, and the per-index candidate derivation must not scale with the
@@ -345,6 +359,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		string currentTokenPrefix,
 		RouteMatch? terminalRoute,
 		bool optionsTerminated,
+		bool pendingOptionValue,
 		int scopeTokenCount,
 		ActiveRoutingGraph activeGraph,
 		StringComparison prefixComparison,
@@ -352,11 +367,6 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
-		var commandCandidates = CollectRouteAutocompleteCandidates(
-			matchingRoutes,
-			commandPrefix,
-			currentTokenPrefix,
-			prefixComparison);
 		var dynamicCandidates = await CollectDynamicAutocompleteCandidatesAsync(
 				matchingRoutes,
 				commandPrefix,
@@ -367,6 +377,25 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				serviceProvider,
 				cancellationToken)
 			.ConfigureAwait(false);
+
+		// A valued option awaiting its value: the current token is that value. Keep the
+		// pending option's value provider (WithCompletion / enum values), but suppress
+		// command names and option names — offering either would misparse.
+		if (pendingOptionValue)
+		{
+			return DeduplicateSuggestions(dynamicCandidates, comparer);
+		}
+
+		// Once a terminal route has trailing option tokens, the command path is complete — no
+		// subcommand can follow (a later literal can't match past an option-occupied position,
+		// and a bool flag's zero-or-one arity would otherwise swallow the suggested word).
+		var commandCandidates = terminalRoute is { RemainingTokens.Count: > 0 }
+			? []
+			: CollectRouteAutocompleteCandidates(
+				matchingRoutes,
+				commandPrefix,
+				currentTokenPrefix,
+				prefixComparison);
 		var optionCandidates = CollectOptionAutocompleteCandidates(
 			commandPrefix,
 			currentTokenPrefix,
@@ -394,6 +423,15 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				.Concat(ambientCandidates)
 				.Concat(ambientContinuationCandidates),
 			comparer);
+		return AppendInvalidAlternativeIfNeeded(candidates, currentTokenPrefix);
+	}
+
+	// When nothing selectable matched and invalid alternatives are shown, append the current
+	// token as an explicit "(invalid)" entry so the user sees why the menu is empty.
+	private ConsoleLineReader.AutocompleteSuggestion[] AppendInvalidAlternativeIfNeeded(
+		ConsoleLineReader.AutocompleteSuggestion[] candidates,
+		string currentTokenPrefix)
+	{
 		if (!app.OptionsSnapshot.Interactive.Autocomplete.ShowInvalidAlternatives
 			|| string.IsNullOrWhiteSpace(currentTokenPrefix)
 			|| candidates.Any(static candidate => candidate.IsSelectable))

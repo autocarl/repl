@@ -274,6 +274,27 @@ internal static class GlobalOptionParser
 	private static void AddResultFlowDiagnostic(List<ParseDiagnostic> diagnostics, string message) =>
 		diagnostics.Add(new ParseDiagnostic(ParseDiagnosticSeverity.Error, message));
 
+	// Resolves a custom-global token to the definition the parser would actually use — the
+	// LAST registered definition wins a token/alias collision (BuildCustomTokenMap overwrites),
+	// so callers must not scan definitions independently and pick a different one.
+	internal static bool TryResolveCustomGlobalDefinition(
+		string token,
+		ParsingOptions parsingOptions,
+		out GlobalOptionDefinition definition)
+	{
+		definition = null!;
+		var comparer = parsingOptions.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+			? StringComparer.OrdinalIgnoreCase
+			: StringComparer.Ordinal;
+		var tokenMap = BuildCustomTokenMap(parsingOptions.GlobalOptions, comparer);
+		if (!TryResolveCustomGlobalName(token, tokenMap, out var optionName, out _))
+		{
+			return false;
+		}
+
+		return parsingOptions.GlobalOptions.TryGetValue(optionName, out definition!);
+	}
+
 	private static Dictionary<string, string> BuildCustomTokenMap(
 		IReadOnlyDictionary<string, GlobalOptionDefinition> definitions,
 		StringComparer comparer)
