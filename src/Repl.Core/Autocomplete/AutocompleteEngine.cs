@@ -1204,48 +1204,66 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
-		if (ResolvePositionalCompletionTarget(matchingRoutes, commandPrefix, prefixComparison, parsingOptions)
-			is not { } target)
+		var targets = ResolvePositionalCompletionTargets(
+			matchingRoutes, commandPrefix, currentTokenPrefix, prefixComparison, parsingOptions);
+		if (targets.Count == 0)
 		{
 			return [];
 		}
 
 		var completionContext = new CompletionContext(serviceProvider);
-		var provided = await target.Provider(completionContext, currentTokenPrefix, cancellationToken)
-			.ConfigureAwait(false);
-		return provided
-			.Where(static item => !string.IsNullOrWhiteSpace(item))
-			.Select(static item => new ConsoleLineReader.AutocompleteSuggestion(
-				item,
-				Kind: ConsoleLineReader.AutocompleteSuggestionKind.Parameter))
-			.ToArray();
+		var suggestions = new List<ConsoleLineReader.AutocompleteSuggestion>();
+		foreach (var target in targets)
+		{
+			var provided = await target.Provider(completionContext, currentTokenPrefix, cancellationToken)
+				.ConfigureAwait(false);
+			foreach (var item in provided)
+			{
+				if (!string.IsNullOrWhiteSpace(item))
+				{
+					suggestions.Add(new ConsoleLineReader.AutocompleteSuggestion(
+						item,
+						Kind: ConsoleLineReader.AutocompleteSuggestionKind.Parameter));
+				}
+			}
+		}
+
+		return suggestions;
 	}
 
 	// The token being typed occupies the segment at the index right AFTER the committed
-	// prefix, so the provider is resolved by THAT dynamic segment's name. Gating on a fully
+	// prefix, so providers are resolved by THAT dynamic segment's name. Gating on a fully
 	// matched route instead would only fire once the value token is committed — one token
 	// too late, on a position that can no longer bind to the parameter (issue #45) — and a
 	// sole-registration lookup would run the wrong provider on multi-parameter commands.
-	// Shared with the shell completion bridge so both surfaces resolve the same target.
-	internal static (RouteDefinition Route, string TargetName, CompletionDelegate Provider)? ResolvePositionalCompletionTarget(
+	// Overloaded routes contribute only while their segment CONSTRAINT still accepts the
+	// typed value ('show a' must not run {id:int}'s provider — execution would reject it);
+	// every still-viable route's provider is merged, since a partial token cannot predict
+	// which overload the final value selects. Shared with the shell completion bridge so
+	// both surfaces resolve the same targets.
+	internal static IReadOnlyList<(RouteDefinition Route, string TargetName, CompletionDelegate Provider)> ResolvePositionalCompletionTargets(
 		IReadOnlyList<RouteDefinition> matchingRoutes,
 		string[] commandPrefix,
+		string currentTokenPrefix,
 		StringComparison prefixComparison,
 		ParsingOptions parsingOptions)
 	{
 		var segmentIndex = commandPrefix.Length;
+		List<(RouteDefinition, string, CompletionDelegate)>? targets = null;
 		foreach (var route in matchingRoutes)
 		{
 			if (segmentIndex < route.Template.Segments.Count
 				&& route.Template.Segments[segmentIndex] is DynamicRouteSegment dynamicSegment
+				&& (currentTokenPrefix.Length == 0
+					|| RouteConstraintEvaluator.IsMatch(dynamicSegment, currentTokenPrefix, parsingOptions))
 				&& MatchesRoutePrefix(route, commandPrefix, prefixComparison, parsingOptions)
 				&& route.Command.Completions.TryGetValue(dynamicSegment.Name, out var completion))
 			{
-				return (route, dynamicSegment.Name, completion);
+				(targets ??= []).Add((route, dynamicSegment.Name, completion));
 			}
 		}
 
-		return null;
+		return targets ?? (IReadOnlyList<(RouteDefinition, string, CompletionDelegate)>)[];
 	}
 
 	// Completes the VALUE of a pending route option by invoking ONLY that option's own provider.

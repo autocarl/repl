@@ -105,6 +105,69 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 	}
 
 	[TestMethod]
+	[Description("With overloaded dynamic routes, providers resolve against routes whose constraint still accepts the typed value: for 'show {id:int}' registered before 'show {name}', typing 'show a' offers the string route's values only — execution rejects 'a' on the int route, so its provider must not answer.")]
+	public async Task When_TypedValueViolatesOverloadConstraint_Then_OnlyViableProviderCompletes()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("show {id:int}", static string (int id) => id.ToString(System.Globalization.CultureInfo.InvariantCulture))
+			.WithCompletion("id", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["int-provider"]))
+			.WithDescription("Show by id.");
+		sut.Map("show {name}", static string (string name) => name)
+			.WithCompletion("name", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["string-provider"]))
+			.WithDescription("Show by name.");
+
+		var result = await ResolveAutocompleteAsync(sut, "show a").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static s => s.Value).ToArray();
+		values.Should().Contain("string-provider", because: "'a' satisfies the {name} route, which stays viable");
+		values.Should().NotContain("int-provider", because: "'a' can never bind the {id:int} route at execution");
+	}
+
+	[TestMethod]
+	[Description("When the typed value satisfies SEVERAL overloads ('show 4' is a valid int prefix and a valid string), the providers of all still-viable routes are merged — completion cannot know which overload the final token will select.")]
+	public async Task When_TypedValueSatisfiesSeveralOverloads_Then_ViableProvidersAreMerged()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("show {id:int}", static string (int id) => id.ToString(System.Globalization.CultureInfo.InvariantCulture))
+			.WithCompletion("id", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["int-provider"]))
+			.WithDescription("Show by id.");
+		sut.Map("show {name}", static string (string name) => name)
+			.WithCompletion("name", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["string-provider"]))
+			.WithDescription("Show by name.");
+
+		var result = await ResolveAutocompleteAsync(sut, "show 4").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static s => s.Value).ToArray();
+		values.Should().Contain("int-provider", because: "'4' still satisfies the int overload");
+		values.Should().Contain("string-provider", because: "'4' also satisfies the string overload");
+	}
+
+	[TestMethod]
+	[Description("Shell parity for overload viability: 'app show a' must offer the string route's shell-scoped provider values only, never the int route's — the same constraint rule as the interactive menu.")]
+	public async Task When_TypedValueViolatesOverloadConstraint_Then_ShellOffersOnlyViableProvider()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("show {id:int}", static string (int id) => id.ToString(System.Globalization.CultureInfo.InvariantCulture))
+			.WithCompletion(
+				"id",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["int-provider"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Show by id.");
+		sut.Map("show {name}", static string (string name) => name)
+			.WithCompletion(
+				"name",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["string-provider"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Show by name.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app show a").ConfigureAwait(false);
+
+		candidates.Should().Contain("string-provider");
+		candidates.Should().NotContain("int-provider");
+	}
+
+	[TestMethod]
 	[Description("A provider registered with CompletionProviderScope.InteractiveAndShell is invoked by the shell completion bridge while the value is being typed: 'app contact inspect ab' offers the provider's candidates, matching the interactive menu.")]
 	public async Task When_ShellScopedProviderAndValueIsTyped_Then_ShellOffersProviderCandidates()
 	{

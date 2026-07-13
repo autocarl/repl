@@ -128,22 +128,25 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			StringComparison.OrdinalIgnoreCase,
 			activeGraph.Routes,
 			activeGraph.Contexts);
-		if (AutocompleteEngine.ResolvePositionalCompletionTarget(
-				matchingRoutes,
-				resolution.CommandPrefix,
-				StringComparison.OrdinalIgnoreCase,
-				app.OptionsSnapshot.Parsing)
-			is not { } target
-			|| !target.Route.Command.IsCompletionShellScoped(target.TargetName))
+		var targets = AutocompleteEngine.ResolvePositionalCompletionTargets(
+			matchingRoutes,
+			resolution.CommandPrefix,
+			currentTokenPrefix,
+			StringComparison.OrdinalIgnoreCase,
+			app.OptionsSnapshot.Parsing);
+		foreach (var target in targets)
 		{
-			return;
-		}
+			if (!target.Route.Command.IsCompletionShellScoped(target.TargetName))
+			{
+				continue;
+			}
 
-		var provided = await target.Provider(new CompletionContext(serviceProvider), currentTokenPrefix, cancellationToken)
-			.ConfigureAwait(false);
-		foreach (var value in provided)
-		{
-			TryAddShellCompletionCandidate(value, dedupe, candidates);
+			var provided = await target.Provider(new CompletionContext(serviceProvider), currentTokenPrefix, cancellationToken)
+				.ConfigureAwait(false);
+			foreach (var value in provided)
+			{
+				TryAddShellCompletionCandidate(value, dedupe, candidates);
+			}
 		}
 	}
 
