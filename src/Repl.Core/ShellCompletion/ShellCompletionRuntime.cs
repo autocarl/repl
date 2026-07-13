@@ -8,14 +8,14 @@ internal sealed partial class ShellCompletionRuntime : IShellCompletionRuntime
 	private readonly ReplOptions _options;
 	private readonly Func<string> _resolveEntryAssemblyName;
 	private readonly Func<string> _resolveCommandName;
-	private readonly Func<string, int, IServiceProvider, CancellationToken, ValueTask<string[]>> _resolveCandidates;
+	private readonly Func<string, int, ShellKind, IServiceProvider, CancellationToken, ValueTask<string[]>> _resolveCandidates;
 	private readonly Func<string, string?> _tryReadProfileContent;
 
 	public ShellCompletionRuntime(
 		ReplOptions options,
 		Func<string> resolveEntryAssemblyName,
 		Func<string> resolveCommandName,
-		Func<string, int, IServiceProvider, CancellationToken, ValueTask<string[]>> resolveCandidates,
+		Func<string, int, ShellKind, IServiceProvider, CancellationToken, ValueTask<string[]>> resolveCandidates,
 		Func<string, string?>? tryReadProfileContent = null)
 	{
 		_options = options ?? throw new ArgumentNullException(nameof(options));
@@ -63,7 +63,7 @@ internal sealed partial class ShellCompletionRuntime : IShellCompletionRuntime
 				$"{ShellCompletionConstants.BridgeCommandName} requires --cursor <position> with a non-negative integer.");
 		}
 
-		var candidates = await _resolveCandidates(line, cursorPosition, serviceProvider, cancellationToken)
+		var candidates = await _resolveCandidates(line, cursorPosition, shellKind, serviceProvider, cancellationToken)
 			.ConfigureAwait(false);
 		return string.Join('\n', candidates);
 	}

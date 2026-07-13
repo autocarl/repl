@@ -8,9 +8,10 @@ public sealed partial class CoreReplApp
 	private ValueTask<string[]> ResolveShellCompletionCandidatesAsync(
 		string line,
 		int cursor,
+		ShellCompletion.ShellKind shell,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken) =>
-		ShellCompletionEng.ResolveShellCompletionCandidatesAsync(line, cursor, serviceProvider, cancellationToken);
+		ShellCompletionEng.ResolveShellCompletionCandidatesAsync(line, cursor, shell, serviceProvider, cancellationToken);
 
 	private string ResolveShellCompletionCommandName() =>
 		ShellCompletionEng.ResolveShellCompletionCommandName();

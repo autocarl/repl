@@ -1027,6 +1027,7 @@ private enum ProbeMode
 		await engine.ResolveShellCompletionCandidatesAsync(
 				line,
 				line.Length,
+				ShellKind.Bash,
 				EmptyServiceProvider.Instance,
 				CancellationToken.None)
 			.ConfigureAwait(false);

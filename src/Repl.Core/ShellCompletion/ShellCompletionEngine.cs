@@ -11,6 +11,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	public async ValueTask<string[]> ResolveShellCompletionCandidatesAsync(
 		string line,
 		int cursor,
+		ShellKind shell,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
@@ -23,7 +24,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		}
 
 		var resolution = ResolveShellCommitted(state.PriorTokens, activeGraph);
-		return await CollectShellCandidatesAsync(state, resolution, activeGraph, serviceProvider, cancellationToken)
+		return await CollectShellCandidatesAsync(state, resolution, activeGraph, shell, serviceProvider, cancellationToken)
 			.ConfigureAwait(false);
 	}
 
@@ -31,6 +32,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		ShellCompletionInputState state,
 		ShellResolution resolution,
 		ActiveRoutingGraph activeGraph,
+		ShellKind shell,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
@@ -65,7 +67,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			&& hasTerminalRoute
 			&& routeOptionIsLastCommitted
 			&& await TryAddPendingOptionValueCandidatesAsync(
-					routeMatch!, currentTokenPrefix, serviceProvider, dedupe, candidates, cancellationToken)
+					routeMatch!, currentTokenPrefix, shell, serviceProvider, dedupe, candidates, cancellationToken)
 				.ConfigureAwait(false))
 		{
 			candidates.Sort(StringComparer.OrdinalIgnoreCase);
@@ -81,7 +83,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		}
 
 		await AddShellPositionalProviderCandidatesAsync(
-				resolution, activeGraph, currentTokenPrefix, currentTokenIsOption, serviceProvider, dedupe, candidates, cancellationToken)
+				resolution, activeGraph, currentTokenPrefix, currentTokenIsOption, shell, serviceProvider, dedupe, candidates, cancellationToken)
 			.ConfigureAwait(false);
 		AddShellCommandAndOptionCandidates(
 			resolution, activeGraph, currentTokenPrefix, currentTokenIsOption, hasTerminalRoute, dedupe, candidates);
@@ -94,12 +96,13 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	private async ValueTask<bool> TryAddPendingOptionValueCandidatesAsync(
 		RouteMatch match,
 		string currentTokenPrefix,
+		ShellKind shell,
 		IServiceProvider serviceProvider,
 		HashSet<string> dedupe,
 		List<string> candidates,
 		CancellationToken cancellationToken) =>
 		await TryAddPendingOptionProviderCandidatesAsync(
-				match, currentTokenPrefix, serviceProvider, candidates, cancellationToken)
+				match, currentTokenPrefix, shell, serviceProvider, candidates, cancellationToken)
 			.ConfigureAwait(false)
 		|| TryAddRouteEnumValueCandidates(match, currentTokenPrefix, dedupe, candidates);
 
@@ -113,6 +116,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		ActiveRoutingGraph activeGraph,
 		string currentTokenPrefix,
 		bool currentTokenIsOption,
+		ShellKind shell,
 		IServiceProvider serviceProvider,
 		HashSet<string> dedupe,
 		List<string> candidates,
@@ -150,11 +154,11 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 				.ConfigureAwait(false);
 			foreach (var value in provided ?? [])
 			{
-				// Values needing quotes are emitted pre-quoted so the shell hands back ONE
-				// argv entry; unrepresentable values (both quote kinds) are dropped.
+				// Values are encoded as literal data in the TARGET shell's syntax (see
+				// QuoteValueForShell); values the shell cannot represent are dropped.
 				if (!string.IsNullOrWhiteSpace(value)
 					&& IsShellSafeCandidate(value)
-					&& AutocompleteEngine.QuoteValueForInsertion(value) is { } insertion
+					&& QuoteValueForShell(value, shell) is { } insertion
 					&& valueDedupe.Add(insertion))
 				{
 					candidates.Add(insertion);
@@ -173,6 +177,49 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	private static bool IsShellSafeCandidate(string value) =>
 		!value.AsSpan().ContainsAnyInRange('\u0000', '\u001F')
 		&& !value.AsSpan().ContainsAnyInRange('\u007F', '\u009F');
+
+	// Characters that never need shell quoting — a conservative ASCII identifier-ish set.
+	// Anything else (whitespace, $, `, quotes, globs, redirects, non-ASCII, ...) routes the
+	// value through the single-quote literal form below. Over-quoting is always safe.
+	private static readonly System.Buffers.SearchValues<char> s_shellPlainChars =
+		System.Buffers.SearchValues.Create("+,-./0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz");
+
+	// Encodes one provider VALUE as LITERAL data in the target shell's syntax. The emitted
+	// candidate is inserted into the user's command line and re-parsed by that shell, so an
+	// interpolating form is a command-execution boundary for provider-reflected data — in
+	// POSIX shells "$(...)" runs the substitution on acceptance. Only single-quote literal
+	// forms are used, with each shell's own escape for an embedded quote; a value the target
+	// shell cannot represent literally is rejected (null) rather than emitted unsafely.
+	// This is deliberately SEPARATE from the interactive tokenizer quoting: those quotes are
+	// in-REPL syntax, these must survive a real shell's parser.
+	internal static string? QuoteValueForShell(string value, ShellKind shell)
+	{
+		if (!value.AsSpan().ContainsAnyExcept(s_shellPlainChars))
+		{
+			return value;
+		}
+
+		return shell switch
+		{
+			// POSIX single quotes are fully literal; an embedded quote closes, escapes, and
+			// reopens the literal: ' becomes '\''.
+			ShellKind.Bash or ShellKind.Zsh =>
+				"'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'",
+			// Fish single quotes recognize exactly two escapes: \' and \\.
+			ShellKind.Fish =>
+				"'" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("'", "\\'", StringComparison.Ordinal) + "'",
+			// PowerShell single-quoted strings are literal; an embedded quote is doubled.
+			ShellKind.PowerShell =>
+				"'" + value.Replace("'", "''", StringComparison.Ordinal) + "'",
+			// Nushell single quotes are literal but have no escape for an embedded quote;
+			// its double-quoted form supports backslash escapes and does NOT interpolate
+			// (interpolation requires $"...").
+			ShellKind.Nu => value.Contains('\'', StringComparison.Ordinal)
+				? "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\""
+				: "'" + value + "'",
+			_ => null,
+		};
+	}
 
 	// Bounds one provider invocation to ShellCompletion.ProviderTimeout. The invoking shell
 	// blocks on the bridge until it answers, so a stalled provider is ABANDONED at the
@@ -217,6 +264,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	private async ValueTask<bool> TryAddPendingOptionProviderCandidatesAsync(
 		RouteMatch match,
 		string currentTokenPrefix,
+		ShellKind shell,
 		IServiceProvider serviceProvider,
 		List<string> candidates,
 		CancellationToken cancellationToken)
@@ -250,7 +298,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			if (!string.IsNullOrWhiteSpace(value)
 				&& IsShellSafeCandidate(value)
 				&& InvocationOptionParser.ShouldConsumeFollowingTokenAsValue(value)
-				&& AutocompleteEngine.QuoteValueForInsertion(value) is { } insertion
+				&& QuoteValueForShell(value, shell) is { } insertion
 				&& valueDedupe.Add(insertion))
 			{
 				candidates.Add(insertion);

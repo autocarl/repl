@@ -389,7 +389,7 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 	}
 
 	[TestMethod]
-	[Description("Shell parity for quoting and prefix decoding: 'app contact \"Ne' invokes the shell-scoped provider with the decoded prefix 'Ne' and emits the value pre-quoted, which the user's shell hands back as one argv entry.")]
+	[Description("Shell parity for quoting and prefix decoding: 'app contact \"Ne' invokes the shell-scoped provider with the decoded prefix 'Ne' and emits the value single-quoted as literal SHELL data ('New York' → 'New York' in single quotes) — never a double-quoted form bash would interpolate.")]
 	public async Task When_TypingQuotedPrefix_Then_ShellProviderReceivesDecodedPrefixAndQuotedValue()
 	{
 		string? capturedInput = null;
@@ -409,13 +409,35 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app contact \"Ne").ConfigureAwait(false);
 
 		capturedInput.Should().Be("Ne");
-		candidates.Should().Contain("\"New York\"");
+		candidates.Should().Contain("'New York'");
 	}
 
-	private static async Task<string[]> ResolveShellCandidatesAsync(ShellCompletionEngine engine, string line) =>
+	[TestMethod]
+	[Description("PowerShell candidates escape an embedded single quote by doubling it ('O''Brien') — the only literal string form in PowerShell; a double-quoted form would interpolate $ and subexpressions.")]
+	public async Task When_ValueContainsSingleQuoteOnPowerShell_Then_CandidateDoublesIt()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("contact {name}", static string (string name) => name)
+			.WithCompletion(
+				"name",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["O'Brien Co"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Contact.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app contact O", ShellKind.PowerShell).ConfigureAwait(false);
+
+		candidates.Should().Contain("'O''Brien Co'");
+	}
+
+	private static async Task<string[]> ResolveShellCandidatesAsync(
+		ShellCompletionEngine engine,
+		string line,
+		ShellKind shell = ShellKind.Bash) =>
 		await engine.ResolveShellCompletionCandidatesAsync(
 				line,
 				line.Length,
+				shell,
 				EmptyServiceProvider.Instance,
 				CancellationToken.None)
 			.ConfigureAwait(false);

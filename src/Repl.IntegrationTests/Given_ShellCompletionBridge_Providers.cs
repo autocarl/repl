@@ -105,6 +105,27 @@ public sealed class Given_ShellCompletionBridge_Providers
 		output.ExitCode.Should().Be(0);
 	}
 
+	[TestMethod]
+	[Description("Provider values are encoded as LITERAL shell data, never interpolating syntax: a value of $(printf PWNED) must reach bash single-quoted — double quotes would let bash run the command substitution when the user accepts the candidate.")]
+	public void When_ProviderValueContainsCommandSubstitution_Then_BridgeEmitsSingleQuotedLiteral()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion(
+				"target",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["$(printf PWNED)"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+
+		var output = RunBridge(sut, "app deploy ");
+
+		output.Text.Should().Contain("'$(printf PWNED)'",
+			because: "single quotes are the only bash form where the value stays literal data");
+		output.Text.Should().NotContain("\"$(",
+			because: "a double-quoted candidate would execute the substitution in the user's shell");
+		output.ExitCode.Should().Be(0);
+	}
+
 	private static (int ExitCode, string Text) RunBridge(ReplApp app, string line) =>
 		ConsoleCaptureHelper.Capture(() => app.Run(
 		[
