@@ -122,7 +122,12 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		List<string> candidates,
 		CancellationToken cancellationToken)
 	{
-		if (currentTokenIsOption || resolution.Match is { RemainingTokens.Count: > 0 })
+		// The bare transitional "-" (first character of a signed value) keeps providers
+		// eligible; their candidates are restricted to signed numerics below, mirroring the
+		// interactive menu.
+		var transitionalSign = currentTokenPrefix is "-";
+		if ((currentTokenIsOption && !transitionalSign)
+			|| resolution.Match is { RemainingTokens.Count: > 0 })
 		{
 			return;
 		}
@@ -157,6 +162,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 				// bind); values are then encoded as literal data in the TARGET shell's
 				// syntax (see QuoteValueForShell) or dropped when unrepresentable.
 				if (!string.IsNullOrWhiteSpace(value)
+					&& (!transitionalSign || InvocationOptionParser.IsSignedNumericLiteral(value))
 					&& IsShellSafeCandidate(value)
 					&& RouteConstraintEvaluator.IsMatch(target.Segment, value, app.OptionsSnapshot.Parsing)
 					&& QuoteValueForShell(value, shell) is { } insertion

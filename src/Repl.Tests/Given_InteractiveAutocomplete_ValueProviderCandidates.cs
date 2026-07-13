@@ -468,6 +468,39 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 		candidates.Should().Contain("'O''Brien Co'");
 	}
 
+	[TestMethod]
+	[Description("The transitional bare '-' keeps signed-value providers eligible: on 'deploy {count:int}', typing 'deploy -' offers the provider's '-42' — the completed value binds and executes as the positional integer — while non-numeric candidates stay out of the option-name menu.")]
+	public async Task When_TypingBareDashForSignedPositional_Then_ProviderStillCompletes()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {count:int}", static string (int count) => count.ToString(System.Globalization.CultureInfo.InvariantCulture))
+			.WithCompletion("count", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["-42"]))
+			.WithDescription("Deploy.");
+
+		var result = await ResolveAutocompleteAsync(sut, "deploy -").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("-42",
+			because: "'-' is the first character of a signed value the provider can complete");
+	}
+
+	[TestMethod]
+	[Description("Shell parity for the transitional bare '-': 'app deploy -' offers the shell-scoped provider's '-42' on 'deploy {count:int}', matching what execution binds.")]
+	public async Task When_TypingBareDashForSignedPositional_Then_ShellProviderStillCompletes()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {count:int}", static string (int count) => count.ToString(System.Globalization.CultureInfo.InvariantCulture))
+			.WithCompletion(
+				"count",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["-42"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app deploy -").ConfigureAwait(false);
+
+		candidates.Should().Contain("-42");
+	}
+
 	private static readonly string[] s_intIds = ["42", "77"];
 	private static readonly string[] s_names = ["alice", "bob"];
 

@@ -1196,10 +1196,12 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		}
 
 		// Providers complete parameter VALUES; an option-prefix token is asking for option
-		// names, and provider output would only pollute that menu. (A dash value can only
-		// reach a segment as a signed numeric literal or behind an already-bound "--" — both
-		// resolve as positionals before this guard, mirroring the invocation parser.)
-		if (IsOptionPrefixToken(currentTokenPrefix))
+		// names, and provider output would only pollute that menu — EXCEPT the bare
+		// transitional "-", the first character of a signed value: providers stay eligible
+		// for it, restricted below to signed numeric candidates so option names keep the
+		// menu (a completed "-42" binds and executes as the positional).
+		var transitionalSign = currentTokenPrefix is "-";
+		if (IsOptionPrefixToken(currentTokenPrefix) && !transitionalSign)
 		{
 			return [];
 		}
@@ -1211,8 +1213,25 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
+		return await InvokePositionalProvidersAsync(
+				targets,
+				DecodeTokenPrefix(currentTokenPrefix),
+				transitionalSign,
+				parsingOptions,
+				serviceProvider,
+				cancellationToken)
+			.ConfigureAwait(false);
+	}
+
+	private static async ValueTask<IReadOnlyList<ConsoleLineReader.AutocompleteSuggestion>> InvokePositionalProvidersAsync(
+		IReadOnlyList<(RouteDefinition Route, DynamicRouteSegment Segment, CompletionDelegate Provider)> targets,
+		string valuePrefix,
+		bool transitionalSign,
+		ParsingOptions parsingOptions,
+		IServiceProvider serviceProvider,
+		CancellationToken cancellationToken)
+	{
 		var completionContext = new CompletionContext(serviceProvider);
-		var valuePrefix = DecodeTokenPrefix(currentTokenPrefix);
 		var suggestions = new List<ConsoleLineReader.AutocompleteSuggestion>();
 		foreach (var target in targets)
 		{
@@ -1223,6 +1242,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				// Parity per candidate (a constraint-rejected value can never bind), terminal
 				// controls rejected before rendering, quotes added for the round-trip.
 				if (!string.IsNullOrWhiteSpace(item)
+					&& (!transitionalSign || InvocationOptionParser.IsSignedNumericLiteral(item))
 					&& IsControlFreeValue(item)
 					&& RouteConstraintEvaluator.IsMatch(target.Segment, item, parsingOptions)
 					&& QuoteValueForInsertion(item) is { } insertion)
