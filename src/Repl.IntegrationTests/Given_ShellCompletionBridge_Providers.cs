@@ -126,6 +126,75 @@ public sealed class Given_ShellCompletionBridge_Providers
 		output.ExitCode.Should().Be(0);
 	}
 
+	[TestMethod]
+	[Description("The bridge deadline also covers SYNCHRONOUS provider work: a delegate that blocks with Thread.Sleep before returning its ValueTask must still be abandoned at ProviderTimeout instead of stalling the invoking shell for the full duration.")]
+	public void When_ProviderBlocksSynchronously_Then_DeadlineStillApplies()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(static options => options.ShellCompletion.ProviderTimeout = TimeSpan.FromMilliseconds(100));
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion(
+				"target",
+				static (_, _, _) =>
+				{
+					// Synchronous blocking before the ValueTask exists — a plain WaitAsync on
+					// the returned task cannot bound this.
+					Thread.Sleep(TimeSpan.FromSeconds(3));
+					return ValueTask.FromResult<IReadOnlyList<string>>(["slow-sync-value"]);
+				},
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+
+		var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+		var output = RunBridge(sut, "app deploy ");
+		stopwatch.Stop();
+
+		output.Text.Should().NotContain("slow-sync-value");
+		stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2.5),
+			because: "synchronous provider work must not escape the bridge deadline");
+		output.ExitCode.Should().Be(0);
+	}
+
+	[TestMethod]
+	[Description("A throwing provider must not disable shell completion: the fault is isolated per invocation, the bridge exits 0, and the static candidates (here the route options) are still emitted.")]
+	public void When_ProviderThrowsSynchronously_Then_BridgeDegradesToStaticCandidates()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("run", static string ([ReplOption] string? channel, [ReplOption] bool force) => channel ?? force.ToString())
+			.WithCompletion(
+				"channel",
+				static (_, _, _) => throw new InvalidOperationException("probe"),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Run.");
+
+		var output = RunBridge(sut, "app run --channel ");
+
+		output.ExitCode.Should().Be(0, because: "a transient provider failure must not fail the completion invocation");
+		output.Text.Should().NotContain("probe", because: "provider faults must not spam the shell's completion stream");
+	}
+
+	[TestMethod]
+	[Description("The same isolation applies to an asynchronously faulting provider: the bridge still answers with exit 0 and the remaining static candidates instead of surfacing the exception.")]
+	public void When_ProviderThrowsAsynchronously_Then_BridgeDegradesToStaticCandidates()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion(
+				"target",
+				static async (_, _, _) =>
+				{
+					await Task.Yield();
+					throw new InvalidOperationException("probe");
+				},
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+
+		var output = RunBridge(sut, "app deploy ");
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().NotContain("probe");
+	}
+
 	private static (int ExitCode, string Text) RunBridge(ReplApp app, string line) =>
 		ConsoleCaptureHelper.Capture(() => app.Run(
 		[

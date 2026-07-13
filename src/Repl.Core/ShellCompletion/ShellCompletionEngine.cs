@@ -220,13 +220,17 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		};
 	}
 
-	// Bounds one provider invocation to ShellCompletion.ProviderTimeout. The invoking shell
-	// blocks on the bridge until it answers, so a stalled provider is ABANDONED at the
-	// deadline via WaitAsync — a plain await could never return when the provider ignores
-	// its cancellation token. The linked token still requests cooperative cancellation at
-	// the deadline; caller cancellation propagates as usual. Returns null on timeout so the
-	// caller degrades to static candidates, and the abandoned task's eventual fault is
-	// observed to keep it away from the unobserved-exception escalation path.
+	// Bounds one provider invocation to ShellCompletion.ProviderTimeout and isolates its
+	// faults. The invoking shell blocks on the bridge until it answers, so a stalled provider
+	// is ABANDONED at the deadline via WaitAsync — a plain await could never return when the
+	// provider ignores its cancellation token — and the invocation itself runs on the pool
+	// (Task.Run) so SYNCHRONOUS provider work (sync I/O, Thread.Sleep) cannot stall the
+	// bridge before the returned task even exists. The linked token still requests
+	// cooperative cancellation at the deadline; caller cancellation propagates as usual.
+	// Returns null on timeout OR provider fault so the caller degrades to static candidates
+	// (a transient lookup failure must not fail the completion invocation or spam the
+	// shell's completion stream); the abandoned task's eventual fault is observed to keep it
+	// away from the unobserved-exception escalation path.
 	private async ValueTask<IReadOnlyList<string>?> InvokeProviderWithDeadlineAsync(
 		CompletionDelegate provider,
 		IServiceProvider serviceProvider,
@@ -236,7 +240,9 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		var timeout = app.OptionsSnapshot.ShellCompletion.ProviderTimeout;
 		using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		deadline.CancelAfter(timeout);
-		var providerTask = provider(new CompletionContext(serviceProvider), input, deadline.Token).AsTask();
+		var providerTask = Task.Run(
+			() => provider(new CompletionContext(serviceProvider), input, deadline.Token).AsTask(),
+			CancellationToken.None);
 		try
 		{
 			return await providerTask.WaitAsync(timeout, TimeProvider.System, cancellationToken).ConfigureAwait(false);
@@ -250,9 +256,13 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 				TaskScheduler.Default);
 			return null;
 		}
-		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
-			// The provider observed the deadline token cooperatively — same degradation.
+			throw;
+		}
+		catch (Exception)
+		{
+			// Provider fault (sync or async) or cooperative deadline cancellation — degrade.
 			return null;
 		}
 	}
