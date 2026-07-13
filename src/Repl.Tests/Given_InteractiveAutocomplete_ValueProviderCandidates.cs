@@ -324,6 +324,94 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 		candidates.Should().NotContain("zo-profile", because: "{target} is already bound; nothing typed here can bind to it");
 	}
 
+	[TestMethod]
+	[Description("A provider VALUE containing whitespace is emitted pre-quoted ('New York' → '\"New York\"') so accepting the suggestion round-trips through tokenization as ONE argument instead of splitting into 'New' and 'York'.")]
+	public async Task When_ProviderReturnsValueWithSpaces_Then_SuggestionIsQuoted()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("contact {name}", static string (string name) => name)
+			.WithCompletion("name", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["New York"]))
+			.WithDescription("Contact.");
+
+		var result = await ResolveAutocompleteAsync(sut, "contact Ne").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("\"New York\"",
+			because: "the inserted text must tokenize back to the single value the provider offered");
+	}
+
+	[TestMethod]
+	[Description("The provider receives the DECODED semantic prefix, not the raw lexical slice: for 'contact \"Ne' the provider is invoked with 'Ne' so a normal prefix lookup can match 'New York'.")]
+	public async Task When_TypingQuotedPrefix_Then_ProviderReceivesDecodedPrefix()
+	{
+		string? capturedInput = null;
+		var sut = CoreReplApp.Create();
+		sut.Map("contact {name}", static string (string name) => name)
+			.WithCompletion("name", (_, input, _) =>
+			{
+				capturedInput = input;
+				return ValueTask.FromResult<IReadOnlyList<string>>(["New York"]);
+			})
+			.WithDescription("Contact.");
+
+		await ResolveAutocompleteAsync(sut, "contact \"Ne").ConfigureAwait(false);
+
+		capturedInput.Should().Be("Ne", because: "the quote is lexical syntax, not part of the value prefix");
+	}
+
+	[TestMethod]
+	[Description("A provider value containing BOTH quote kinds cannot be represented by the tokenizer (which has no escape sequences), so it is dropped rather than offered as a suggestion that could never round-trip.")]
+	public async Task When_ProviderValueContainsBothQuoteKinds_Then_ItIsNotOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("contact {name}", static string (string name) => name)
+			.WithCompletion("name", static (_, _, _) =>
+				ValueTask.FromResult<IReadOnlyList<string>>(["ga\"bu'zo"]))
+			.WithDescription("Contact.");
+
+		var result = await ResolveAutocompleteAsync(sut, "contact g").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().NotContain(static v => v.Contains("ga", StringComparison.Ordinal),
+			because: "an unrepresentable value must not produce a suggestion that breaks on acceptance");
+	}
+
+	[TestMethod]
+	[Description("A pending option's provider value with whitespace is pre-quoted too: 'run --channel ' offering 'New York' emits '\"New York\"' so the accepted option value stays one token.")]
+	public async Task When_PendingProviderReturnsValueWithSpaces_Then_SuggestionIsQuoted()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run", static string ([ReplOption] string? channel) => channel ?? "none")
+			.WithCompletion("channel", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["New York"]))
+			.WithDescription("Run.");
+
+		var result = await ResolveAutocompleteAsync(sut, "run --channel ").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("\"New York\"");
+	}
+
+	[TestMethod]
+	[Description("Shell parity for quoting and prefix decoding: 'app contact \"Ne' invokes the shell-scoped provider with the decoded prefix 'Ne' and emits the value pre-quoted, which the user's shell hands back as one argv entry.")]
+	public async Task When_TypingQuotedPrefix_Then_ShellProviderReceivesDecodedPrefixAndQuotedValue()
+	{
+		string? capturedInput = null;
+		var sut = CoreReplApp.Create();
+		sut.Map("contact {name}", static string (string name) => name)
+			.WithCompletion(
+				"name",
+				(_, input, _) =>
+				{
+					capturedInput = input;
+					return ValueTask.FromResult<IReadOnlyList<string>>(["New York"]);
+				},
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Contact.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app contact \"Ne").ConfigureAwait(false);
+
+		capturedInput.Should().Be("Ne");
+		candidates.Should().Contain("\"New York\"");
+	}
+
 	private static async Task<string[]> ResolveShellCandidatesAsync(ShellCompletionEngine engine, string line) =>
 		await engine.ResolveShellCompletionCandidatesAsync(
 				line,

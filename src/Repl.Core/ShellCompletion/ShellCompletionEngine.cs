@@ -146,16 +146,19 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			}
 
 			var provided = await InvokeProviderWithDeadlineAsync(
-					target.Provider, serviceProvider, currentTokenPrefix, cancellationToken)
+					target.Provider, serviceProvider, AutocompleteEngine.DecodeTokenPrefix(currentTokenPrefix), cancellationToken)
 				.ConfigureAwait(false);
 			foreach (var value in provided ?? [])
 			{
+				// Values needing quotes are emitted pre-quoted so the shell hands back ONE
+				// argv entry; unrepresentable values (both quote kinds) are dropped.
 				if (!string.IsNullOrWhiteSpace(value)
 					&& IsShellSafeCandidate(value)
-					&& valueDedupe.Add(value))
+					&& AutocompleteEngine.QuoteValueForInsertion(value) is { } insertion
+					&& valueDedupe.Add(insertion))
 				{
-					candidates.Add(value);
-					dedupe.Add(value);
+					candidates.Add(insertion);
+					dedupe.Add(insertion);
 				}
 			}
 		}
@@ -226,7 +229,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		}
 
 		var provided = await InvokeProviderWithDeadlineAsync(
-				completion, serviceProvider, currentTokenPrefix, cancellationToken)
+				completion, serviceProvider, AutocompleteEngine.DecodeTokenPrefix(currentTokenPrefix), cancellationToken)
 			.ConfigureAwait(false);
 		if (provided is null)
 		{
@@ -242,12 +245,15 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		var valueDedupe = new HashSet<string>(StringComparer.Ordinal);
 		foreach (var value in provided)
 		{
+			// Consumability is judged on the SEMANTIC value (the parser sees the decoded
+			// token); the emitted candidate is pre-quoted when it needs quoting.
 			if (!string.IsNullOrWhiteSpace(value)
 				&& IsShellSafeCandidate(value)
 				&& InvocationOptionParser.ShouldConsumeFollowingTokenAsValue(value)
-				&& valueDedupe.Add(value))
+				&& AutocompleteEngine.QuoteValueForInsertion(value) is { } insertion
+				&& valueDedupe.Add(insertion))
 			{
-				candidates.Add(value);
+				candidates.Add(insertion);
 			}
 		}
 

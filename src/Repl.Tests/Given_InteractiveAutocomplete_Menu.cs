@@ -158,6 +158,64 @@ public sealed class Given_InteractiveAutocomplete_Menu
 		}
 	}
 
+	[TestMethod]
+	[Description("Accept-then-execute round-trip for a provider value containing spaces: typing 'greet Ne', accepting the provider's 'New York' suggestion from the Tab menu, and executing must hand the HANDLER the single value 'New York' — the inserted text is pre-quoted so tokenization does not split it.")]
+	public void When_ProviderValueWithSpacesIsAcceptedFromMenu_Then_HandlerReceivesSingleValue()
+	{
+		string? capturedName = null;
+		var sut = ReplApp.Create().UseDefaultInteractive();
+		sut.Map("greet {name}", (string name) =>
+		{
+			capturedName = name;
+			return name;
+		})
+			.WithCompletion("name", static (_, _, _) =>
+				ValueTask.FromResult<IReadOnlyList<string>>(["New York"]))
+			.WithDescription("Greet.");
+
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		var keyReader = new FakeKeyReader(
+		[
+			Key(ConsoleKey.G, 'g'),
+			Key(ConsoleKey.R, 'r'),
+			Key(ConsoleKey.E, 'e'),
+			Key(ConsoleKey.E, 'e'),
+			Key(ConsoleKey.T, 't'),
+			Key(ConsoleKey.Spacebar, ' '),
+			Key(ConsoleKey.N, 'N'),
+			Key(ConsoleKey.E, 'e'),
+			Key(ConsoleKey.Tab, '\t'),
+			Key(ConsoleKey.Tab, '\t'),
+			Key(ConsoleKey.Enter, '\r'),
+			Key(ConsoleKey.Enter, '\r'),
+			Key(ConsoleKey.E, 'e'),
+			Key(ConsoleKey.X, 'x'),
+			Key(ConsoleKey.I, 'i'),
+			Key(ConsoleKey.T, 't'),
+			Key(ConsoleKey.Enter, '\r'),
+		]);
+
+		var previousReader = ReplSessionIO.KeyReader;
+		using var scope = ReplSessionIO.SetSession(harness.Writer, TextReader.Null);
+		try
+		{
+			ReplSessionIO.KeyReader = keyReader;
+			ReplSessionIO.WindowSize = (80, 12);
+			ReplSessionIO.AnsiSupport = true;
+			ReplSessionIO.TerminalCapabilities = TerminalCapabilities.Ansi | TerminalCapabilities.VtInput;
+
+			var exitCode = sut.Run([]);
+
+			exitCode.Should().Be(0);
+			capturedName.Should().Be("New York",
+				because: "the accepted suggestion must round-trip through tokenization as one argument");
+		}
+		finally
+		{
+			ReplSessionIO.KeyReader = previousReader;
+		}
+	}
+
 	private static ConsoleKeyInfo Key(ConsoleKey key, char ch = '\0') =>
 		new(ch, key, shift: false, alt: false, control: false);
 }

@@ -1212,17 +1212,21 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		}
 
 		var completionContext = new CompletionContext(serviceProvider);
+		var valuePrefix = DecodeTokenPrefix(currentTokenPrefix);
 		var suggestions = new List<ConsoleLineReader.AutocompleteSuggestion>();
 		foreach (var target in targets)
 		{
-			var provided = await target.Provider(completionContext, currentTokenPrefix, cancellationToken)
+			var provided = await target.Provider(completionContext, valuePrefix, cancellationToken)
 				.ConfigureAwait(false);
 			foreach (var item in provided)
 			{
-				if (!string.IsNullOrWhiteSpace(item))
+				// Values needing quotes are emitted pre-quoted (unrepresentable ones dropped)
+				// so acceptance round-trips through tokenization as one argument.
+				if (!string.IsNullOrWhiteSpace(item)
+					&& QuoteValueForInsertion(item) is { } insertion)
 				{
 					suggestions.Add(new ConsoleLineReader.AutocompleteSuggestion(
-						item,
+						insertion,
 						Kind: ConsoleLineReader.AutocompleteSuggestionKind.Parameter));
 				}
 			}
@@ -1266,6 +1270,79 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		return targets ?? (IReadOnlyList<(RouteDefinition, string, CompletionDelegate)>)[];
 	}
 
+	// Decodes the raw lexical slice of the CURRENT token up to the cursor into its semantic
+	// value prefix — the same quote state machine as TokenizeInputSpans, so '"Ne' decodes to
+	// 'Ne' and a mid-token quote toggle is honored. Providers match against VALUES; feeding
+	// them the raw quoted slice would miss ordinary prefix lookups. The quote-free fast path
+	// returns the original string without allocating.
+	internal static string DecodeTokenPrefix(string rawPrefix)
+	{
+		if (rawPrefix.AsSpan().IndexOfAny('"', '\'') < 0)
+		{
+			return rawPrefix;
+		}
+
+		var builder = new System.Text.StringBuilder(rawPrefix.Length);
+		char? quote = null;
+		foreach (var ch in rawPrefix)
+		{
+			if (quote is { } active && ch == active)
+			{
+				quote = null;
+				continue;
+			}
+
+			if (quote is null && ch is '"' or '\'')
+			{
+				quote = ch;
+				continue;
+			}
+
+			builder.Append(ch);
+		}
+
+		return builder.ToString();
+	}
+
+	// A provider VALUE is semantic data while the suggestion list carries command-line
+	// SYNTAX: a value containing whitespace or a quote is emitted pre-quoted so acceptance
+	// round-trips through tokenization as ONE argument ('New York' -> "New York"). The
+	// tokenizer has no escape sequences, so a value containing BOTH quote kinds cannot be
+	// represented at all and yields null (the caller drops it).
+	internal static string? QuoteValueForInsertion(string value)
+	{
+		var needsQuoting = false;
+		var hasDoubleQuote = false;
+		var hasSingleQuote = false;
+		foreach (var ch in value)
+		{
+			if (char.IsWhiteSpace(ch))
+			{
+				needsQuoting = true;
+			}
+			else if (ch == '"')
+			{
+				hasDoubleQuote = true;
+			}
+			else if (ch == '\'')
+			{
+				hasSingleQuote = true;
+			}
+		}
+
+		if (!needsQuoting && !hasDoubleQuote && !hasSingleQuote)
+		{
+			return value;
+		}
+
+		if (hasDoubleQuote && hasSingleQuote)
+		{
+			return null;
+		}
+
+		return hasDoubleQuote ? $"'{value}'" : $"\"{value}\"";
+	}
+
 	// Completes the VALUE of a pending route option by invoking ONLY that option's own provider.
 	// It keys off the ACTUAL pending token (the last committed token), never the route match's
 	// trailing token: ResolveCommitted strips globals before route resolution, so for
@@ -1300,17 +1377,21 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				&& match.Route.Command.Completions.TryGetValue(entry.ParameterName, out var completion))
 			{
 				var completionContext = new CompletionContext(serviceProvider);
-				var provided = await completion(completionContext, currentTokenPrefix, cancellationToken)
+				var provided = await completion(completionContext, DecodeTokenPrefix(currentTokenPrefix), cancellationToken)
 					.ConfigureAwait(false);
 				// Only surface values the invocation parser would consume as this option's
 				// separate value: a dash-prefixed candidate is read as the next option (accepting
 				// it would leave the option unset), while a signed numeric literal (-42) is bound
 				// as a value. Reuse the parser's own rule so completion and execution cannot drift.
+				// Consumability is judged on the SEMANTIC value (the parser sees the decoded
+				// token), then values needing quotes are emitted pre-quoted for insertion.
 				return provided
 					.Where(static item => !string.IsNullOrWhiteSpace(item)
 						&& InvocationOptionParser.ShouldConsumeFollowingTokenAsValue(item))
-					.Select(static item => new ConsoleLineReader.AutocompleteSuggestion(
-						item,
+					.Select(static item => QuoteValueForInsertion(item))
+					.OfType<string>()
+					.Select(static insertion => new ConsoleLineReader.AutocompleteSuggestion(
+						insertion,
 						Kind: ConsoleLineReader.AutocompleteSuggestionKind.Parameter))
 					.ToArray();
 			}
