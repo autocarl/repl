@@ -134,6 +134,10 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			currentTokenPrefix,
 			StringComparison.OrdinalIgnoreCase,
 			app.OptionsSnapshot.Parsing);
+		// Provider VALUES dedupe case-sensitively (a positional binds verbatim at execution,
+		// so "Prod"/"prod" are distinct); the shared case-insensitive set still marks the
+		// value so an identical command literal is not offered twice.
+		var valueDedupe = new HashSet<string>(StringComparer.Ordinal);
 		foreach (var target in targets)
 		{
 			if (!target.Route.Command.IsCompletionShellScoped(target.TargetName))
@@ -145,7 +149,11 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 				.ConfigureAwait(false);
 			foreach (var value in provided)
 			{
-				TryAddShellCompletionCandidate(value, dedupe, candidates);
+				if (!string.IsNullOrWhiteSpace(value) && valueDedupe.Add(value))
+				{
+					candidates.Add(value);
+					dedupe.Add(value);
+				}
 			}
 		}
 	}

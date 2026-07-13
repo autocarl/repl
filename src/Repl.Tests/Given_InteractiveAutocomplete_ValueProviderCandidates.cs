@@ -168,6 +168,41 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 	}
 
 	[TestMethod]
+	[Description("Positional provider values dedupe case-sensitively on the interactive menu: a string positional is bound verbatim at execution, so 'Prod' and 'prod' are distinct values and must both be offered — the UI's case-insensitive comparer must not collapse them.")]
+	public async Task When_PositionalProviderReturnsCaseDistinctValues_Then_BothAreOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("case {name}", static string (string name) => name)
+			.WithCompletion("name", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["Prod", "prod"]))
+			.WithDescription("Case.");
+
+		var result = await ResolveAutocompleteAsync(sut, "case p").ConfigureAwait(false);
+
+		var values = result.Suggestions.Select(static s => s.Value).ToArray();
+		values.Should().Contain("Prod").And.Contain("prod",
+			because: "positional values are case-significant at execution, so both spellings must survive");
+	}
+
+	[TestMethod]
+	[Description("Shell parity: a shell-scoped positional provider returning 'Prod' and 'prod' offers both through the bridge — provider VALUES use an ordinal dedupe, separate from the case-insensitive command-name set, like the pending-option path.")]
+	public async Task When_PositionalProviderReturnsCaseDistinctValues_Then_ShellOffersBoth()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("case {name}", static string (string name) => name)
+			.WithCompletion(
+				"name",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["Prod", "prod"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Case.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app case p").ConfigureAwait(false);
+
+		candidates.Should().Contain("Prod").And.Contain("prod",
+			because: "positional values are case-significant at execution, so both spellings must survive");
+	}
+
+	[TestMethod]
 	[Description("A provider registered with CompletionProviderScope.InteractiveAndShell is invoked by the shell completion bridge while the value is being typed: 'app contact inspect ab' offers the provider's candidates, matching the interactive menu.")]
 	public async Task When_ShellScopedProviderAndValueIsTyped_Then_ShellOffersProviderCandidates()
 	{

@@ -1368,10 +1368,12 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		StringComparer comparer)
 	{
 		var seen = new HashSet<string>(comparer);
-		// Option tokens dedupe case-sensitively so that, under case-sensitive option parsing,
-		// distinct executable aliases like "-m" and "-M" both survive the UI-level dedupe
-		// (which otherwise uses the case-insensitive autocomplete comparer).
-		var seenOptions = new HashSet<string>(StringComparer.Ordinal);
+		// Option tokens and parameter VALUES dedupe case-sensitively: under case-sensitive
+		// option parsing, distinct executable aliases like "-m" and "-M" both survive, and a
+		// positional/option value is bound verbatim at execution, so provider results that
+		// differ only by case ("Prod"/"prod") are distinct values — the UI-level comparer
+		// (case-insensitive by default) must not collapse either group.
+		var seenOrdinal = new HashSet<string>(StringComparer.Ordinal);
 		var distinct = new List<ConsoleLineReader.AutocompleteSuggestion>();
 		foreach (var suggestion in suggestions)
 		{
@@ -1380,9 +1382,10 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				continue;
 			}
 
-			var isOptionToken = IsOptionPrefixToken(suggestion.DisplayText);
-			if (isOptionToken
-				? !seenOptions.Add(suggestion.DisplayText)
+			var dedupesOrdinally = suggestion.Kind == ConsoleLineReader.AutocompleteSuggestionKind.Parameter
+				|| IsOptionPrefixToken(suggestion.DisplayText);
+			if (dedupesOrdinally
+				? !seenOrdinal.Add(suggestion.DisplayText)
 				: !seen.Add(suggestion.DisplayText))
 			{
 				continue;
