@@ -58,8 +58,10 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			&& routeMatch.RemainingTokens.Count > 0
 			&& afterExecutable.Length > 0
 			&& string.Equals(afterExecutable[^1], routeMatch.RemainingTokens[^1], StringComparison.Ordinal);
-		if (!currentTokenIsOption
-			&& !optionsTerminated
+		// No !currentTokenIsOption gate here: a dash-prefixed CURRENT token can still be the
+		// pending option's value in transit (the provider offers '-42' while '-' is typed);
+		// the consumability filter drops anything the parser would read as the next option.
+		if (!optionsTerminated
 			&& hasTerminalRoute
 			&& routeOptionIsLastCommitted
 			&& await TryAddPendingOptionValueCandidatesAsync(

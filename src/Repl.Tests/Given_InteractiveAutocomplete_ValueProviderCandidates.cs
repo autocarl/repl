@@ -175,6 +175,40 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 	}
 
 	[TestMethod]
+	[Description("A dash-prefixed transitional value after a pending route option still runs the shell-scoped provider: 'app run --channel -' offers '-42' (the parser consumes a signed numeric as the option's value) — the option-name suppression must not swallow the pending option's own values.")]
+	public async Task When_DashValueIsTypedForPendingOption_Then_ShellProviderStillRuns()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run", static string ([ReplOption] int? count) => count?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none")
+			.WithCompletion(
+				"count",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["-42"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Run.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app run --count -").ConfigureAwait(false);
+
+		candidates.Should().Contain("-42",
+			because: "the pending option's provider must run for the transitional dash prefix, like the interactive path");
+	}
+
+	[TestMethod]
+	[Description("Interactive parity pin for the same scenario: 'run --count -' invokes the pending option's provider and offers the consumable '-42' while the dash prefix is being typed.")]
+	public async Task When_DashValueIsTypedForPendingOption_Then_InteractiveProviderStillRuns()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("run", static string ([ReplOption] int? count) => count?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none")
+			.WithCompletion("count", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["-42"]))
+			.WithDescription("Run.");
+
+		var result = await ResolveAutocompleteAsync(sut, "run --count -").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("-42",
+			because: "the pending option's provider runs for the transitional dash prefix");
+	}
+
+	[TestMethod]
 	[Description("Shell parity with the interactive no-misfire rule: once the value is committed ('app deploy x '), even a shell-scoped provider must not fire — its candidates could no longer bind to the parameter at execution.")]
 	public async Task When_ShellScopedProviderAndValueIsCommitted_Then_ShellOffersNothing()
 	{
