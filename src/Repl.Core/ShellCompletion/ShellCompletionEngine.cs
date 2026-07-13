@@ -122,12 +122,24 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		List<string> candidates,
 		CancellationToken cancellationToken)
 	{
-		// The bare transitional "-" (first character of a signed value) keeps providers
-		// eligible; their candidates are restricted to signed numerics below, mirroring the
-		// interactive menu.
-		var transitionalSign = currentTokenPrefix is "-";
-		if ((currentTokenIsOption && !transitionalSign)
+		// The bare transitional "-" keeps providers eligible: routing binds a dash-prefixed
+		// token to an unfilled positional (target == "-prod"), so any candidate the segment
+		// constraint accepts is valid — the per-candidate constraint check below is the
+		// filter, not a signed-numeric restriction.
+		var transitionalDash = currentTokenPrefix is "-";
+		if ((currentTokenIsOption && !transitionalDash)
 			|| resolution.Match is { RemainingTokens.Count: > 0 })
+		{
+			return;
+		}
+
+		// A completion requested from inside an already-open shell quote (e.g. bash 'app
+		// contact "Ne') is unsafe for provider values: the shell keeps the opening quote, so
+		// our emitted token lands INSIDE it as literal characters and any interpolation the
+		// outer quote performs still runs on acceptance. We cannot reshape the user's opening
+		// quote from here, so provider values are dropped in that context (static command and
+		// option names, which are controlled identifiers, are unaffected).
+		if (HasUnterminatedQuote(currentTokenPrefix))
 		{
 			return;
 		}
@@ -142,35 +154,47 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			resolution.CommandPrefix,
 			StringComparison.OrdinalIgnoreCase,
 			app.OptionsSnapshot.Parsing);
+		var valuePrefix = AutocompleteEngine.DecodeTokenPrefix(currentTokenPrefix);
 		// Provider VALUES dedupe case-sensitively (a positional binds verbatim at execution,
 		// so "Prod"/"prod" are distinct); the shared case-insensitive set still marks the
 		// value so an identical command literal is not offered twice.
 		var valueDedupe = new HashSet<string>(StringComparer.Ordinal);
 		foreach (var target in targets)
 		{
-			if (!target.Route.Command.IsCompletionShellScoped(target.Segment.Name))
+			if (target.Route.Command.IsCompletionShellScoped(target.Segment.Name))
 			{
-				continue;
+				await EmitShellProviderValuesAsync(
+						target, valuePrefix, shell, serviceProvider, valueDedupe, dedupe, candidates, cancellationToken)
+					.ConfigureAwait(false);
 			}
+		}
+	}
 
-			var provided = await InvokeProviderWithDeadlineAsync(
-					target.Provider, serviceProvider, AutocompleteEngine.DecodeTokenPrefix(currentTokenPrefix), cancellationToken)
-				.ConfigureAwait(false);
-			foreach (var value in provided ?? [])
+	private async ValueTask EmitShellProviderValuesAsync(
+		(RouteDefinition Route, DynamicRouteSegment Segment, CompletionDelegate Provider) target,
+		string valuePrefix,
+		ShellKind shell,
+		IServiceProvider serviceProvider,
+		HashSet<string> valueDedupe,
+		HashSet<string> dedupe,
+		List<string> candidates,
+		CancellationToken cancellationToken)
+	{
+		var provided = await InvokeProviderWithDeadlineAsync(target.Provider, serviceProvider, valuePrefix, cancellationToken)
+			.ConfigureAwait(false);
+		foreach (var value in provided ?? [])
+		{
+			// Parity per candidate (a value the segment's constraint rejects can never bind);
+			// values are then encoded as literal data in the TARGET shell's syntax (see
+			// QuoteValueForShell) or dropped when unrepresentable.
+			if (!string.IsNullOrWhiteSpace(value)
+				&& IsShellSafeCandidate(value)
+				&& RouteConstraintEvaluator.IsMatch(target.Segment, value, app.OptionsSnapshot.Parsing)
+				&& QuoteValueForShell(value, shell) is { } insertion
+				&& valueDedupe.Add(insertion))
 			{
-				// Parity per candidate (a value the segment's constraint rejects can never
-				// bind); values are then encoded as literal data in the TARGET shell's
-				// syntax (see QuoteValueForShell) or dropped when unrepresentable.
-				if (!string.IsNullOrWhiteSpace(value)
-					&& (!transitionalSign || InvocationOptionParser.IsSignedNumericLiteral(value))
-					&& IsShellSafeCandidate(value)
-					&& RouteConstraintEvaluator.IsMatch(target.Segment, value, app.OptionsSnapshot.Parsing)
-					&& QuoteValueForShell(value, shell) is { } insertion
-					&& valueDedupe.Add(insertion))
-				{
-					candidates.Add(insertion);
-					dedupe.Add(insertion);
-				}
+				candidates.Add(insertion);
+				dedupe.Add(insertion);
 			}
 		}
 	}
@@ -190,6 +214,12 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	private static readonly System.Buffers.SearchValues<char> s_shellPlainChars =
 		System.Buffers.SearchValues.Create("+,-./0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz");
 
+	// PowerShell treats '@' (splatting) and ',' (array operator) as syntax even in a bare
+	// argument — '@x' splats and 'a,b' becomes a two-element array — so they are NOT plain
+	// data there and force the single-quote literal form. Otherwise identical to the set above.
+	private static readonly System.Buffers.SearchValues<char> s_powerShellPlainChars =
+		System.Buffers.SearchValues.Create("+-./0123456789:=ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz");
+
 	// Encodes one provider VALUE as LITERAL data in the target shell's syntax. The emitted
 	// candidate is inserted into the user's command line and re-parsed by that shell, so an
 	// interpolating form is a command-execution boundary for provider-reflected data — in
@@ -198,9 +228,35 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	// shell cannot represent literally is rejected (null) rather than emitted unsafely.
 	// This is deliberately SEPARATE from the interactive tokenizer quoting: those quotes are
 	// in-REPL syntax, these must survive a real shell's parser.
+	// True when the raw current-token prefix ends inside an unclosed quote (the tokenizer's
+	// quote state machine: a quote opens, the matching quote closes; the opening quote is
+	// part of the prefix because token spans start before it). Used to detect an open-quoted
+	// completion context the bridge cannot safely reshape.
+	internal static bool HasUnterminatedQuote(string prefix)
+	{
+		char? quote = null;
+		foreach (var ch in prefix)
+		{
+			if (quote is { } active)
+			{
+				if (ch == active)
+				{
+					quote = null;
+				}
+			}
+			else if (ch is '"' or '\'')
+			{
+				quote = ch;
+			}
+		}
+
+		return quote is not null;
+	}
+
 	internal static string? QuoteValueForShell(string value, ShellKind shell)
 	{
-		if (!value.AsSpan().ContainsAnyExcept(s_shellPlainChars))
+		var plainChars = shell == ShellKind.PowerShell ? s_powerShellPlainChars : s_shellPlainChars;
+		if (!value.AsSpan().ContainsAnyExcept(plainChars))
 		{
 			return value;
 		}
@@ -232,12 +288,14 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	// is ABANDONED at the deadline via WaitAsync — a plain await could never return when the
 	// provider ignores its cancellation token — and the invocation itself runs on the pool
 	// (Task.Run) so SYNCHRONOUS provider work (sync I/O, Thread.Sleep) cannot stall the
-	// bridge before the returned task even exists. The linked token still requests
-	// cooperative cancellation at the deadline; caller cancellation propagates as usual.
-	// Returns null on timeout OR provider fault so the caller degrades to static candidates
-	// (a transient lookup failure must not fail the completion invocation or spam the
-	// shell's completion stream); the abandoned task's eventual fault is observed to keep it
-	// away from the unobserved-exception escalation path.
+	// bridge before the returned task even exists. WaitAsync owns the single timer; on its
+	// timeout we explicitly Cancel the linked token so a COOPERATIVE provider still observes
+	// cancellation and stops its thread-pool/network work (a separate CancelAfter would race
+	// WaitAsync and, if it lost, be silently discarded on dispose). Caller cancellation
+	// propagates as usual. Returns null on timeout OR provider fault so the caller degrades
+	// to static candidates (a transient lookup failure must not fail the completion
+	// invocation or spam the shell's completion stream); the abandoned task's eventual fault
+	// is observed to keep it away from the unobserved-exception escalation path.
 	private async ValueTask<IReadOnlyList<string>?> InvokeProviderWithDeadlineAsync(
 		CompletionDelegate provider,
 		IServiceProvider serviceProvider,
@@ -246,7 +304,6 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	{
 		var timeout = app.OptionsSnapshot.ShellCompletion.ProviderTimeout;
 		using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-		deadline.CancelAfter(timeout);
 		var providerTask = Task.Run(
 			() => provider(new CompletionContext(serviceProvider), input, deadline.Token).AsTask(),
 			CancellationToken.None);
@@ -256,6 +313,8 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		}
 		catch (TimeoutException)
 		{
+			// Signal the abandoned provider so a cooperative one unwinds promptly.
+			await deadline.CancelAsync().ConfigureAwait(false);
 			_ = providerTask.ContinueWith(
 				static task => _ = task.Exception,
 				CancellationToken.None,
@@ -285,7 +344,10 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		List<string> candidates,
 		CancellationToken cancellationToken)
 	{
-		if (!TryResolvePendingRouteOption(match, out var entry)
+		// An open-quoted value context is unsafe for provider output (see the positional
+		// path); skipping here lets the static enum fallback still run.
+		if (HasUnterminatedQuote(currentTokenPrefix)
+			|| !TryResolvePendingRouteOption(match, out var entry)
 			|| !match.Route.Command.Completions.TryGetValue(entry.ParameterName, out var completion)
 			|| !match.Route.Command.IsCompletionShellScoped(entry.ParameterName))
 		{

@@ -1195,13 +1195,13 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
-		// Providers complete parameter VALUES; an option-prefix token is asking for option
-		// names, and provider output would only pollute that menu — EXCEPT the bare
-		// transitional "-", the first character of a signed value: providers stay eligible
-		// for it, restricted below to signed numeric candidates so option names keep the
-		// menu (a completed "-42" binds and executes as the positional).
-		var transitionalSign = currentTokenPrefix is "-";
-		if (IsOptionPrefixToken(currentTokenPrefix) && !transitionalSign)
+		// Providers complete parameter VALUES; an option-prefix token is normally asking for
+		// option names — EXCEPT the bare transitional "-": route resolution binds a
+		// dash-prefixed token to an unfilled positional (target == "-prod"), so providers
+		// stay eligible and the per-candidate constraint check below is the only filter (a
+		// value the segment accepts is a valid positional; option names keep their own menu).
+		var transitionalDash = currentTokenPrefix is "-";
+		if (IsOptionPrefixToken(currentTokenPrefix) && !transitionalDash)
 		{
 			return [];
 		}
@@ -1216,7 +1216,6 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		return await InvokePositionalProvidersAsync(
 				targets,
 				DecodeTokenPrefix(currentTokenPrefix),
-				transitionalSign,
 				parsingOptions,
 				serviceProvider,
 				cancellationToken)
@@ -1226,7 +1225,6 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 	private static async ValueTask<IReadOnlyList<ConsoleLineReader.AutocompleteSuggestion>> InvokePositionalProvidersAsync(
 		IReadOnlyList<(RouteDefinition Route, DynamicRouteSegment Segment, CompletionDelegate Provider)> targets,
 		string valuePrefix,
-		bool transitionalSign,
 		ParsingOptions parsingOptions,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -1242,7 +1240,6 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				// Parity per candidate (a constraint-rejected value can never bind), terminal
 				// controls rejected before rendering, quotes added for the round-trip.
 				if (!string.IsNullOrWhiteSpace(item)
-					&& (!transitionalSign || InvocationOptionParser.IsSignedNumericLiteral(item))
 					&& IsControlFreeValue(item)
 					&& RouteConstraintEvaluator.IsMatch(target.Segment, item, parsingOptions)
 					&& QuoteValueForInsertion(item) is { } insertion)

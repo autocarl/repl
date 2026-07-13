@@ -195,6 +195,39 @@ public sealed class Given_ShellCompletionBridge_Providers
 		output.Text.Should().NotContain("probe");
 	}
 
+	[TestMethod]
+	[Description("On timeout the bridge cancels the provider's token so a COOPERATIVE provider stops promptly: a provider awaiting Task.Delay on its token must observe cancellation shortly after ProviderTimeout, not run forever after the bridge already returned.")]
+	public void When_ProviderTimesOut_Then_ItsTokenIsCanceled()
+	{
+		using var canceled = new ManualResetEventSlim(initialState: false);
+		var sut = ReplApp.Create();
+		sut.Options(static options => options.ShellCompletion.ProviderTimeout = TimeSpan.FromMilliseconds(100));
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion(
+				"target",
+				async (_, _, token) =>
+				{
+					try
+					{
+						await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+					}
+					catch (OperationCanceledException)
+					{
+						canceled.Set();
+						throw;
+					}
+
+					return [];
+				},
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+
+		_ = RunBridge(sut, "app deploy ");
+
+		canceled.Wait(TimeSpan.FromSeconds(2)).Should().BeTrue(
+			because: "the deadline must cancel the provider token, not just abandon the task");
+	}
+
 	private static (int ExitCode, string Text) RunBridge(ReplApp app, string line) =>
 		ConsoleCaptureHelper.Capture(() => app.Run(
 		[

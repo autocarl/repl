@@ -427,8 +427,8 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 	}
 
 	[TestMethod]
-	[Description("Shell parity for quoting and prefix decoding: 'app contact \"Ne' invokes the shell-scoped provider with the decoded prefix 'Ne' and emits the value single-quoted as literal SHELL data ('New York' → 'New York' in single quotes) — never a double-quoted form bash would interpolate.")]
-	public async Task When_TypingQuotedPrefix_Then_ShellProviderReceivesDecodedPrefixAndQuotedValue()
+	[Description("Shell quoting for an unquoted prefix: 'app contact Ne' emits a value with spaces single-quoted as literal SHELL data ('New York' → 'New York' in single quotes) — never a double-quoted form bash would interpolate. (An OPEN-quoted prefix is handled separately: provider values are dropped.)")]
+	public async Task When_ShellValueHasSpaces_Then_ItIsSingleQuoted()
 	{
 		string? capturedInput = null;
 		var sut = CoreReplApp.Create();
@@ -444,7 +444,7 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 			.WithDescription("Contact.");
 		var shellEngine = new ShellCompletionEngine(sut);
 
-		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app contact \"Ne").ConfigureAwait(false);
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app contact Ne").ConfigureAwait(false);
 
 		capturedInput.Should().Be("Ne");
 		candidates.Should().Contain("'New York'");
@@ -499,6 +499,78 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app deploy -").ConfigureAwait(false);
 
 		candidates.Should().Contain("-42");
+	}
+
+	[TestMethod]
+	[Description("A dash-prefixed NON-numeric value is a valid positional bind (routing binds before option parsing, so target == '-prod'): on 'deploy {target}' the provider's '-prod' is offered at 'deploy -', not just signed numerics — eligibility is whether the segment constraint accepts the candidate.")]
+	public async Task When_TypingBareDashForStringPositional_Then_ProviderValueIsOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion("target", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["-prod", "-staging"]))
+			.WithDescription("Deploy.");
+
+		var result = await ResolveAutocompleteAsync(sut, "deploy -").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("-prod",
+			because: "'-prod' binds the string {target} positionally, so its provider value is valid at 'deploy -'");
+	}
+
+	[TestMethod]
+	[Description("Shell parity: 'app deploy -' on 'deploy {target}' offers the shell-scoped provider's dash-prefixed string value '-prod'.")]
+	public async Task When_TypingBareDashForStringPositional_Then_ShellProviderValueIsOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion(
+				"target",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["-prod", "-staging"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app deploy -").ConfigureAwait(false);
+
+		candidates.Should().Contain("-prod");
+	}
+
+	[TestMethod]
+	[Description("Shell completion requested from inside an open quote drops provider values: on 'app contact \"Ne' (open double quote) the shell keeps the opening quote, so any emitted token would be interpolated in place — provider candidates are withheld rather than returned unsafely.")]
+	public async Task When_ShellPrefixHasOpenQuote_Then_ProviderCandidatesAreDropped()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("contact {name}", static string (string name) => name)
+			.WithCompletion(
+				"name",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["New York", "$(printf PWNED)"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Contact.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app contact \"Ne").ConfigureAwait(false);
+
+		candidates.Should().NotContain(static c => c.Contains("PWNED", StringComparison.Ordinal),
+			because: "an open-quoted context cannot be safely reshaped, so provider values are withheld");
+		candidates.Should().NotContain(static c => c.Contains("New York", StringComparison.Ordinal));
+	}
+
+	[TestMethod]
+	[Description("PowerShell treats '@' and ',' as syntax even bare, so those provider values are single-quoted as literal data: 'app deploy ' offers '@payload' and 'alpha,beta' each wrapped in single quotes, not emitted raw where pwsh would splat/list them.")]
+	public async Task When_PowerShellValueContainsMetacharacters_Then_ItIsSingleQuoted()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion(
+				"target",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["@payload", "alpha,beta"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app deploy ", ShellKind.PowerShell).ConfigureAwait(false);
+
+		candidates.Should().Contain("'@payload'").And.Contain("'alpha,beta'");
+		candidates.Should().NotContain("@payload").And.NotContain("alpha,beta");
 	}
 
 	private static readonly string[] s_intIds = ["42", "77"];
