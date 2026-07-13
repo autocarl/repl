@@ -103,6 +103,61 @@ public sealed class Given_InteractiveAutocomplete_Menu
 		}
 	}
 
+	[TestMethod]
+	[Description("Issue #45 end-to-end: pressing Tab while TYPING a parameter value drives the real ConsoleLineReader menu with the WithCompletion provider's candidates — 'deploy zo' + Tab renders zo-ga/zo-bu, not just the parameter hint.")]
+	public void When_TabIsPressedWhileTypingParameterValue_Then_MenuShowsProviderCandidates()
+	{
+		var sut = ReplApp.Create().UseDefaultInteractive();
+		sut.Map("deploy {clientId}", static string (string clientId) => clientId)
+			.WithCompletion("clientId", static (_, _, _) =>
+				ValueTask.FromResult<IReadOnlyList<string>>(["zo-ga", "zo-bu"]))
+			.WithDescription("Deploy a client.");
+
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+		var keyReader = new FakeKeyReader(
+		[
+			Key(ConsoleKey.D, 'd'),
+			Key(ConsoleKey.E, 'e'),
+			Key(ConsoleKey.P, 'p'),
+			Key(ConsoleKey.L, 'l'),
+			Key(ConsoleKey.O, 'o'),
+			Key(ConsoleKey.Y, 'y'),
+			Key(ConsoleKey.Spacebar, ' '),
+			Key(ConsoleKey.Z, 'z'),
+			Key(ConsoleKey.O, 'o'),
+			Key(ConsoleKey.Tab, '\t'),
+			Key(ConsoleKey.Tab, '\t'),
+			Key(ConsoleKey.Tab, '\t'),
+			Key(ConsoleKey.Escape),
+			Key(ConsoleKey.Escape),
+			Key(ConsoleKey.E, 'e'),
+			Key(ConsoleKey.X, 'x'),
+			Key(ConsoleKey.I, 'i'),
+			Key(ConsoleKey.T, 't'),
+			Key(ConsoleKey.Enter, '\r'),
+		]);
+
+		var previousReader = ReplSessionIO.KeyReader;
+		using var scope = ReplSessionIO.SetSession(harness.Writer, TextReader.Null);
+		try
+		{
+			ReplSessionIO.KeyReader = keyReader;
+			ReplSessionIO.WindowSize = (80, 12);
+			ReplSessionIO.AnsiSupport = true;
+			ReplSessionIO.TerminalCapabilities = TerminalCapabilities.Ansi | TerminalCapabilities.VtInput;
+
+			var exitCode = sut.Run([]);
+
+			exitCode.Should().Be(0);
+			harness.RawOutput.Should().Contain("zo-ga", because: "the provider's candidates must reach the rendered Tab menu while the value is typed");
+			harness.RawOutput.Should().Contain("zo-bu");
+		}
+		finally
+		{
+			ReplSessionIO.KeyReader = previousReader;
+		}
+	}
+
 	private static ConsoleKeyInfo Key(ConsoleKey key, char ch = '\0') =>
 		new(ch, key, shift: false, alt: false, control: false);
 }
