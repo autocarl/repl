@@ -76,6 +76,35 @@ public sealed class Given_ShellCompletionBridge_Providers
 		output.ExitCode.Should().Be(0);
 	}
 
+	[TestMethod]
+	[Description("A provider that stalls (and ignores its cancellation token) is abandoned after ShellCompletion.ProviderTimeout: the bridge answers within the deadline with the remaining static candidates instead of blocking the invoking shell for the provider's full duration.")]
+	public void When_ProviderStallsPastDeadline_Then_BridgeDegradesWithinTimeout()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(static options => options.ShellCompletion.ProviderTimeout = TimeSpan.FromMilliseconds(100));
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion(
+				"target",
+				static async (_, _, _) =>
+				{
+					// Deliberately ignores the cancellation token — simulates a stalled network
+					// call that the deadline must abandon rather than await.
+					await Task.Delay(TimeSpan.FromSeconds(3), CancellationToken.None).ConfigureAwait(false);
+					return (IReadOnlyList<string>)["slow-value"];
+				},
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+
+		var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+		var output = RunBridge(sut, "app deploy ");
+		stopwatch.Stop();
+
+		output.Text.Should().NotContain("slow-value", because: "the stalled provider is abandoned at the deadline");
+		stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2.5),
+			because: "the bridge must answer at the deadline, not after the provider's full stall");
+		output.ExitCode.Should().Be(0);
+	}
+
 	private static (int ExitCode, string Text) RunBridge(ReplApp app, string line) =>
 		ConsoleCaptureHelper.Capture(() => app.Run(
 		[

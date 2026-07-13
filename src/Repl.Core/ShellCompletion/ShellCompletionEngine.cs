@@ -145,9 +145,10 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 				continue;
 			}
 
-			var provided = await target.Provider(new CompletionContext(serviceProvider), currentTokenPrefix, cancellationToken)
+			var provided = await InvokeProviderWithDeadlineAsync(
+					target.Provider, serviceProvider, currentTokenPrefix, cancellationToken)
 				.ConfigureAwait(false);
-			foreach (var value in provided)
+			foreach (var value in provided ?? [])
 			{
 				if (!string.IsNullOrWhiteSpace(value)
 					&& IsShellSafeCandidate(value)
@@ -170,6 +171,43 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		!value.AsSpan().ContainsAnyInRange('\u0000', '\u001F')
 		&& !value.AsSpan().ContainsAnyInRange('\u007F', '\u009F');
 
+	// Bounds one provider invocation to ShellCompletion.ProviderTimeout. The invoking shell
+	// blocks on the bridge until it answers, so a stalled provider is ABANDONED at the
+	// deadline via WaitAsync — a plain await could never return when the provider ignores
+	// its cancellation token. The linked token still requests cooperative cancellation at
+	// the deadline; caller cancellation propagates as usual. Returns null on timeout so the
+	// caller degrades to static candidates, and the abandoned task's eventual fault is
+	// observed to keep it away from the unobserved-exception escalation path.
+	private async ValueTask<IReadOnlyList<string>?> InvokeProviderWithDeadlineAsync(
+		CompletionDelegate provider,
+		IServiceProvider serviceProvider,
+		string input,
+		CancellationToken cancellationToken)
+	{
+		var timeout = app.OptionsSnapshot.ShellCompletion.ProviderTimeout;
+		using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		deadline.CancelAfter(timeout);
+		var providerTask = provider(new CompletionContext(serviceProvider), input, deadline.Token).AsTask();
+		try
+		{
+			return await providerTask.WaitAsync(timeout, TimeProvider.System, cancellationToken).ConfigureAwait(false);
+		}
+		catch (TimeoutException)
+		{
+			_ = providerTask.ContinueWith(
+				static task => _ = task.Exception,
+				CancellationToken.None,
+				TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+				TaskScheduler.Default);
+			return null;
+		}
+		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+		{
+			// The provider observed the deadline token cooperatively — same degradation.
+			return null;
+		}
+	}
+
 	// Runs the pending route option's value provider when it opted into the shell bridge.
 	// Returns true when the provider ran (its answer is final, even when empty), so an enum
 	// fallback never overrides an explicit provider — the interactive menu's precedence.
@@ -187,8 +225,15 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			return false;
 		}
 
-		var provided = await completion(new CompletionContext(serviceProvider), currentTokenPrefix, cancellationToken)
+		var provided = await InvokeProviderWithDeadlineAsync(
+				completion, serviceProvider, currentTokenPrefix, cancellationToken)
 			.ConfigureAwait(false);
+		if (provided is null)
+		{
+			// Timed out: no final answer from the provider — fall back to static candidates.
+			return false;
+		}
+
 		// Option VALUES dedupe case-sensitively: a string option value is case-significant at
 		// execution, so provider results differing only by case must both survive (parity with
 		// the interactive pending path). The invocation parser consumes a following token as
