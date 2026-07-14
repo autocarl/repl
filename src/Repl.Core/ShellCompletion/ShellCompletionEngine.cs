@@ -288,14 +288,10 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 	// is ABANDONED at the deadline via WaitAsync — a plain await could never return when the
 	// provider ignores its cancellation token — and the invocation itself runs on the pool
 	// (Task.Run) so SYNCHRONOUS provider work (sync I/O, Thread.Sleep) cannot stall the
-	// bridge before the returned task even exists. WaitAsync owns the single timer; on its
-	// timeout we explicitly Cancel the linked token so a COOPERATIVE provider still observes
-	// cancellation and stops its thread-pool/network work (a separate CancelAfter would race
-	// WaitAsync and, if it lost, be silently discarded on dispose). Caller cancellation
-	// propagates as usual. Returns null on timeout OR provider fault so the caller degrades
-	// to static candidates (a transient lookup failure must not fail the completion
-	// invocation or spam the shell's completion stream); the abandoned task's eventual fault
-	// is observed to keep it away from the unobserved-exception escalation path.
+	// bridge before the returned task even exists. Caller cancellation propagates as usual.
+	// Returns null on timeout OR provider fault so the caller degrades to static candidates
+	// (a transient lookup failure must not fail the completion invocation or spam the shell's
+	// completion stream).
 	private async ValueTask<IReadOnlyList<string>?> InvokeProviderWithDeadlineAsync(
 		CompletionDelegate provider,
 		IServiceProvider serviceProvider,
@@ -303,35 +299,69 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		CancellationToken cancellationToken)
 	{
 		var timeout = app.OptionsSnapshot.ShellCompletion.ProviderTimeout;
-		using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		var providerTask = Task.Run(
 			() => provider(new CompletionContext(serviceProvider), input, deadline.Token).AsTask(),
 			CancellationToken.None);
 		try
 		{
-			return await providerTask.WaitAsync(timeout, TimeProvider.System, cancellationToken).ConfigureAwait(false);
-		}
-		catch (TimeoutException)
-		{
-			// Signal the abandoned provider so a cooperative one unwinds promptly.
-			await deadline.CancelAsync().ConfigureAwait(false);
-			_ = providerTask.ContinueWith(
-				static task => _ = task.Exception,
-				CancellationToken.None,
-				TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-				TaskScheduler.Default);
-			return null;
+			var result = await providerTask.WaitAsync(timeout, TimeProvider.System, cancellationToken).ConfigureAwait(false);
+			deadline.Dispose();
+			return result;
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
+			deadline.Dispose();
 			throw;
+		}
+		catch (TimeoutException)
+		{
+			// The provider overran the deadline. Cancel the token to let a cooperative
+			// provider unwind, but off a DETACHED task: Cancel() runs the provider's
+			// registered cancellation callbacks inline, and a slow/blocking callback must not
+			// keep the bridge (and the user's shell) waiting past the deadline. The same
+			// detached task observes the abandoned provider's eventual fault and disposes the
+			// CTS once it settles, so Cancel() and Dispose() never race.
+			AbandonProvider(deadline, providerTask);
+			return null;
 		}
 		catch (Exception)
 		{
-			// Provider fault (sync or async) or cooperative deadline cancellation — degrade.
+			// Provider fault (sync or async) — degrade to static candidates.
+			deadline.Dispose();
 			return null;
 		}
 	}
+
+	private static void AbandonProvider(CancellationTokenSource deadline, Task providerTask) =>
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				// Awaiting here is safe — this runs off the bridge thread, so a blocking
+				// provider cancellation callback delays only this detached task.
+				await deadline.CancelAsync().ConfigureAwait(false);
+			}
+			catch
+			{
+				// A provider-registered cancellation callback threw — irrelevant to the bridge.
+			}
+
+			try
+			{
+				// VSTHRD003: awaiting a task started elsewhere is intentional — there is no
+				// sync context on this pool task, so no deadlock; we only observe the fault.
+#pragma warning disable VSTHRD003
+				await providerTask.ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+			}
+			catch
+			{
+				// Observe the abandoned provider's fault so it does not escalate.
+			}
+
+			deadline.Dispose();
+		});
 
 	// Runs the pending route option's value provider when it opted into the shell bridge.
 	// Returns true when the provider ran (its answer is final, even when empty), so an enum

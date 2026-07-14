@@ -196,6 +196,40 @@ public sealed class Given_ShellCompletionBridge_Providers
 	}
 
 	[TestMethod]
+	[Description("A provider that registers a BLOCKING cancellation callback must not hold the bridge past the deadline: cancellation runs off a detached task, so completion returns within the deadline even though the callback keeps running.")]
+	public void When_ProviderCancellationCallbackBlocks_Then_BridgeStillReturnsWithinDeadline()
+	{
+		using var callbackEntered = new ManualResetEventSlim(initialState: false);
+		using var releaseCallback = new ManualResetEventSlim(initialState: false);
+		var sut = ReplApp.Create();
+		sut.Options(static options => options.ShellCompletion.ProviderTimeout = TimeSpan.FromMilliseconds(100));
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion(
+				"target",
+				async (_, _, token) =>
+				{
+					// Registers a callback that blocks when the deadline cancels the token.
+					using var registration = token.Register(() =>
+					{
+						callbackEntered.Set();
+						releaseCallback.Wait(TimeSpan.FromSeconds(5));
+					});
+					await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+					return [];
+				},
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+
+		var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+		_ = RunBridge(sut, "app deploy ");
+		stopwatch.Stop();
+
+		releaseCallback.Set();
+		stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2),
+			because: "a blocking cancellation callback must not keep the bridge waiting past the deadline");
+	}
+
+	[TestMethod]
 	[Description("On timeout the bridge cancels the provider's token so a COOPERATIVE provider stops promptly: a provider awaiting Task.Delay on its token must observe cancellation shortly after ProviderTimeout, not run forever after the bridge already returned.")]
 	public void When_ProviderTimesOut_Then_ItsTokenIsCanceled()
 	{
