@@ -716,6 +716,80 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 	}
 
 	[TestMethod]
+	[Description("Ownership vetting expands unique command prefixes like execution: a provider value 'sta' that uniquely prefixes a literal sibling 'pick status' expands to that literal at execution, so it must not be offered as a {name} value.")]
+	public async Task When_ProviderValueUniquelyPrefixesLiteral_Then_ProviderDoesNotOfferIt()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("pick status", static string () => "literal").WithDescription("Pick status.");
+		sut.Map("pick {name}", static string (string name) => name)
+			.WithCompletion("name", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["sta", "alice"]))
+			.WithDescription("Pick by name.");
+
+		var result = await ResolveAutocompleteAsync(sut, "pick s").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().NotContain("sta",
+			because: "'sta' expands to the literal 'status' before routing, so it never binds to {name}");
+	}
+
+	[TestMethod]
+	[Description("Ownership vetting judges incomplete routes via the missing-argument winner: with 'pick {name} {id}' and a higher-scoring literal 'pick status {id}', the value 'status' would resolve to the literal once {id} is typed, so it must not be offered for {name} even though 'pick status' has no terminal match yet.")]
+	public async Task When_ProviderValueShadowedByIncompleteLiteral_Then_ProviderDoesNotOfferIt()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("pick status {id}", static string (string id) => id).WithDescription("Pick status by id.");
+		sut.Map("pick {name} {id}", static string (string name, string id) => name + id)
+			.WithCompletion("name", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["status", "alice"]))
+			.WithDescription("Pick by name and id.");
+
+		var result = await ResolveAutocompleteAsync(sut, "pick s").ConfigureAwait(false);
+
+		// 'status' is legitimately offered as a COMMAND literal (heading toward 'pick status
+		// {id}'); the provider must not additionally contribute it as a {name} VALUE.
+		var providerValues = result.Suggestions
+			.Where(static s => s.Kind == ConsoleLineReader.AutocompleteSuggestionKind.Parameter)
+			.Select(static s => s.Value)
+			.ToArray();
+		providerValues.Should().NotContain("status",
+			because: "the higher-scoring incomplete literal 'pick status {id}' shadows the value at execution");
+	}
+
+	[TestMethod]
+	[Description("A still-incomplete provider route with no colliding sibling is NOT over-rejected: 'copy {source} {destination}' offers a source value even though the route needs {destination} too (the missing-argument winner is the provider's own route).")]
+	public async Task When_IncompleteProviderRouteHasNoRival_Then_ValueIsOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("copy {source} {destination}", static string (string source, string destination) => source + destination)
+			.WithCompletion("source", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["ga-src"]))
+			.WithDescription("Copy.");
+
+		var result = await ResolveAutocompleteAsync(sut, "copy g").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("ga-src",
+			because: "the only incomplete-route winner is the provider's own route");
+	}
+
+	[TestMethod]
+	[Description("A backslash provider value ('C:\\Temp') completes on bash — it is literal data inside a single-quoted candidate and round-trips through the bridge tokenizer — but is dropped on fish, whose single quotes escape backslashes.")]
+	public async Task When_ShellValueContainsBackslash_Then_OfferedExceptOnFish()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("open {path}", static string (string path) => path)
+			.WithCompletion(
+				"path",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["C:\\Temp"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Open.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var bash = await ResolveShellCandidatesAsync(shellEngine, "app open C").ConfigureAwait(false);
+		var fish = await ResolveShellCandidatesAsync(shellEngine, "app open C", ShellKind.Fish).ConfigureAwait(false);
+
+		bash.Should().Contain("'C:\\Temp'", because: "a backslash is literal inside a bash single-quoted value");
+		fish.Should().NotContain(static c => c.Contains("Temp", StringComparison.Ordinal),
+			because: "fish single quotes escape backslashes, so the value cannot round-trip");
+	}
+
+	[TestMethod]
 	[Description("The route-shadowing filter does not over-reject: a provider value that has no colliding literal ('alice') still binds to {name} and is offered.")]
 	public async Task When_ProviderValueHasNoLiteralCollision_Then_ItIsOffered()
 	{

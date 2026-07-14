@@ -1295,14 +1295,31 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return false;
 		}
 
+		// Expand unique command prefixes exactly as execution does BEFORE routing: a value that
+		// is a unique prefix of a literal sibling ('sta' for a literal 'status') expands to that
+		// literal at execution, so it must be vetted expanded, not raw.
+		var expanded = ExpandUniquePrefixes(remaining, activeGraph);
+
 		// Then resolve against the FULL active route graph (including hidden routes) the way
-		// execution does. A different winning route — a higher-scoring or hidden literal like
-		// 'pick status' — shadows the value, so it would never bind to the provider's segment
-		// (and a hidden command must not be surfaced indirectly). A null match means the
-		// candidate does not yet complete any route (a still-incomplete multi-segment route),
-		// which is fine — nothing else claims it either.
-		var match = app.Resolve(remaining, activeGraph.Routes);
-		return match is null || ReferenceEquals(match.Route, providerRoute);
+		// execution does, using the diagnostics so an INCOMPLETE route is judged too. A
+		// different winning route — a higher-scoring or hidden literal ('pick status'), even
+		// while still missing later arguments ('pick status {id}' outscoring 'pick {name}
+		// {id}') — shadows the value, so it would never bind to the provider's segment (and a
+		// hidden command must not be surfaced indirectly). Only when neither a terminal match
+		// nor a missing-argument winner claims the tokens is the value genuinely unclaimed and
+		// safe to keep.
+		var diagnostics = app.ResolveWithDiagnostics(expanded, activeGraph.Routes);
+		if (diagnostics.Match is { } terminal)
+		{
+			return ReferenceEquals(terminal.Route, providerRoute);
+		}
+
+		if (diagnostics.MissingArgumentsFailure is { } incomplete)
+		{
+			return ReferenceEquals(incomplete.Route, providerRoute);
+		}
+
+		return true;
 	}
 
 	// Isolates an interactive completion provider's faults: a transient lookup provider
