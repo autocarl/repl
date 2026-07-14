@@ -301,7 +301,10 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
-			deadline.Dispose();
+			// Caller cancelled: hand the still-running provider to the same detached
+			// abandon/observe/dispose path as the timeout case, so we never dispose the CTS
+			// while the provider still holds its token.
+			AbandonProvider(deadline, providerTask);
 			throw;
 		}
 		catch (TimeoutException)
