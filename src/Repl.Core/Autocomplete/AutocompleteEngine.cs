@@ -1195,17 +1195,12 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
-		// Providers complete parameter VALUES; an option-prefix token is normally asking for
-		// option names — EXCEPT the bare transitional "-": route resolution binds a
-		// dash-prefixed token to an unfilled positional (target == "-prod"), so providers
-		// stay eligible and the per-candidate constraint check below is the only filter (a
-		// value the segment accepts is a valid positional; option names keep their own menu).
-		var transitionalDash = currentTokenPrefix is "-";
-		if (IsOptionPrefixToken(currentTokenPrefix) && !transitionalDash)
-		{
-			return [];
-		}
-
+		// A dash-prefixed token is NOT excluded here: route resolution binds a dash-prefixed
+		// token to an unfilled positional ('deploy -prod' → target == "-prod"), so as long as
+		// a positional target is open at this index the provider stays eligible — for the bare
+		// '-', a partial '-pr', or a full '-prod'. Target resolution (only routes with a
+		// dynamic segment here) and the per-candidate constraint check are the filters; option
+		// NAMES keep their own separate menu, so the position's ambiguity surfaces both.
 		var targets = ResolvePositionalCompletionTargets(
 			matchingRoutes, commandPrefix, prefixComparison, parsingOptions);
 		if (targets.Count == 0)

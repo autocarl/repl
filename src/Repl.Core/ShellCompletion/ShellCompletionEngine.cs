@@ -83,7 +83,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		}
 
 		await AddShellPositionalProviderCandidatesAsync(
-				resolution, activeGraph, currentTokenPrefix, currentTokenIsOption, shell, serviceProvider, dedupe, candidates, cancellationToken)
+				resolution, activeGraph, currentTokenPrefix, shell, serviceProvider, dedupe, candidates, cancellationToken)
 			.ConfigureAwait(false);
 		AddShellCommandAndOptionCandidates(
 			resolution, activeGraph, currentTokenPrefix, currentTokenIsOption, hasTerminalRoute, dedupe, candidates);
@@ -115,20 +115,18 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		ShellResolution resolution,
 		ActiveRoutingGraph activeGraph,
 		string currentTokenPrefix,
-		bool currentTokenIsOption,
 		ShellKind shell,
 		IServiceProvider serviceProvider,
 		HashSet<string> dedupe,
 		List<string> candidates,
 		CancellationToken cancellationToken)
 	{
-		// The bare transitional "-" keeps providers eligible: routing binds a dash-prefixed
-		// token to an unfilled positional (target == "-prod"), so any candidate the segment
-		// constraint accepts is valid — the per-candidate constraint check below is the
-		// filter, not a signed-numeric restriction.
-		var transitionalDash = currentTokenPrefix is "-";
-		if ((currentTokenIsOption && !transitionalDash)
-			|| resolution.Match is { RemainingTokens.Count: > 0 })
+		// A dash-prefixed token stays eligible: routing binds it to an unfilled positional
+		// ('deploy -prod' → target == "-prod") for the bare '-', a partial '-pr', or a full
+		// '-prod'. Target resolution + the per-candidate constraint check are the filters;
+		// option NAMES keep their own menu. Once the terminal route carries trailing option
+		// tokens, no positional remains open, so nothing is offered here.
+		if (resolution.Match is { RemainingTokens.Count: > 0 })
 		{
 			return;
 		}

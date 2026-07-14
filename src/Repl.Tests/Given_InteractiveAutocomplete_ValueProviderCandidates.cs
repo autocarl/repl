@@ -551,6 +551,41 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 	}
 
 	[TestMethod]
+	[Description("The dash-prefixed eligibility extends beyond the first character: typing 'deploy -pr' still invokes the provider (routing binds '-prod' to the string {target}), so completion does not vanish once the user types past the bare '-'.")]
+	public async Task When_TypingPartialDashPrefixedValue_Then_ProviderStillCompletes()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion("target", static (_, input, _) => ValueTask.FromResult<IReadOnlyList<string>>(
+				[.. s_dashTargets.Where(v => v.StartsWith(input, StringComparison.Ordinal))]))
+			.WithDescription("Deploy.");
+
+		var result = await ResolveAutocompleteAsync(sut, "deploy -pr").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("-prod",
+			because: "a dash-prefixed positional stays provider-eligible past the first character");
+	}
+
+	[TestMethod]
+	[Description("Shell parity for a partial dash-prefixed value: 'app deploy -pr' offers '-prod'.")]
+	public async Task When_TypingPartialDashPrefixedValue_Then_ShellProviderStillCompletes()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("deploy {target}", static string (string target) => target)
+			.WithCompletion(
+				"target",
+				static (_, input, _) => ValueTask.FromResult<IReadOnlyList<string>>(
+					[.. s_dashTargets.Where(v => v.StartsWith(input, StringComparison.Ordinal))]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Deploy.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app deploy -pr").ConfigureAwait(false);
+
+		candidates.Should().Contain("-prod");
+	}
+
+	[TestMethod]
 	[Description("Shell parity: 'app deploy -' on 'deploy {target}' offers the shell-scoped provider's dash-prefixed string value '-prod'.")]
 	public async Task When_TypingBareDashForStringPositional_Then_ShellProviderValueIsOffered()
 	{
@@ -607,6 +642,7 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 		candidates.Should().NotContain("@payload").And.NotContain("alpha,beta");
 	}
 
+	private static readonly string[] s_dashTargets = ["-prod", "-staging"];
 	private static readonly string[] s_intIds = ["42", "77"];
 	private static readonly string[] s_names = ["alice", "bob"];
 
