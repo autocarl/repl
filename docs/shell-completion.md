@@ -204,7 +204,15 @@ $__replCompleter = {
         'myapp'
     }
 
-    & $invokedCommand completion __complete --shell powershell --line $commandAst.ToString() --cursor $cursorPosition --no-interactive --no-logo |
+    # Rebuild the line and pad it to the cursor: $commandAst drops trailing
+    # whitespace, so an empty value position ('myapp deploy ') would otherwise be
+    # analyzed as the previous token.
+    $replLine = $commandAst.Extent.Text
+    $replCursor = $cursorPosition - $commandAst.Extent.StartOffset
+    if ($replCursor -lt 0) { $replCursor = 0 }
+    if ($replLine.Length -lt $replCursor) { $replLine = $replLine.PadRight($replCursor) }
+
+    & $invokedCommand completion __complete --shell powershell --line $replLine --cursor $replCursor --no-interactive --no-logo |
         ForEach-Object {
             [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
         }
