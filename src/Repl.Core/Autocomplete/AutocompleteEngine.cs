@@ -1287,7 +1287,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 	// unconstrained {count} whose handler takes int leaves the segment as String, so the
 	// constraint check alone would offer "abc". Validate the candidate against the handler
 	// parameter's type too (matched by segment name). Shared by both surfaces.
-	internal static bool CandidateBindsToHandlerParameter(
+	internal bool CandidateBindsToHandlerParameter(
 		RouteDefinition route,
 		string segmentName,
 		string candidate,
@@ -1297,20 +1297,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		var parameter = Array.Find(
 			route.Command.Handler.Method.GetParameters(),
 			p => string.Equals(p.Name, segmentName, StringComparison.OrdinalIgnoreCase));
-		if (parameter is null)
-		{
-			return true;
-		}
-
-		// A parameter that HandlerArgumentBinder binds BEFORE consulting route values never
-		// receives the route value, so its type must not gate the candidate: a CancellationToken
-		// or a parameter with an explicit binding direction ([FromContext]/[FromServices]) is
-		// bound from the token / context / DI regardless of the segment value (the value is simply
-		// unused). Validating a string id against, say, an injected service type would wrongly drop
-		// every candidate. Mirrors the binder's precedence.
-		if (parameter.ParameterType == typeof(CancellationToken)
-			|| parameter.GetCustomAttributes(typeof(FromContextAttribute), inherit: true).Length > 0
-			|| parameter.GetCustomAttributes(typeof(FromServicesAttribute), inherit: true).Length > 0)
+		if (parameter is null || BindsBeforeRouteValues(parameter))
 		{
 			return true;
 		}
@@ -1334,6 +1321,20 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		return ParameterValueConverter.CanConvert(
 			candidate, parameter.ParameterType, numericFormatProvider, enumIgnoreCase, unwrapCollections: false);
 	}
+
+	// True when HandlerArgumentBinder.BindParameter would bind this parameter BEFORE consulting
+	// context.RouteValues, so the route value is never used for it and its type must not gate the
+	// candidate. Mirrors that method's pre-route precedence exactly: CancellationToken, an explicit
+	// binding direction ([FromContext]/[FromServices]), a typed global-options parameter
+	// (UseGlobalOptions<T>), and a [ReplOptionsGroup] parameter. Framework-injected services
+	// (IServiceProvider, ICoreReplApp, ...) are deliberately NOT here — the binder consults route
+	// values BEFORE them, so a segment homonym does bind (and fail) exactly as completion predicts.
+	private bool BindsBeforeRouteValues(System.Reflection.ParameterInfo parameter) =>
+		parameter.ParameterType == typeof(CancellationToken)
+		|| parameter.GetCustomAttributes(typeof(FromContextAttribute), inherit: true).Length > 0
+		|| parameter.GetCustomAttributes(typeof(FromServicesAttribute), inherit: true).Length > 0
+		|| app.ImplicitServiceParameters.TryGetGlobalOptionsServiceType(parameter.ParameterType, out _)
+		|| Attribute.IsDefined(parameter.ParameterType, typeof(ReplOptionsGroupAttribute), inherit: true);
 
 	internal bool CandidateBindsToProviderRoute(
 		string[] commandPrefix,

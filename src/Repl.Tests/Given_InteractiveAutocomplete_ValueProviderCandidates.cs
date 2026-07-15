@@ -1261,9 +1261,72 @@ public sealed class Given_InteractiveAutocomplete_ValueProviderCandidates
 			because: "the route value is ignored for the [FromServices] parameter, so the candidate binds");
 	}
 
+	[TestMethod]
+	[Description("Shell parity for the ambient shadow, scoped to the CLI-preempted set: a shell-scoped root provider value equal to a CLI ambient ('complete' any-count, 'exit'/'..' at a single token) is dropped, because a non-interactive run dispatches those first tokens before routing. Tokens the CLI does NOT preempt (e.g. a plain value) still bind and complete.")]
+	public async Task When_ShellProviderValueShadowedByCliAmbient_Then_ItIsNotOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("{name}", static string (string name) => name)
+			.WithCompletion(
+				"name",
+				static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["complete", "exit", "..", "zebra"]),
+				CompletionProviderScope.InteractiveAndShell)
+			.WithDescription("Name.");
+		var shellEngine = new ShellCompletionEngine(sut);
+
+		var candidates = await ResolveShellCandidatesAsync(shellEngine, "app z").ConfigureAwait(false);
+
+		candidates.Should().NotContain("complete", because: "'complete' is dispatched as the CLI completion ambient before routing");
+		candidates.Should().NotContain("exit", because: "'exit' is a CLI ambient at a single first token");
+		candidates.Should().NotContain("..", because: "'..' is a CLI ambient at a single first token");
+		candidates.Should().Contain("zebra", because: "a non-ambient value still binds to the first dynamic segment");
+	}
+
+	[TestMethod]
+	[Description("A dynamic segment sharing its name with a [ReplOptionsGroup] handler parameter (bound before route values) must not have provider candidates validated against the group type: 'use {opts}' with (UseOptionsGroup opts) ignores the route value, so a normal string is offered.")]
+	public async Task When_SegmentNameMatchesOptionsGroupParam_Then_ValueIsStillOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map("use {opts}", static string (UseOptionsGroup opts) => opts.Marker ?? "none")
+			.WithCompletion("opts", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["client-1"]))
+			.WithDescription("Use.");
+
+		var result = await ResolveAutocompleteAsync(sut, "use ").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("client-1",
+			because: "an options-group parameter is bound before route values, so the route value is ignored and any string is valid");
+	}
+
+	[TestMethod]
+	[Description("A dynamic segment sharing its name with a typed global-options handler parameter (UseGlobalOptions<T>, bound before route values) must not have provider candidates validated against T: 'use {tenant}' with (TenantGlobals tenant) injects the typed options and ignores the route value, so a normal string is offered.")]
+	public async Task When_SegmentNameMatchesTypedGlobalOptionsParam_Then_ValueIsStillOffered()
+	{
+		var sut = CoreReplApp.Create();
+		sut.RegisterGlobalOptionsType(typeof(TenantGlobals));
+		sut.Map("use {tenant}", static string (TenantGlobals tenant) => tenant.Name ?? "none")
+			.WithCompletion("tenant", static (_, _, _) => ValueTask.FromResult<IReadOnlyList<string>>(["acme"]))
+			.WithDescription("Use.");
+
+		var result = await ResolveAutocompleteAsync(sut, "use ").ConfigureAwait(false);
+
+		result.Suggestions.Select(static s => s.Value).Should().Contain("acme",
+			because: "a typed global-options parameter is injected before route values, so the route value is ignored");
+	}
+
 	private interface IRepo
 	{
 		string Marker { get; }
+	}
+
+	[ReplOptionsGroup]
+	private sealed class UseOptionsGroup
+	{
+		public string? Marker { get; init; }
+	}
+
+	private sealed class TenantGlobals
+	{
+		public string? Name { get; init; }
 	}
 
 	private enum ProbeMode

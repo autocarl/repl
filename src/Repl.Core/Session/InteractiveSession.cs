@@ -411,6 +411,21 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			|| ambientCommands.CustomCommands.ContainsKey(token);
 	}
 
+	// The SUBSET of first-token ambients that a NON-INTERACTIVE run preempts before routing (see
+	// CoreReplApp.Execution: TryHandleCompletionCommandAsync handles 'complete' at any count;
+	// TryHandleAmbientInNonInteractiveAsync handles 'exit'/'..' at a single token). Used by the
+	// shell bridge, whose completed command runs non-interactively. Bare 'help'/'?' is NOT here —
+	// only the '--help' flag sets HelpRequested in the CLI path — nor are the interactive-only
+	// 'autocomplete'/'history'/custom ambients, so those still bind as route values on the CLI.
+	internal static bool IsCliAmbientFirstToken(string token)
+	{
+		ArgumentNullException.ThrowIfNull(token);
+
+		return string.Equals(token, CompleteAmbientToken, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(token, ExitAmbientToken, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(token, UpAmbientToken, StringComparison.Ordinal);
+	}
+
 	/// <summary>
 	/// Single authority for "is this input handled as an ambient command?", consulted by
 	/// both <see cref="CommittedInputResolver"/> (via the injected predicate) and

@@ -185,6 +185,11 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			.ConfigureAwait(false);
 		var parsing = app.OptionsSnapshot.Parsing;
 		var numericFormatProvider = parsing.NumericFormatProvider ?? System.Globalization.CultureInfo.InvariantCulture;
+		// A value at the FIRST token position that equals a CLI ambient (complete/exit/..) is
+		// dispatched before routing on the non-interactive run the bridge completes for, so it can
+		// never bind to a route value. Only the CLI-preempted subset applies here (the interactive
+		// menu additionally shadows help/autocomplete/history/custom, which the CLI does not).
+		var atFirstToken = commandPrefix.Length == 0;
 		foreach (var value in provided ?? [])
 		{
 			// Parity per candidate: the segment constraint AND the handler parameter type must
@@ -197,7 +202,8 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			if (!string.IsNullOrWhiteSpace(value)
 				&& IsShellSafeCandidate(value)
 				&& RouteConstraintEvaluator.IsMatch(target.Segment, value, parsing)
-				&& AutocompleteEngine.CandidateBindsToHandlerParameter(target.Route, target.Segment.Name, value, numericFormatProvider, parsing.OptionCaseSensitivity)
+				&& !(atFirstToken && InteractiveSession.IsCliAmbientFirstToken(value))
+				&& app.Autocomplete.CandidateBindsToHandlerParameter(target.Route, target.Segment.Name, value, numericFormatProvider, parsing.OptionCaseSensitivity)
 				&& app.Autocomplete.CandidateBindsToProviderRoute(commandPrefix, value, target.Route, activeGraph)
 				&& QuoteValueForShell(value, shell) is { } insertion
 				&& valueDedupe.Add(insertion))
