@@ -26,6 +26,26 @@ public static class GlobalOptionsExtensions
 
 		var parsing = app.Core.OptionsSnapshot.Parsing;
 		var properties = GetOptionProperties<T>();
+
+		// Typed global options do not flow per-option CaseSensitivity/Arity overrides into
+		// AddGlobalOptionCore (the global-option pipeline has no per-option override concept
+		// yet). Fail fast instead of silently discarding a now-settable override.
+		foreach (var property in properties)
+		{
+			var optionAttr = property.GetCustomAttribute<ReplOptionAttribute>();
+			if (optionAttr?.CaseSensitivityOverride is not null)
+			{
+				throw new NotSupportedException(
+					$"Global option property '{typeof(T).Name}.{property.Name}' declares a CaseSensitivity override, which is not supported for typed global options.");
+			}
+
+			if (optionAttr?.ArityOverride is not null)
+			{
+				throw new NotSupportedException(
+					$"Global option property '{typeof(T).Name}.{property.Name}' declares an Arity override, which is not supported for typed global options.");
+			}
+		}
+
 		app.Options(options =>
 		{
 			var prototype = new T();

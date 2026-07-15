@@ -202,7 +202,7 @@ internal static class InvocationOptionParser
 				diagnostics);
 		}
 
-		ValidateArityAndConflicts(schema, namedOptions, diagnostics);
+		ValidateArityAndConflicts(schema, namedOptions, options.OptionCaseSensitivity, diagnostics);
 		var readonlyNamedOptions = namedOptions.ToDictionary(
 			pair => pair.Key,
 			pair => (IReadOnlyList<string>)pair.Value,
@@ -440,6 +440,7 @@ internal static class InvocationOptionParser
 	private static void ValidateArityAndConflicts(
 		OptionSchema schema,
 		Dictionary<string, List<string>> namedOptions,
+		ReplCaseSensitivity globalCaseSensitivity,
 		List<ParseDiagnostic> diagnostics)
 	{
 		foreach (var parameter in schema.Parameters.Values)
@@ -451,7 +452,7 @@ internal static class InvocationOptionParser
 
 			ValidateTooManyValues(schema, parameter, values, diagnostics);
 			ValidateBooleanConflicts(parameter, values, diagnostics);
-			ValidateEnumConflicts(parameter, values, diagnostics);
+			ValidateEnumConflicts(parameter, values, globalCaseSensitivity, diagnostics);
 		}
 	}
 
@@ -504,6 +505,7 @@ internal static class InvocationOptionParser
 	private static void ValidateEnumConflicts(
 		OptionSchemaParameter parameter,
 		List<string> values,
+		ReplCaseSensitivity globalCaseSensitivity,
 		List<ParseDiagnostic> diagnostics)
 	{
 		var effectiveType = Nullable.GetUnderlyingType(parameter.ParameterType) ?? parameter.ParameterType;
@@ -512,7 +514,9 @@ internal static class InvocationOptionParser
 			return;
 		}
 
-		var comparer = parameter.CaseSensitivity == ReplCaseSensitivity.CaseSensitive
+		// Unset per-option override falls back to the global default, matching every other
+		// effective-case resolution site (OptionSchema.ResolveToken, HandlerArgumentBinder, ...).
+		var comparer = (parameter.CaseSensitivity ?? globalCaseSensitivity) == ReplCaseSensitivity.CaseSensitive
 			? StringComparer.Ordinal
 			: StringComparer.OrdinalIgnoreCase;
 		if (!values.Distinct(comparer).Skip(1).Any())

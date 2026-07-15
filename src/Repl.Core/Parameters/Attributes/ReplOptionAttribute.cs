@@ -28,13 +28,15 @@ public sealed class ReplOptionAttribute : Attribute
 
 	// Nullable enums are not legal attribute named arguments (CS0655), so the optional
 	// overrides expose a non-nullable property and track the unset state in a nullable
-	// backing field surfaced through the internal *Override properties.
+	// backing field surfaced through the read-only *Override properties.
 	private ReplCaseSensitivity? _caseSensitivity;
 	private ReplArity? _arity;
 
 	/// <summary>
 	/// Optional case-sensitivity override for this option.
-	/// Only an explicit assignment overrides the global parsing default.
+	/// Only an explicit assignment overrides the global parsing default; when unset, the getter
+	/// returns the enum default and does not reflect the effective behavior — read
+	/// <see cref="CaseSensitivityOverride"/> to distinguish unset from an explicit value.
 	/// </summary>
 	public ReplCaseSensitivity CaseSensitivity
 	{
@@ -45,11 +47,13 @@ public sealed class ReplOptionAttribute : Attribute
 	/// <summary>
 	/// Explicit case-sensitivity override, or null to inherit the global default.
 	/// </summary>
-	internal ReplCaseSensitivity? CaseSensitivityOverride => _caseSensitivity;
+	public ReplCaseSensitivity? CaseSensitivityOverride => _caseSensitivity;
 
 	/// <summary>
 	/// Optional arity override.
-	/// Only an explicit assignment overrides the arity inferred from the parameter shape.
+	/// Only an explicit assignment overrides the arity inferred from the parameter shape; when
+	/// unset, the getter returns the enum default and does not reflect the effective arity — read
+	/// <see cref="ArityOverride"/> to distinguish unset from an explicit value.
 	/// </summary>
 	public ReplArity Arity
 	{
@@ -60,5 +64,5 @@ public sealed class ReplOptionAttribute : Attribute
 	/// <summary>
 	/// Explicit arity override, or null to use the arity inferred from the parameter shape.
 	/// </summary>
-	internal ReplArity? ArityOverride => _arity;
+	public ReplArity? ArityOverride => _arity;
 }
