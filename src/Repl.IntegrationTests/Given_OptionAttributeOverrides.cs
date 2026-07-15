@@ -200,4 +200,53 @@ public sealed class Given_OptionAttributeOverrides
 
 		act.Should().Throw<NotSupportedException>().WithMessage("*CaseSensitivity*");
 	}
+
+	[TestMethod]
+	[Description("Guards collision validation against false positives newly reachable through issue #57: under a global CaseInsensitive default, two options explicitly marked CaseSensitive whose tokens differ only by casing are distinguishable ordinally at resolution time, so registration must accept them and route each token to its own parameter.")]
+	public void When_TwoExplicitlyCaseSensitiveOptionsDifferOnlyByCase_Then_RegistrationAndResolutionSucceed()
+	{
+		var sut = ReplApp.Create()
+			.Options(options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive);
+		sut.Map(
+			"cfg",
+			([ReplOption(Name = "mode", CaseSensitivity = ReplCaseSensitivity.CaseSensitive)] string lower = "ga",
+			 [ReplOption(Name = "MODE", CaseSensitivity = ReplCaseSensitivity.CaseSensitive)] string upper = "bu") => $"lower={lower};upper={upper}");
+
+		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["cfg", "--MODE", "zo", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("lower=ga;upper=zo");
+	}
+
+	[TestMethod]
+	[Description("Guards the OneOrMore lower bound newly reachable through issue #57: an option with an explicit OneOrMore arity invoked without any value (named or positional) must fail with an arity diagnostic instead of invoking the handler with a missing value.")]
+	public void When_OneOrMoreArityOptionIsAbsent_Then_BindingFailsWithoutInvokingHandler()
+	{
+		var invoked = false;
+		var sut = ReplApp.Create();
+		sut.Map("echo", ([ReplOption(Arity = ReplArity.OneOrMore)] string[] items) =>
+		{
+			invoked = true;
+			return string.Join(',', items);
+		});
+
+		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "--no-logo"]));
+
+		output.ExitCode.Should().Be(1);
+		output.Text.Should().Contain("requires at least one value");
+		invoked.Should().BeFalse();
+	}
+
+	[TestMethod]
+	[Description("Guards the boundary of the OneOrMore lower bound: values consumed positionally satisfy the arity, so the absence check must run only after both named and positional binding attempts — not at option-parse time, which cannot see positional consumption.")]
+	public void When_OneOrMoreArityOptionReceivesPositionalValues_Then_BindingSucceeds()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("echo", ([ReplOption(Arity = ReplArity.OneOrMore)] string[] items) => string.Join(',', items));
+
+		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "ga", "bu", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("ga,bu");
+	}
 }

@@ -529,13 +529,8 @@ internal static class InvocationOptionParser
 			$"Option '--{parameter.Name}' received multiple enum values in a single invocation."));
 	}
 
-	private static ReplArity ResolveParameterArity(OptionSchema schema, string parameterName)
-	{
-		var entry = schema.Entries.FirstOrDefault(candidate =>
-			string.Equals(candidate.ParameterName, parameterName, StringComparison.OrdinalIgnoreCase)
-			&& candidate.TokenKind is OptionSchemaTokenKind.NamedOption or OptionSchemaTokenKind.BoolFlag);
-		return entry?.Arity ?? ReplArity.ZeroOrMore;
-	}
+	private static ReplArity ResolveParameterArity(OptionSchema schema, string parameterName) =>
+		schema.ResolveParameterArity(parameterName);
 
 	private static List<string> ExpandResponseFiles(
 		IReadOnlyList<string> tokens,

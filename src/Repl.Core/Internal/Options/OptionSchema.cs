@@ -50,4 +50,16 @@ internal sealed class OptionSchema
 
 	public bool TryGetParameter(string parameterName, out OptionSchemaParameter parameter) =>
 		Parameters.TryGetValue(parameterName, out parameter!);
+
+	/// <summary>
+	/// Effective arity of a parameter, resolved from its named-option/flag entry;
+	/// parameters without such an entry default to the permissive <see cref="ReplArity.ZeroOrMore"/>.
+	/// </summary>
+	public ReplArity ResolveParameterArity(string parameterName)
+	{
+		var entry = Entries.FirstOrDefault(candidate =>
+			string.Equals(candidate.ParameterName, parameterName, StringComparison.OrdinalIgnoreCase)
+			&& candidate.TokenKind is OptionSchemaTokenKind.NamedOption or OptionSchemaTokenKind.BoolFlag);
+		return entry?.Arity ?? ReplArity.ZeroOrMore;
+	}
 }

@@ -118,6 +118,16 @@ internal static class HandlerArgumentBinder
 			return positionalValue;
 		}
 
+		// The OneOrMore lower bound can only be enforced here, after BOTH the named and the
+		// positional binding attempts came up empty — option parsing alone cannot see values
+		// the parameter would have consumed positionally.
+		if (isUserOption
+			&& context.OptionSchema.ResolveParameterArity(parameterName) == ReplArity.OneOrMore)
+		{
+			throw new InvalidOperationException(
+				$"Option '--{parameterName}' requires at least one value.");
+		}
+
 		if (parameter.HasDefaultValue)
 		{
 			return parameter.DefaultValue;

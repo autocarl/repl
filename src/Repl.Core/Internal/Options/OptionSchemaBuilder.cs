@@ -551,27 +551,46 @@ internal static class OptionSchemaBuilder
 		IReadOnlyList<OptionSchemaEntry> entries,
 		ParsingOptions parsingOptions)
 	{
-		var comparer = parsingOptions.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
-			? StringComparer.OrdinalIgnoreCase
-			: StringComparer.Ordinal;
-		var map = new Dictionary<string, OptionSchemaEntry>(comparer);
+		// Collisions are decided per PAIR under each entry's effective case sensitivity, not
+		// under the global comparer alone: ordinal-equal tokens always collide, while tokens
+		// differing only by casing collide only when BOTH entries are effectively
+		// case-insensitive (full mutual shadowing — no typed token can distinguish them).
+		// Two explicitly case-sensitive entries stay distinguishable ordinally even under a
+		// global case-insensitive default, and a mixed pair keeps per-token runtime
+		// resolution (the parser's "Ambiguous option" diagnostic) instead of failing
+		// registration. Buckets are keyed ignoring case to surface every candidate pair.
+		var map = new Dictionary<string, List<OptionSchemaEntry>>(StringComparer.OrdinalIgnoreCase);
 		foreach (var entry in entries)
 		{
-			if (!map.TryGetValue(entry.Token, out var existing))
+			if (!map.TryGetValue(entry.Token, out var bucket))
 			{
-				map[entry.Token] = entry;
+				map[entry.Token] = [entry];
 				continue;
 			}
 
-			if (string.Equals(existing.ParameterName, entry.ParameterName, StringComparison.OrdinalIgnoreCase)
-				&& existing.TokenKind == entry.TokenKind
-				&& string.Equals(existing.InjectedValue, entry.InjectedValue, StringComparison.Ordinal))
+			foreach (var existing in bucket)
 			{
-				continue;
+				var ordinalEqual = string.Equals(existing.Token, entry.Token, StringComparison.Ordinal);
+				var bothInsensitive =
+					(existing.CaseSensitivity ?? parsingOptions.OptionCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive
+					&& (entry.CaseSensitivity ?? parsingOptions.OptionCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive;
+				if (!ordinalEqual && !bothInsensitive)
+				{
+					continue;
+				}
+
+				if (string.Equals(existing.ParameterName, entry.ParameterName, StringComparison.OrdinalIgnoreCase)
+					&& existing.TokenKind == entry.TokenKind
+					&& string.Equals(existing.InjectedValue, entry.InjectedValue, StringComparison.Ordinal))
+				{
+					continue;
+				}
+
+				throw new InvalidOperationException(
+					$"Option token collision detected for '{entry.Token}' between '{existing.ParameterName}' and '{entry.ParameterName}'.");
 			}
 
-			throw new InvalidOperationException(
-				$"Option token collision detected for '{entry.Token}' between '{existing.ParameterName}' and '{entry.ParameterName}'.");
+			bucket.Add(entry);
 		}
 	}
 }
