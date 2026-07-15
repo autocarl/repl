@@ -29,8 +29,25 @@ public sealed class ReplValueAliasAttribute : Attribute
 	/// </summary>
 	public string Value { get; }
 
+	// Nullable enums are not legal attribute named arguments (CS0655), so the optional
+	// override exposes a non-nullable property and tracks the unset state in a nullable
+	// backing field surfaced through the read-only CaseSensitivityOverride property.
+	private ReplCaseSensitivity? _caseSensitivity;
+
 	/// <summary>
 	/// Optional case-sensitivity override for this alias.
+	/// Only an explicit assignment overrides the global parsing default; when unset, the getter
+	/// returns the enum default and does not reflect the effective behavior — read
+	/// <see cref="CaseSensitivityOverride"/> to distinguish unset from an explicit value.
 	/// </summary>
-	public ReplCaseSensitivity? CaseSensitivity { get; set; }
+	public ReplCaseSensitivity CaseSensitivity
+	{
+		get => _caseSensitivity ?? default;
+		set => _caseSensitivity = value;
+	}
+
+	/// <summary>
+	/// Explicit case-sensitivity override, or null to inherit the global default.
+	/// </summary>
+	public ReplCaseSensitivity? CaseSensitivityOverride => _caseSensitivity;
 }

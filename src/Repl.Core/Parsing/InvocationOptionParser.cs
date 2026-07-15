@@ -202,7 +202,7 @@ internal static class InvocationOptionParser
 				diagnostics);
 		}
 
-		ValidateArityAndConflicts(schema, namedOptions, diagnostics);
+		ValidateArityAndConflicts(schema, namedOptions, options.OptionCaseSensitivity, diagnostics);
 		var readonlyNamedOptions = namedOptions.ToDictionary(
 			pair => pair.Key,
 			pair => (IReadOnlyList<string>)pair.Value,
@@ -298,6 +298,26 @@ internal static class InvocationOptionParser
 		{
 			index++;
 			value = effectiveTokens[index];
+		}
+
+		// A token naming a KNOWN parameter must stay an inert unknown when its schema entries
+		// rejected it for case-sensitivity reasons: storing it would let the namedOptions
+		// comparer (global) rebind it to that parameter, bypassing the declared casing.
+		// Two shapes reach here: an EXPLICIT CaseSensitive override always wins (even when the
+		// rejected token ordinally equals the CLR parameter name — the renamed-token edge),
+		// and an effectively sensitive parameter drops casing VARIANTS (they were inert under
+		// a global-case-sensitive dictionary anyway). Unconstrained parameters keep the
+		// documented permissive bind-by-name behavior. The value token stays consumed.
+		if (schema.TryGetParameter(optionName, out var knownParameter))
+		{
+			var explicitlySensitive = knownParameter.CaseSensitivity == ReplCaseSensitivity.CaseSensitive;
+			var effectivelySensitive =
+				(knownParameter.CaseSensitivity ?? options.OptionCaseSensitivity) == ReplCaseSensitivity.CaseSensitive;
+			var matchesClrName = string.Equals(knownParameter.Name, optionName, StringComparison.Ordinal);
+			if (explicitlySensitive || (effectivelySensitive && !matchesClrName))
+			{
+				return;
+			}
 		}
 
 		AddNamedValue(namedOptions, optionName, value ?? "true");
@@ -440,6 +460,7 @@ internal static class InvocationOptionParser
 	private static void ValidateArityAndConflicts(
 		OptionSchema schema,
 		Dictionary<string, List<string>> namedOptions,
+		ReplCaseSensitivity globalCaseSensitivity,
 		List<ParseDiagnostic> diagnostics)
 	{
 		foreach (var parameter in schema.Parameters.Values)
@@ -451,7 +472,7 @@ internal static class InvocationOptionParser
 
 			ValidateTooManyValues(schema, parameter, values, diagnostics);
 			ValidateBooleanConflicts(parameter, values, diagnostics);
-			ValidateEnumConflicts(parameter, values, diagnostics);
+			ValidateEnumConflicts(parameter, values, globalCaseSensitivity, diagnostics);
 		}
 	}
 
@@ -504,6 +525,7 @@ internal static class InvocationOptionParser
 	private static void ValidateEnumConflicts(
 		OptionSchemaParameter parameter,
 		List<string> values,
+		ReplCaseSensitivity globalCaseSensitivity,
 		List<ParseDiagnostic> diagnostics)
 	{
 		var effectiveType = Nullable.GetUnderlyingType(parameter.ParameterType) ?? parameter.ParameterType;
@@ -512,7 +534,9 @@ internal static class InvocationOptionParser
 			return;
 		}
 
-		var comparer = parameter.CaseSensitivity == ReplCaseSensitivity.CaseSensitive
+		// Unset per-option override falls back to the global default, matching every other
+		// effective-case resolution site (OptionSchema.ResolveToken, HandlerArgumentBinder, ...).
+		var comparer = (parameter.CaseSensitivity ?? globalCaseSensitivity) == ReplCaseSensitivity.CaseSensitive
 			? StringComparer.Ordinal
 			: StringComparer.OrdinalIgnoreCase;
 		if (!values.Distinct(comparer).Skip(1).Any())
@@ -525,13 +549,8 @@ internal static class InvocationOptionParser
 			$"Option '--{parameter.Name}' received multiple enum values in a single invocation."));
 	}
 
-	private static ReplArity ResolveParameterArity(OptionSchema schema, string parameterName)
-	{
-		var entry = schema.Entries.FirstOrDefault(candidate =>
-			string.Equals(candidate.ParameterName, parameterName, StringComparison.OrdinalIgnoreCase)
-			&& candidate.TokenKind is OptionSchemaTokenKind.NamedOption or OptionSchemaTokenKind.BoolFlag);
-		return entry?.Arity ?? ReplArity.ZeroOrMore;
-	}
+	private static ReplArity ResolveParameterArity(OptionSchema schema, string parameterName) =>
+		schema.ResolveParameterArity(parameterName);
 
 	private static List<string> ExpandResponseFiles(
 		IReadOnlyList<string> tokens,

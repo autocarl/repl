@@ -53,7 +53,7 @@ internal static class OptionSchemaBuilder
 		}
 
 		ValidatePositionalBindingCompatibility(regularPositionalParameterNames, groupPositionalPropertyNames);
-		ValidateTokenCollisions(entries, parsingOptions);
+		ValidateTokenCollisions(entries, parsingOptions, template);
 		return new OptionSchema(entries, parameters);
 	}
 
@@ -112,14 +112,15 @@ internal static class OptionSchemaBuilder
 		if (parameters.ContainsKey(parameter.Name!))
 		{
 			throw new InvalidOperationException(
-				$"Option token collision detected for parameter name '{parameter.Name}'.");
+				$"Duplicate parameter name '{parameter.Name}' in the command signature.");
 		}
 
 		parameters[parameter.Name!] = new OptionSchemaParameter(
 			parameter.Name!,
 			parameter.ParameterType,
 			mode,
-			CaseSensitivity: optionAttribute?.CaseSensitivity);
+			CaseSensitivity: optionAttribute?.CaseSensitivityOverride,
+			ExplicitArity: optionAttribute?.ArityOverride);
 		if (mode == ReplParameterMode.ArgumentOnly)
 		{
 			return;
@@ -133,7 +134,7 @@ internal static class OptionSchemaBuilder
 			parameter.Name!,
 			tokenKind,
 			arity,
-			CaseSensitivity: optionAttribute?.CaseSensitivity));
+			CaseSensitivity: optionAttribute?.CaseSensitivityOverride));
 		AppendOptionAliases(parameter, tokenKind, arity, optionAttribute, entries);
 		AppendReverseAliases(parameter, optionAttribute, entries);
 		AppendValueAliases(parameter, optionAttribute, entries);
@@ -168,7 +169,7 @@ internal static class OptionSchemaBuilder
 				parameter.Name!,
 				tokenKind,
 				arity,
-				CaseSensitivity: optionAttribute?.CaseSensitivity));
+				CaseSensitivity: optionAttribute?.CaseSensitivityOverride));
 		}
 	}
 
@@ -185,7 +186,7 @@ internal static class OptionSchemaBuilder
 				parameter.Name!,
 				OptionSchemaTokenKind.ReverseFlag,
 				ReplArity.ZeroOrOne,
-				CaseSensitivity: optionAttribute?.CaseSensitivity,
+				CaseSensitivity: optionAttribute?.CaseSensitivityOverride,
 				InjectedValue: "false"));
 		}
 	}
@@ -203,14 +204,14 @@ internal static class OptionSchemaBuilder
 				parameter.Name!,
 				OptionSchemaTokenKind.ValueAlias,
 				ReplArity.ZeroOrOne,
-				CaseSensitivity: valueAlias.CaseSensitivity ?? optionAttribute?.CaseSensitivity,
+				CaseSensitivity: valueAlias.CaseSensitivityOverride ?? optionAttribute?.CaseSensitivityOverride,
 				InjectedValue: valueAlias.Value));
 		}
 	}
 
 	private static ReplArity ResolveArity(ParameterInfo parameter, ReplOptionAttribute? optionAttribute)
 	{
-		if (optionAttribute?.Arity is { } explicitArity)
+		if (optionAttribute?.ArityOverride is { } explicitArity)
 		{
 			return explicitArity;
 		}
@@ -293,7 +294,7 @@ internal static class OptionSchemaBuilder
 					parameter.Name!,
 					OptionSchemaTokenKind.EnumAlias,
 					ReplArity.ZeroOrOne,
-					CaseSensitivity: enumFlag.CaseSensitivity ?? optionAttribute?.CaseSensitivity,
+					CaseSensitivity: enumFlag.CaseSensitivityOverride ?? optionAttribute?.CaseSensitivityOverride,
 					InjectedValue: field.Name));
 			}
 		}
@@ -405,14 +406,15 @@ internal static class OptionSchemaBuilder
 		if (parameters.ContainsKey(property.Name))
 		{
 			throw new InvalidOperationException(
-				$"Option token collision detected for parameter name '{property.Name}'.");
+				$"Duplicate parameter name '{property.Name}' between options group '{property.DeclaringType?.Name}' and the command signature.");
 		}
 
 		parameters[property.Name] = new OptionSchemaParameter(
 			property.Name,
 			property.PropertyType,
 			mode,
-			CaseSensitivity: optionAttribute?.CaseSensitivity);
+			CaseSensitivity: optionAttribute?.CaseSensitivityOverride,
+			ExplicitArity: optionAttribute?.ArityOverride);
 		if (mode != ReplParameterMode.OptionOnly)
 		{
 			positionalPropertyNames.Add(property.Name);
@@ -430,7 +432,7 @@ internal static class OptionSchemaBuilder
 			property.Name,
 			tokenKind,
 			arity,
-			CaseSensitivity: optionAttribute?.CaseSensitivity));
+			CaseSensitivity: optionAttribute?.CaseSensitivityOverride));
 		AppendPropertyOptionAliases(property.Name, tokenKind, arity, optionAttribute, entries);
 		AppendPropertyReverseAliases(property.Name, optionAttribute, entries);
 		AppendPropertyValueAliases(property, optionAttribute, entries);
@@ -439,7 +441,7 @@ internal static class OptionSchemaBuilder
 
 	private static ReplArity ResolvePropertyArity(Type propertyType, ReplOptionAttribute? optionAttribute)
 	{
-		if (optionAttribute?.Arity is { } explicitArity)
+		if (optionAttribute?.ArityOverride is { } explicitArity)
 		{
 			return explicitArity;
 		}
@@ -472,7 +474,7 @@ internal static class OptionSchemaBuilder
 				propertyName,
 				tokenKind,
 				arity,
-				CaseSensitivity: optionAttribute?.CaseSensitivity));
+				CaseSensitivity: optionAttribute?.CaseSensitivityOverride));
 		}
 	}
 
@@ -489,7 +491,7 @@ internal static class OptionSchemaBuilder
 				propertyName,
 				OptionSchemaTokenKind.ReverseFlag,
 				ReplArity.ZeroOrOne,
-				CaseSensitivity: optionAttribute?.CaseSensitivity,
+				CaseSensitivity: optionAttribute?.CaseSensitivityOverride,
 				InjectedValue: "false"));
 		}
 	}
@@ -507,7 +509,7 @@ internal static class OptionSchemaBuilder
 				property.Name,
 				OptionSchemaTokenKind.ValueAlias,
 				ReplArity.ZeroOrOne,
-				CaseSensitivity: valueAlias.CaseSensitivity ?? optionAttribute?.CaseSensitivity,
+				CaseSensitivity: valueAlias.CaseSensitivityOverride ?? optionAttribute?.CaseSensitivityOverride,
 				InjectedValue: valueAlias.Value));
 		}
 	}
@@ -541,7 +543,7 @@ internal static class OptionSchemaBuilder
 					property.Name,
 					OptionSchemaTokenKind.EnumAlias,
 					ReplArity.ZeroOrOne,
-					CaseSensitivity: enumFlag.CaseSensitivity ?? optionAttribute?.CaseSensitivity,
+					CaseSensitivity: enumFlag.CaseSensitivityOverride ?? optionAttribute?.CaseSensitivityOverride,
 					InjectedValue: field.Name));
 			}
 		}
@@ -549,29 +551,49 @@ internal static class OptionSchemaBuilder
 
 	private static void ValidateTokenCollisions(
 		IReadOnlyList<OptionSchemaEntry> entries,
-		ParsingOptions parsingOptions)
+		ParsingOptions parsingOptions,
+		RouteTemplate template)
 	{
-		var comparer = parsingOptions.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
-			? StringComparer.OrdinalIgnoreCase
-			: StringComparer.Ordinal;
-		var map = new Dictionary<string, OptionSchemaEntry>(comparer);
+		// Collisions are decided per PAIR under each entry's effective case sensitivity, not
+		// under the global comparer alone: ordinal-equal tokens always collide, while tokens
+		// differing only by casing collide only when BOTH entries are effectively
+		// case-insensitive (full mutual shadowing — no typed token can distinguish them).
+		// Two explicitly case-sensitive entries stay distinguishable ordinally even under a
+		// global case-insensitive default, and a mixed pair keeps per-token runtime
+		// resolution (the parser's "Ambiguous option" diagnostic) instead of failing
+		// registration. Buckets are keyed ignoring case to surface every candidate pair.
+		var map = new Dictionary<string, List<OptionSchemaEntry>>(StringComparer.OrdinalIgnoreCase);
 		foreach (var entry in entries)
 		{
-			if (!map.TryGetValue(entry.Token, out var existing))
+			if (!map.TryGetValue(entry.Token, out var bucket))
 			{
-				map[entry.Token] = entry;
+				map[entry.Token] = [entry];
 				continue;
 			}
 
-			if (string.Equals(existing.ParameterName, entry.ParameterName, StringComparison.OrdinalIgnoreCase)
-				&& existing.TokenKind == entry.TokenKind
-				&& string.Equals(existing.InjectedValue, entry.InjectedValue, StringComparison.Ordinal))
+			foreach (var existing in bucket)
 			{
-				continue;
+				var ordinalEqual = string.Equals(existing.Token, entry.Token, StringComparison.Ordinal);
+				var bothInsensitive =
+					(existing.CaseSensitivity ?? parsingOptions.OptionCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive
+					&& (entry.CaseSensitivity ?? parsingOptions.OptionCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive;
+				if (!ordinalEqual && !bothInsensitive)
+				{
+					continue;
+				}
+
+				if (string.Equals(existing.ParameterName, entry.ParameterName, StringComparison.OrdinalIgnoreCase)
+					&& existing.TokenKind == entry.TokenKind
+					&& string.Equals(existing.InjectedValue, entry.InjectedValue, StringComparison.Ordinal))
+				{
+					continue;
+				}
+
+				throw new InvalidOperationException(
+					$"Option token collision detected for '{entry.Token}' between '{existing.ParameterName}' and '{entry.ParameterName}' while registering command '{template.Template}'.");
 			}
 
-			throw new InvalidOperationException(
-				$"Option token collision detected for '{entry.Token}' between '{existing.ParameterName}' and '{entry.ParameterName}'.");
+			bucket.Add(entry);
 		}
 	}
 }

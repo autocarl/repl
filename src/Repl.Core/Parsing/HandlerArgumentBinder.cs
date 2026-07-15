@@ -106,17 +106,29 @@ internal static class HandlerArgumentBinder
 			return resolved;
 		}
 
-		if (bindingMode != ReplParameterMode.OptionOnly
-			&& TryConsumePositional(
-			parameter,
-			context.PositionalArguments,
-			context.NumericFormatProvider,
-			enumIgnoreCase,
-			ref positionalIndex,
-			out var positionalValue))
+		if (bindingMode != ReplParameterMode.OptionOnly)
 		{
-			return positionalValue;
+			var positionalStart = positionalIndex;
+			if (TryConsumePositional(
+				parameter,
+				context.PositionalArguments,
+				context.NumericFormatProvider,
+				enumIgnoreCase,
+				ref positionalIndex,
+				out var positionalValue))
+			{
+				// Positional parity for explicit upper bounds: a collection consumes every
+				// remaining positional, so the named-path arity diagnostics must apply here too.
+				ThrowIfExplicitUpperBoundExceeded(
+					context.OptionSchema, parameterName, positionalIndex - positionalStart);
+				return positionalValue;
+			}
 		}
+
+		// Explicit lower bounds can only be enforced here, after BOTH the named and the
+		// positional binding attempts came up empty — option parsing alone cannot see values
+		// the parameter would have consumed positionally.
+		ThrowIfExplicitLowerBoundUnsatisfied(context.OptionSchema, parameterName);
 
 		if (parameter.HasDefaultValue)
 		{
@@ -131,6 +143,45 @@ internal static class HandlerArgumentBinder
 
 		throw new InvalidOperationException(
 			$"Unable to bind parameter '{parameter.Name}' ({parameter.ParameterType.Name}).");
+	}
+
+	// Only EXPLICIT arity overrides reject absence: inferred ExactlyOne (plain required
+	// scalars) keeps its historical binding behavior, and inferred arities never produce
+	// OneOrMore. ArgumentOnly parameters have no named entry, so the message falls back to
+	// the parameter name instead of a token the parser would not accept.
+	private static void ThrowIfExplicitLowerBoundUnsatisfied(OptionSchema schema, string parameterName)
+	{
+		if (!schema.TryGetParameter(parameterName, out var schemaParameter)
+			|| schemaParameter.ExplicitArity is not (ReplArity.OneOrMore or ReplArity.ExactlyOne))
+		{
+			return;
+		}
+
+		var token = schema.ResolveDisplayToken(parameterName);
+		var subject = token is null ? $"Parameter '{parameterName}'" : $"Option '{token}'";
+		var requirement = schemaParameter.ExplicitArity == ReplArity.OneOrMore
+			? "at least one value"
+			: "exactly one value";
+		throw new InvalidOperationException($"{subject} requires {requirement}.");
+	}
+
+	// Positional twin of the parse-time ValidateTooManyValues: only explicit upper bounds are
+	// enforced (inferred collection arity is ZeroOrMore), and only collections can consume
+	// more than one positional.
+	private static void ThrowIfExplicitUpperBoundExceeded(OptionSchema schema, string parameterName, int consumedCount)
+	{
+		if (consumedCount <= 1
+			|| !schema.TryGetParameter(parameterName, out var schemaParameter)
+			|| schemaParameter.ExplicitArity is not (ReplArity.ZeroOrOne or ReplArity.ExactlyOne))
+		{
+			return;
+		}
+
+		var token = schema.ResolveDisplayToken(parameterName);
+		var subject = token is null ? $"Parameter '{parameterName}'" : $"Option '{token}'";
+		throw new InvalidOperationException(schemaParameter.ExplicitArity == ReplArity.ZeroOrOne
+			? $"{subject} accepts at most one value."
+			: $"{subject} requires exactly one value.");
 	}
 
 	private static bool HasExplicitBindingDirection(System.Reflection.ParameterInfo parameter) =>
@@ -584,17 +635,29 @@ internal static class HandlerArgumentBinder
 				continue;
 			}
 
-			if (bindingMode != ReplParameterMode.OptionOnly
-				&& TryConsumePositionalForProperty(
+			if (bindingMode != ReplParameterMode.OptionOnly)
+			{
+				var positionalStart = positionalIndex;
+				if (TryConsumePositionalForProperty(
 					property,
 					context.PositionalArguments,
 					context.NumericFormatProvider,
 					enumIgnoreCase,
 					ref positionalIndex,
 					out var positionalValue))
-			{
-				property.SetValue(instance, positionalValue);
+				{
+					// Same positional upper-bound parity as the handler-parameter path.
+					ThrowIfExplicitUpperBoundExceeded(
+						context.OptionSchema, propertyName, positionalIndex - positionalStart);
+					property.SetValue(instance, positionalValue);
+					continue;
+				}
 			}
+
+			// Mirrors the handler-parameter path: an explicit lower bound rejects absence
+			// after both named and positional attempts, instead of silently keeping the
+			// property default.
+			ThrowIfExplicitLowerBoundUnsatisfied(context.OptionSchema, propertyName);
 		}
 
 		return instance;
