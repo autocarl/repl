@@ -37,9 +37,17 @@ try {
     }
 
     $developmentVersion = [string](Get-Content -LiteralPath version.json -Raw | ConvertFrom-Json).version
-    if ($developmentVersion -cnotmatch '^\d+\.\d+\.\d+-.+\{height\}') {
-        throw "Expected main to use an explicit development height pattern such as '1.2.0-dev.{height}', but found '$developmentVersion'."
+    $developmentMatch = [regex]::Match(
+        $developmentVersion,
+        '^(?<major>\d+)\.(?<minor>\d+)\.0-dev\.\{height\}$')
+    if (-not $developmentMatch.Success) {
+        throw "Expected main to use exactly 'x.y.0-dev.{height}', but found '$developmentVersion'."
     }
+
+    $majorVersion = $developmentMatch.Groups['major'].Value
+    $minorVersion = $developmentMatch.Groups['minor'].Value
+    $expectedReleaseVersion = "$majorVersion.$minorVersion.0"
+    $servicingVersion = "$majorVersion.$minorVersion"
 
     $planOutput = (Invoke-Native $NbgvCommand prepare-release --format json --what-if) -join "`n"
     $releasePlan = $planOutput | ConvertFrom-Json
@@ -49,13 +57,9 @@ try {
 
     $releaseBranch = [string]$releasePlan.NewBranch.Name
     $releaseVersion = [string]$releasePlan.NewBranch.Version
-    $versionCore = ($releaseVersion -split '-', 2)[0]
-    $versionParts = $versionCore -split '\.'
-    if ($versionParts.Count -lt 2) {
-        throw "Could not derive a major.minor servicing version from '$releaseVersion'."
+    if ($releaseVersion -cne $expectedReleaseVersion) {
+        throw "Expected NBGV to plan release '$expectedReleaseVersion', but it planned '$releaseVersion'."
     }
-
-    $servicingVersion = "$($versionParts[0]).$($versionParts[1])"
 
     $prepareOutput = (Invoke-Native $NbgvCommand prepare-release --format json) -join "`n"
     $preparedRelease = $prepareOutput | ConvertFrom-Json

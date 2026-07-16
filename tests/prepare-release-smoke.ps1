@@ -103,6 +103,58 @@ try {
     $secondPatch = (Invoke-Native $NbgvCommand get-version '--variable=NuGetPackageVersion' '--public-release=true') -join "`n"
     Assert-Equal '1.2.2' $secondPatch 'Next servicing commit should increment the patch version'
 
+    foreach ($invalidVersion in @('1.2.7-dev.{height}', '1.2.0-rc.{height}')) {
+        $invalidRoot = Join-Path ([System.IO.Path]::GetTempPath()) "repl-invalid-release-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $invalidRoot | Out-Null
+
+        Push-Location $invalidRoot
+        try {
+            Invoke-Native git init -b main | Out-Null
+            Invoke-Native git config user.name 'Release Smoke Test' | Out-Null
+            Invoke-Native git config user.email 'release-smoke@example.invalid' | Out-Null
+
+            $invalidConfig = $versionConfig.Clone()
+            $invalidConfig.version = $invalidVersion
+            $invalidConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath version.json
+            'invalid release smoke fixture' | Set-Content -LiteralPath README.md
+            Invoke-Native git add version.json README.md | Out-Null
+            Invoke-Native git commit -m 'Invalid development version' | Out-Null
+
+            $headBefore = (Invoke-Native git rev-parse HEAD) -join "`n"
+            $errorMessage = $null
+            try {
+                & $PrepareReleaseScript -NbgvCommand $NbgvCommand
+            }
+            catch {
+                $errorMessage = $_.Exception.Message
+            }
+
+            if ($null -eq $errorMessage) {
+                throw "Wrapper accepted invalid development version '$invalidVersion'."
+            }
+
+            if ($errorMessage -cnotlike "Expected main to use exactly*") {
+                throw "Unexpected validation error for '$invalidVersion': $errorMessage"
+            }
+
+            $currentBranch = (Invoke-Native git branch --show-current) -join "`n"
+            Assert-Equal 'main' $currentBranch "Invalid version '$invalidVersion' should remain on main"
+
+            $headAfter = (Invoke-Native git rev-parse HEAD) -join "`n"
+            Assert-Equal $headBefore $headAfter "Invalid version '$invalidVersion' should not create commits"
+
+            $releaseBranches = (Invoke-Native git branch --list 'release/*') -join "`n"
+            Assert-Equal '' $releaseBranches "Invalid version '$invalidVersion' should not create a release branch"
+
+            $invalidStatus = (Invoke-Native git status --porcelain) -join "`n"
+            Assert-Equal '' $invalidStatus "Invalid version '$invalidVersion' should leave a clean repository"
+        }
+        finally {
+            Pop-Location
+            Remove-Item -LiteralPath $invalidRoot -Recurse -Force
+        }
+    }
+
     Write-Host 'prepare-release smoke test passed.'
 }
 finally {
