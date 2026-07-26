@@ -4,6 +4,12 @@ namespace Repl;
 
 internal static class GlobalOptionParser
 {
+	// The overwhelming majority of invocations supply no custom global option — reuse one empty,
+	// immutable instance instead of allocating a fresh dictionary on every Parse call to project
+	// nothing into it.
+	private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> EmptyCustomGlobalValues =
+		new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+
 	[SuppressMessage(
 		"Maintainability",
 		"MA0051:Method is too long",
@@ -25,7 +31,7 @@ internal static class GlobalOptionParser
 		var promptAnswers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		var customGlobalValues = new Dictionary<string, List<string>>(tokenComparer);
 		var diagnostics = new List<ParseDiagnostic>();
-		var customTokenMap = BuildCustomTokenMap(parsingOptions.GlobalOptions, tokenComparer);
+		var customTokenMap = BuildCustomTokenOwnership(parsingOptions);
 		var options = new GlobalInvocationOptions(remaining);
 		var optionComparison = parsingOptions.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? StringComparison.OrdinalIgnoreCase
@@ -94,7 +100,6 @@ internal static class GlobalOptionParser
 				ref index,
 				argument,
 				customTokenMap,
-				parsingOptions.GlobalOptions,
 				customGlobalValues))
 			{
 				continue;
@@ -104,14 +109,17 @@ internal static class GlobalOptionParser
 			remainingIndices.Add(index);
 		}
 
-		var readonlyCustomGlobalValues = customGlobalValues.ToDictionary(
-			pair => pair.Key,
-			pair => (IReadOnlyList<string>)pair.Value,
-			StringComparer.OrdinalIgnoreCase);
+		var readonlyCustomGlobalValues = customGlobalValues.Count == 0
+			? EmptyCustomGlobalValues
+			: customGlobalValues.ToDictionary(
+				pair => pair.Key,
+				pair => (IReadOnlyList<string>)pair.Value,
+				StringComparer.OrdinalIgnoreCase);
 		return options with
 		{
 			PromptAnswers = promptAnswers,
 			CustomGlobalNamedOptions = readonlyCustomGlobalValues,
+			CustomGlobalTokenOwnership = customTokenMap,
 			Diagnostics = diagnostics,
 			RemainingTokenIndices = remainingIndices,
 		};
@@ -274,58 +282,49 @@ internal static class GlobalOptionParser
 	private static void AddResultFlowDiagnostic(List<ParseDiagnostic> diagnostics, string message) =>
 		diagnostics.Add(new ParseDiagnostic(ParseDiagnosticSeverity.Error, message));
 
-	// Resolves a custom-global token to the definition the parser would actually use — the
-	// LAST registered definition wins a token/alias collision (BuildCustomTokenMap overwrites),
-	// so callers must not scan definitions independently and pick a different one.
+	// The projection itself is cached on ParsingOptions (invalidated by its own mutators), since
+	// parsing, help, and completion all resolve it — completion on every keystroke.
+	internal static IReadOnlyDictionary<string, GlobalOptionDefinition> BuildCustomTokenOwnership(
+		ParsingOptions parsingOptions)
+	{
+		ArgumentNullException.ThrowIfNull(parsingOptions);
+		return parsingOptions.ResolveCustomTokenOwnership();
+	}
+
 	internal static bool TryResolveCustomGlobalDefinition(
 		string token,
 		ParsingOptions parsingOptions,
-		out GlobalOptionDefinition definition)
-	{
-		definition = null!;
-		var comparer = parsingOptions.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
-			? StringComparer.OrdinalIgnoreCase
-			: StringComparer.Ordinal;
-		var tokenMap = BuildCustomTokenMap(parsingOptions.GlobalOptions, comparer);
-		if (!TryResolveCustomGlobalName(token, tokenMap, out var optionName, out _))
-		{
-			return false;
-		}
+		out GlobalOptionDefinition definition) =>
+		BuildCustomTokenOwnership(parsingOptions).TryGetValue(token, out definition!);
 
-		return parsingOptions.GlobalOptions.TryGetValue(optionName, out definition!);
-	}
-
-	private static Dictionary<string, string> BuildCustomTokenMap(
-		IReadOnlyDictionary<string, GlobalOptionDefinition> definitions,
-		StringComparer comparer)
-	{
-		var tokenMap = new Dictionary<string, string>(comparer);
-		foreach (var definition in definitions.Values)
-		{
-			tokenMap[definition.CanonicalToken] = definition.Name;
-			foreach (var alias in definition.Aliases)
-			{
-				tokenMap[alias] = definition.Name;
-			}
-		}
-
-		return tokenMap;
-	}
+	// Shared by help and completion: a token only belongs to a discoverable surface when the
+	// ownership projection still resolves it back to the SAME definition (ReferenceEquals — the
+	// last-registration-wins rule may have reassigned it to a different one) and neither the
+	// definition nor this specific alias spelling is hidden.
+	internal static bool IsGlobalTokenDiscoverable(
+		string token,
+		GlobalOptionDefinition expectedOwner,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> ownership,
+		ParsingOptions parsingOptions) =>
+		ownership.TryGetValue(token, out var actualOwner)
+		&& ReferenceEquals(actualOwner, expectedOwner)
+		&& !actualOwner.IsHidden
+		&& !parsingOptions.IsGlobalOptionAliasHidden(actualOwner, token);
 
 	private static bool TryParseCustomGlobalOption(
 		IReadOnlyList<string> args,
 		ref int index,
 		string argument,
-		IReadOnlyDictionary<string, string> tokenMap,
-		IReadOnlyDictionary<string, GlobalOptionDefinition> definitions,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> tokenMap,
 		Dictionary<string, List<string>> customGlobalValues)
 	{
-		if (!TryResolveCustomGlobalName(argument, tokenMap, out var optionName, out var inlineValue))
+		if (!TryResolveCustomGlobalDefinition(argument, tokenMap, out var definition, out var inlineValue))
 		{
 			return false;
 		}
 
-		var isBool = definitions.TryGetValue(optionName, out var def) && def.ValueType == typeof(bool);
+		var optionName = definition.Name;
+		var isBool = definition.ValueType == typeof(bool);
 
 		var value = inlineValue;
 		if (value is null && !isBool
@@ -346,13 +345,13 @@ internal static class GlobalOptionParser
 		return true;
 	}
 
-	private static bool TryResolveCustomGlobalName(
+	private static bool TryResolveCustomGlobalDefinition(
 		string argument,
-		IReadOnlyDictionary<string, string> tokenMap,
-		out string optionName,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> tokenMap,
+		out GlobalOptionDefinition definition,
 		out string? inlineValue)
 	{
-		optionName = string.Empty;
+		definition = null!;
 		inlineValue = null;
 		if (!argument.StartsWith('-'))
 		{
@@ -367,12 +366,7 @@ internal static class GlobalOptionParser
 			inlineValue = valuePart;
 		}
 
-		if (!tokenMap.TryGetValue(optionToken, out optionName!))
-		{
-			return false;
-		}
-
-		return true;
+		return tokenMap.TryGetValue(optionToken, out definition!);
 	}
 
 	private static bool IsSignedNumericLiteral(string token) =>

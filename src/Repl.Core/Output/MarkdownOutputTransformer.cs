@@ -488,8 +488,31 @@ internal sealed class MarkdownOutputTransformer : IOutputTransformer
 		builder.AppendLine("- Options:");
 		foreach (var option in options)
 		{
-			builder.Append("  - `--").Append(option.Name).Append("` (")
+			var tokens = option.Aliases
+				.Concat(option.ReverseAliases)
+				.Concat(option.ValueAliases.Select(static alias => alias.Token))
+				.Distinct(StringComparer.Ordinal)
+				.ToArray();
+			var displayTokens = tokens.Length == 0
+				? $"`--{option.Name}`"
+				: string.Join(", ", tokens.Select(static token => $"`{token}`"));
+			builder.Append("  - ").Append(displayTokens).Append(" (")
 				.Append(option.Type).Append(')');
+
+			// Commands print their own Hidden line, and the structured formats get these flags for
+			// free by serializing the record. Markdown formats each field by hand, so without this an
+			// exact-target export would render a hidden option indistinguishably from a public one —
+			// breaking the promise that targeted exports include hidden options *flagged*.
+			if (option.IsHidden)
+			{
+				builder.Append(" [hidden]");
+			}
+
+			if (option.IsAutomationHidden)
+			{
+				builder.Append(" [automation-hidden]");
+			}
+
 			if (!string.IsNullOrWhiteSpace(option.Description))
 			{
 				builder.Append(" - ").Append(option.Description);

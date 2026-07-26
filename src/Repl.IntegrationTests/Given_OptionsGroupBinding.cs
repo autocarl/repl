@@ -16,6 +16,27 @@ public sealed class Given_OptionsGroupBinding
 	}
 
 	[ReplOptionsGroup]
+	public class HiddenOutputOptions
+	{
+		[ReplOption]
+		public string Format { get; set; } = "text";
+
+		[ReplOption(Name = "internal-token", Hidden = true)]
+		public string? InternalToken { get; set; }
+	}
+
+	[ReplOptionsGroup]
+	public class LegacyOutputOptions
+	{
+		[ReplOption(
+			Name = "format",
+			Aliases = ["--OUTPUT-FORMAT"],
+			HiddenAliases = ["--output-format"],
+			CaseSensitivity = ReplCaseSensitivity.CaseInsensitive)]
+		public string Format { get; set; } = "text";
+	}
+
+	[ReplOptionsGroup]
 	public class TestPagingOptions
 	{
 		[ReplOption]
@@ -136,6 +157,58 @@ public sealed class Given_OptionsGroupBinding
 
 		output.ExitCode.Should().Be(0);
 		output.Text.Should().Contain("json:20:5");
+	}
+
+	[TestMethod]
+	[Description("A hidden options-group property is omitted from help while remaining bindable when explicitly provided.")]
+	public void When_OptionsGroupPropertyIsHidden_Then_HelpOmitsItAndExplicitInvocationStillBinds()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("list", (HiddenOutputOptions options) => $"{options.Format}:{options.InternalToken}");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["list", "--help", "--no-logo"]));
+		var invocation = ConsoleCaptureHelper.Capture(() => sut.Run(
+			["list", "--format", "json", "--internal-token", "secret", "--no-logo"]));
+
+		help.ExitCode.Should().Be(0);
+		help.Text.Should().Contain("--format");
+		help.Text.Should().NotContain("--internal-token");
+		invocation.ExitCode.Should().Be(0, invocation.Text);
+		invocation.Text.Should().Contain("json:secret");
+	}
+
+	[TestMethod]
+	[Description("A hidden alias declared on an options-group property remains bindable while help and documentation expose only the canonical token.")]
+	public void When_OptionsGroupPropertyAliasIsHidden_Then_OnlyParsingRetainsIt()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("list", static string (LegacyOutputOptions options) => options.Format);
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["list", "--help", "--no-logo"]));
+		var invocation = ConsoleCaptureHelper.Capture(() => sut.Run(["list", "--output-format", "json", "--no-logo"]));
+		var option = sut.CreateDocumentationModel().Commands.Single().Options.Single();
+
+		help.Text.Should().Contain("--format");
+		help.Text.Should().NotContain("--output-format");
+		help.Text.Should().NotContain("--OUTPUT-FORMAT");
+		invocation.ExitCode.Should().Be(0, invocation.Text);
+		invocation.Text.Should().Contain("json");
+		option.Aliases.Should().Contain("--format");
+		option.Aliases.Should().NotContain("--output-format");
+	}
+
+	[TestMethod]
+	[Description("A fluent Hidden(false) override re-exposes an options-group property hidden by attribute.")]
+	public void When_HiddenAttributeIsOverriddenFluentlyWithFalse_Then_OptionIsVisibleAgain()
+	{
+		var sut = ReplApp.Create();
+		sut.Map("list", (HiddenOutputOptions options) => "ok")
+			.WithOption(nameof(HiddenOutputOptions.InternalToken), static option => option.Hidden(isHidden: false));
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["list", "--help", "--no-logo"]));
+
+		help.ExitCode.Should().Be(0);
+		help.Text.Should().Contain("--internal-token");
 	}
 
 	[TestMethod]

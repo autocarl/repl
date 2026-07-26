@@ -5,8 +5,7 @@ namespace Repl;
 internal sealed class RouteDefinition(
 	RouteTemplate template,
 	CommandBuilder command,
-	int moduleId,
-	OptionSchema optionSchema)
+	int moduleId)
 {
 	public RouteTemplate Template { get; } = template;
 
@@ -14,5 +13,8 @@ internal sealed class RouteDefinition(
 
 	public int ModuleId { get; } = moduleId;
 
-	public OptionSchema OptionSchema { get; } = optionSchema;
+	// Read through to the builder rather than snapshotting: a fluent visibility change after
+	// Map publishes a new schema, and every already-cached routing graph holds these same
+	// RouteDefinition instances — so the change is observed with no cache plumbing.
+	public OptionSchema OptionSchema => Command.OptionSchema;
 }

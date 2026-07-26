@@ -624,7 +624,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 		var comparer = StringComparer.FromComparison(comparison);
 		var tokens = new List<string>();
 		var dedupe = new HashSet<string>(comparer);
-		OptionTokenCompletionSource.CollectGlobalOptionTokens(
+		var customGlobalOwnership = OptionTokenCompletionSource.CollectGlobalOptionTokens(
 			app.OptionsSnapshot, currentTokenPrefix, comparison, dedupe, tokens);
 
 		// Source route options from the single route this prefix resolves to (already
@@ -636,7 +636,8 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			&& commandPrefix.Length == match.Route.Template.Segments.Count)
 		{
 			OptionTokenCompletionSource.CollectRouteOptionTokens(
-				match.Route,
+				match.Route.OptionSchema,
+				customGlobalOwnership,
 				currentTokenPrefix,
 				app.OptionsSnapshot.Parsing.OptionCaseSensitivity,
 				dedupe,
@@ -1592,6 +1593,11 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			pendingOptionToken, app.OptionsSnapshot.Parsing.OptionCaseSensitivity);
 		foreach (var entry in entries)
 		{
+			if (!match.Route.OptionSchema.IsEntryDiscoverable(entry))
+			{
+				continue;
+			}
+
 			// Same keystroke rule as the positional path: providers only run for an explicit
 			// completion request; live-hint refreshes fall through to the static enum fallback.
 			if (providersAllowed

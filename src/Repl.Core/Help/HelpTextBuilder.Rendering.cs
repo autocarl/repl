@@ -15,11 +15,15 @@ internal static partial class HelpTextBuilder
 		new($"{ReplResultFlowOptionNames.Pager}=auto|off|more|inline|full", "Control the integrated pager for human output."),
 	];
 
-	private static string BuildCommandHelp(RouteDefinition[] routes, bool useAnsi, AnsiPalette palette)
+	private static string BuildCommandHelp(
+		RouteDefinition[] routes,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
+		bool useAnsi,
+		AnsiPalette palette)
 	{
 		if (routes.Length == 1)
 		{
-			return BuildSingleCommandHelp(routes[0], useAnsi, palette);
+			return BuildSingleCommandHelp(routes[0], customGlobalOwnership, useAnsi, palette);
 		}
 
 		var rows = routes
@@ -46,7 +50,11 @@ internal static partial class HelpTextBuilder
 		return $"{header}{Environment.NewLine}{table}";
 	}
 
-	private static string BuildSingleCommandHelp(RouteDefinition route, bool useAnsi, AnsiPalette palette)
+	private static string BuildSingleCommandHelp(
+		RouteDefinition route,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
+		bool useAnsi,
+		AnsiPalette palette)
 	{
 		var displayTemplate = FormatRouteTemplate(route.Template);
 		var description = route.Command.Description ?? "No description.";
@@ -54,7 +62,7 @@ internal static partial class HelpTextBuilder
 			? string.Empty
 			: $"{Environment.NewLine}Aliases: {string.Join(", ", route.Command.Aliases)}";
 		var argumentSection = BuildArgumentSection(route, useAnsi, palette);
-		var optionSection = BuildOptionSection(route, useAnsi, palette);
+		var optionSection = BuildOptionSection(route, customGlobalOwnership, useAnsi, palette);
 		var resultFlowSection = BuildResultFlowSection(route, useAnsi, palette);
 		var answerSection = BuildAnswerSection(route, useAnsi, palette);
 		if (!useAnsi)
@@ -141,9 +149,13 @@ internal static partial class HelpTextBuilder
 		return builder.ToString();
 	}
 
-	private static string BuildOptionSection(RouteDefinition route, bool useAnsi, AnsiPalette palette)
+	private static string BuildOptionSection(
+		RouteDefinition route,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
+		bool useAnsi,
+		AnsiPalette palette)
 	{
-		var optionRows = BuildOptionRows(route);
+		var optionRows = BuildOptionRows(route, customGlobalOwnership);
 		if (optionRows.Length == 0)
 		{
 			return string.Empty;
@@ -169,11 +181,13 @@ internal static partial class HelpTextBuilder
 		OptionSchema schema,
 		OptionSchemaParameter schemaParameter,
 		Dictionary<string, ParameterInfo> parameters,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
 		Dictionary<string, (PropertyInfo Property, object DefaultInstance)>? groupProperties = null)
 	{
-		var entries = schema.Entries
+		var entries = schema.DiscoverableEntries
 			.Where(entry =>
 				string.Equals(entry.ParameterName, schemaParameter.Name, StringComparison.OrdinalIgnoreCase)
+				&& !customGlobalOwnership.ContainsKey(entry.Token)
 				&& entry.TokenKind is OptionSchemaTokenKind.NamedOption
 					or OptionSchemaTokenKind.BoolFlag
 					or OptionSchemaTokenKind.ReverseFlag
@@ -260,7 +274,9 @@ internal static partial class HelpTextBuilder
 		];
 	}
 
-	private static HelpRenderEntry[] BuildOptionRows(RouteDefinition route)
+	private static HelpRenderEntry[] BuildOptionRows(
+		RouteDefinition route,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
 	{
 		var parameters = route.Command.Handler.Method.GetParameters()
 			.Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
@@ -281,9 +297,13 @@ internal static partial class HelpTextBuilder
 			}
 		}
 
-		return route.OptionSchema.Parameters.Values
-			.Where(parameter => parameter.Mode != ReplParameterMode.ArgumentOnly)
-			.Select(parameter => BuildOptionRow(route.OptionSchema, parameter, parameters, groupProperties))
+		return route.OptionSchema.DiscoverableParameters
+			.Select(parameter => BuildOptionRow(
+				route.OptionSchema,
+				parameter,
+				parameters,
+				customGlobalOwnership,
+				groupProperties))
 			.Where(row => row is not null)
 			.Select(row => new HelpRenderEntry(row![0], row[1]))
 			.ToArray();
@@ -590,22 +610,30 @@ internal static partial class HelpTextBuilder
 	private static string[][] BuildGlobalOptionRows(ParsingOptions parsingOptions)
 	{
 		ArgumentNullException.ThrowIfNull(parsingOptions);
+
+		// Visibility is decided per TOKEN, not per definition: GlobalOptionParser gives a colliding
+		// token to the LAST registration. Build that ownership once, then keep a token only on the
+		// exact definition that owns it and only when that owner is visible. The canonical token has
+		// no special weight: a definition whose canonical token was claimed elsewhere may still be
+		// reachable through an alias nobody took.
+		var ownership = GlobalOptionParser.BuildCustomTokenOwnership(parsingOptions);
 		var customRows = parsingOptions.GlobalOptions.Values
 			.OrderBy(option => option.Name, StringComparer.OrdinalIgnoreCase)
-			.Select(option =>
+			.Select(option => new
 			{
-				var aliases = option.Aliases.Count == 0
-					? string.Empty
-					: $", {string.Join(", ", option.Aliases)}";
-				var description = string.IsNullOrWhiteSpace(option.Description)
+				Option = option,
+				OwnedTokens = option.Aliases
+					.Prepend(option.CanonicalToken)
+					.Where(token => GlobalOptionParser.IsGlobalTokenDiscoverable(token, option, ownership, parsingOptions))
+					.ToArray(),
+			})
+			.Where(static row => row.OwnedTokens.Length > 0)
+			.Select(static row => new[]
+			{
+				string.Join(", ", row.OwnedTokens),
+				string.IsNullOrWhiteSpace(row.Option.Description)
 					? "Custom global option."
-					: option.Description;
-
-				return new[]
-				{
-					$"{option.CanonicalToken}{aliases}",
-					description,
-				};
+					: row.Option.Description,
 			});
 		return [.. BuiltInGlobalOptionRows.Concat(customRows)];
 	}

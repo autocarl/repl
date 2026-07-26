@@ -224,6 +224,122 @@ public sealed class Given_CommandBuilderEnrichment
 	}
 
 	[TestMethod]
+	[Description("An option hidden through the fluent builder disappears from the aggregate documentation model — the model MCP builds — but survives, flagged, when its command is targeted explicitly. That mirrors how a hidden command behaves and gives an app author the only way to inventory hidden options.")]
+	public void When_CommandOptionIsHiddenFluently_Then_OnlyTheAggregateModelOmitsIt()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+			"deploy",
+			([ReplOption] string environment, [ReplOption] bool internalMode = false) => $"{environment}:{internalMode}")
+			.WithOption("internalMode", static option => option.Hidden());
+
+		var aggregate = sut.CreateDocumentationModel().Commands.Should().ContainSingle().Which;
+		var targeted = sut.CreateDocumentationModel("deploy").Commands.Should().ContainSingle().Which;
+
+		aggregate.Options.Should().ContainSingle(option => option.Name == "environment");
+		aggregate.Options.Should().NotContain(option => option.Name == "internalMode");
+		targeted.Options.Should().Contain(option => option.Name == "environment" && !option.IsHidden);
+		targeted.Options.Should().Contain(option => option.Name == "internalMode" && option.IsHidden);
+	}
+
+	[TestMethod]
+	[Description("Hiding an option after Map publishes a new option schema rather than mutating one, so this asserts the parsing contract survives the swap: the accepted tokens and the resolved arity must be byte-identical before and after, while only the discovery projection changes. Without this, a future change to the swap could silently narrow what the parser accepts.")]
+	public void When_OptionIsHiddenFluently_Then_ParsingContractIsUnchanged()
+	{
+		var sut = CoreReplApp.Create();
+		var command = sut.Map(
+			"deploy",
+			([ReplOption] string environment, [ReplOption] bool internalMode = false) => $"{environment}:{internalMode}");
+		var before = command.OptionSchema;
+		string[] tokensBefore = [.. before.KnownTokens];
+		var arityBefore = before.ResolveParameterArity("internalMode");
+
+		command.WithOption("internalMode", option => option.Hidden());
+
+		var after = command.OptionSchema;
+		after.Should().NotBeSameAs(before, "visibility is published as a new schema, never mutated in place");
+		after.KnownTokens.Should().Equal(tokensBefore, "a hidden option stays fully parsable");
+		after.ResolveParameterArity("internalMode").Should().Be(arityBefore);
+		after.Entries.Should().BeSameAs(before.Entries, "entries carry the parsing contract and are reused verbatim");
+		after.IsOptionHidden("internalMode").Should().BeTrue();
+		after.DiscoverableParameters.Should().NotContain(parameter => parameter.Name == "internalMode");
+		after.DiscoverableParameters.Should().Contain(parameter => parameter.Name == "environment");
+	}
+
+	[TestMethod]
+	[Description("AutomationHidden is the programmatic-only axis: unlike Hidden it keeps the option in the documentation model, so human-facing exports and help still show it and only the MCP projection drops it. Mirrors CommandAnnotations.AutomationHidden one level down.")]
+	public void When_CommandOptionIsAutomationHidden_Then_TheDocumentationModelKeepsItFlagged()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+			"deploy",
+			([ReplOption] string environment, [ReplOption] bool internalMode = false) => $"{environment}:{internalMode}")
+			.WithOption("internalMode", static option => option.AutomationHidden());
+
+		var aggregate = sut.CreateDocumentationModel().Commands.Should().ContainSingle().Which;
+
+		aggregate.Options.Should().Contain(option =>
+			option.Name == "internalMode" && option.IsAutomationHidden && !option.IsHidden);
+		aggregate.Options.Should().Contain(option =>
+			option.Name == "environment" && !option.IsAutomationHidden);
+	}
+
+	[TestMethod]
+	[Description("Fluent visibility wins over the attribute on both axes and in both directions, because the attribute seeds the schema at Map while a fluent call publishes a new one afterwards. Asserting a single direction would miss an inverted precedence.")]
+	public void When_AttributeAndFluentVisibilityDisagree_Then_FluentWins()
+	{
+		var sut = CoreReplApp.Create();
+		var command = sut.Map(
+			"deploy",
+			([ReplOption(Hidden = true)] bool attributeHidden = false,
+				[ReplOption(AutomationHidden = true)] bool attributeAutomationHidden = false,
+				[ReplOption] bool fluentHidden = false,
+				[ReplOption] bool fluentAutomationHidden = false) =>
+				$"{attributeHidden}{attributeAutomationHidden}{fluentHidden}{fluentAutomationHidden}");
+
+		command.WithOption("attributeHidden", option => option.Hidden(isHidden: false));
+		command.WithOption("attributeAutomationHidden", option => option.AutomationHidden(isAutomationHidden: false));
+		command.WithOption("fluentHidden", option => option.Hidden());
+		command.WithOption("fluentAutomationHidden", option => option.AutomationHidden());
+
+		var schema = command.OptionSchema;
+		schema.IsOptionHidden("attributeHidden").Should().BeFalse();
+		schema.IsOptionAutomationHidden("attributeAutomationHidden").Should().BeFalse();
+		schema.IsOptionHidden("fluentHidden").Should().BeTrue();
+		schema.IsOptionAutomationHidden("fluentAutomationHidden").Should().BeTrue();
+	}
+
+	[TestMethod]
+	[Description("Selecting an unknown command option target fails clearly instead of leaving the intended option visible.")]
+	public void When_SelectingUnknownCommandOption_Then_ConfigurationThrows()
+	{
+		var sut = CoreReplApp.Create();
+		var command = sut.Map("deploy", ([ReplOption] bool force) => force);
+
+		var act = () => command.WithOption("missing", static option => option.Hidden());
+
+		act.Should().Throw<KeyNotFoundException>()
+			.WithMessage("*option target*missing*deploy*");
+	}
+
+	[TestMethod]
+	[Description("The declarative form reaches the same documentation contract as the fluent one: omitted from the aggregate model, present and flagged when the command is targeted.")]
+	public void When_CommandOptionHasHiddenAttribute_Then_OnlyTheAggregateModelOmitsIt()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+			"deploy",
+			([ReplOption] string environment, [ReplOption(Hidden = true)] bool internalMode = false) => $"{environment}:{internalMode}");
+
+		var aggregate = sut.CreateDocumentationModel().Commands.Should().ContainSingle().Which;
+		var targeted = sut.CreateDocumentationModel("deploy").Commands.Should().ContainSingle().Which;
+
+		aggregate.Options.Should().ContainSingle(option => option.Name == "environment");
+		aggregate.Options.Should().NotContain(option => option.Name == "internalMode");
+		targeted.Options.Should().Contain(option => option.Name == "internalMode" && option.IsHidden);
+	}
+
+	[TestMethod]
 	[Description("Verifies injected IGlobalOptionsAccessor parameters are omitted from documentation options.")]
 	public void When_HandlerUsesGlobalOptionsAccessor_Then_DocumentationOmitsAccessorOption()
 	{

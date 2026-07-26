@@ -252,6 +252,20 @@ public sealed class Given_McpSchemaGenerator
 		McpSchemaGenerator.BuildDescription(cmd).Should().Contain("Deploy").And.Contain("Deploys to env.");
 	}
 
+	[TestMethod]
+	[Description("MCP input schema generation rejects an exact field-name collision across route arguments and options instead of overwriting the first JSON property.")]
+	public void When_ArgumentAndOptionShareAnMcpFieldName_Then_SchemaGenerationFailsClosed()
+	{
+		var command = CreateCommand(
+			arguments: [new ReplDocArgument("scope", "string", Required: true, Description: null)],
+			options: [CreateOption("scope", "string")]);
+
+		var action = () => McpSchemaGenerator.BuildInputSchema(command);
+
+		action.Should().Throw<InvalidOperationException>()
+			.WithMessage("*MCP argument name collision*scope*");
+	}
+
 	// ── Helpers ─────────────────────────────────────────────────────────
 
 	private static ReplDocCommand CreateCommand(

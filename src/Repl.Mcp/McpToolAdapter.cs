@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using Repl;
 using Repl.Documentation;
 using Repl.Interaction;
 
@@ -322,54 +323,73 @@ internal sealed partial class McpToolAdapter
 		IDictionary<string, JsonElement> arguments)
 	{
 		var allowedArgumentNames = BuildAllowedArgumentNames(command);
-		return PrepareExecution(command.Path, arguments, allowedArgumentNames);
+		var optionTokens = command.Options.ToDictionary(
+			static option => option.Name,
+			static option => option.Aliases.Count > 0 ? option.Aliases[0] : $"--{option.Name}",
+			StringComparer.Ordinal);
+		// A bool-flag option's value token is only ever consumed on a best-effort basis: when it
+		// looks like a fresh option token, ApplyBoolFlagValue declines it WITHOUT a diagnostic
+		// (that decline is required so legitimate flag-chaining like "--verbose --other" keeps
+		// working), leaving it to be re-lexed as its own token on the parser's next iteration —
+		// which can bind a Hidden() option's alias. Every other option kind either has no value to
+		// smuggle or fails the whole call with a diagnostic when its value looks option-like, so
+		// only bool options need the inline "--name=value" form that makes re-lexing impossible.
+		var boolOptionNames = command.Options
+			.Where(static option => string.Equals(option.Type, "bool", StringComparison.Ordinal))
+			.Select(static option => option.Name)
+			.ToHashSet(StringComparer.Ordinal);
+		return PrepareExecution(command.Path, arguments, allowedArgumentNames, optionTokens, boolOptionNames);
 	}
 
 	private static (List<string> Tokens, Dictionary<string, string> Prefills) PrepareExecution(
 		string routePath,
 		IDictionary<string, JsonElement> arguments,
-		HashSet<string>? allowedArgumentNames)
+		AllowedArgumentNames? allowedArgumentNames,
+		IReadOnlyDictionary<string, string> optionTokens,
+		IReadOnlySet<string>? boolOptionNames = null)
 	{
-		var stringArgs = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-		var prefills = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		var stringArgs = new Dictionary<string, object?>(StringComparer.Ordinal);
+		var prefills = new Dictionary<string, string>(StringComparer.Ordinal);
 		var resultFlowTokens = new List<string>();
+		var suppliedSchemaFields = new HashSet<string>(StringComparer.Ordinal);
 
-		foreach (var (key, value) in arguments)
+		foreach (var (requestedKey, value) in arguments)
 		{
+			var field = allowedArgumentNames?.Resolve(requestedKey)
+				?? new AllowedArgumentField(requestedKey, McpArgumentFieldKind.Command);
+			var key = field.Name;
+			if (!suppliedSchemaFields.Add(key))
+			{
+				throw new InvalidOperationException(
+					$"The MCP argument '{requestedKey}' duplicates the schema field '{key}'.");
+			}
 			var strValue = value.ValueKind == JsonValueKind.String
 				? value.GetString() ?? ""
 				: value.GetRawText();
 
-			if (allowedArgumentNames is not null && !allowedArgumentNames.Contains(key))
+			switch (field.Kind)
 			{
-				throw new InvalidOperationException(
-					$"The MCP argument '{key}' is not defined by the tool schema.");
-			}
-
-			if (key.StartsWith("answer.", StringComparison.OrdinalIgnoreCase))
-			{
-				prefills[key["answer.".Length..]] = strValue;
-			}
-			else if (string.Equals(key, McpResultFlowArgumentNames.Cursor, StringComparison.OrdinalIgnoreCase))
-			{
-				ValidateResultCursor(strValue);
-				resultFlowTokens.Add(ReplResultFlowOptionNames.Cursor);
-				resultFlowTokens.Add(strValue);
-			}
-			else if (string.Equals(key, McpResultFlowArgumentNames.PageSize, StringComparison.OrdinalIgnoreCase))
-			{
-				ValidateResultPageSize(strValue);
-				resultFlowTokens.Add(ReplResultFlowOptionNames.PageSize);
-				resultFlowTokens.Add(strValue);
-			}
-			else
-			{
-				ValidateCommandArgumentValue(strValue);
-				stringArgs[key] = strValue;
+				case McpArgumentFieldKind.Answer:
+					prefills.Add(key["answer.".Length..], strValue);
+					break;
+				case McpArgumentFieldKind.Cursor:
+					ValidateResultCursor(strValue);
+					resultFlowTokens.Add(ReplResultFlowOptionNames.Cursor);
+					resultFlowTokens.Add(strValue);
+					break;
+				case McpArgumentFieldKind.PageSize:
+					ValidateResultPageSize(strValue);
+					resultFlowTokens.Add(ReplResultFlowOptionNames.PageSize);
+					resultFlowTokens.Add(strValue);
+					break;
+				default:
+					ValidateCommandArgumentValue(strValue);
+					stringArgs.Add(key, strValue);
+					break;
 			}
 		}
 
-		var tokens = ReconstructTokens(routePath, stringArgs);
+		var tokens = ReconstructTokens(routePath, stringArgs, optionTokens, boolOptionNames);
 		tokens.InsertRange(0, resultFlowTokens);
 		return (tokens, prefills);
 	}
@@ -404,34 +424,86 @@ internal sealed partial class McpToolAdapter
 		}
 	}
 
-	private static HashSet<string> BuildAllowedArgumentNames(ReplDocCommand command)
+	internal static void ValidateArgumentNames(ReplDocCommand command) =>
+		_ = BuildAllowedArgumentNames(command);
+
+	private static AllowedArgumentNames BuildAllowedArgumentNames(ReplDocCommand command)
 	{
-		var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var names = new AllowedArgumentNames();
 		foreach (var argument in command.Arguments)
 		{
-			names.Add(argument.Name);
+			names.Add(argument.Name, McpArgumentFieldKind.Command);
 		}
 
 		foreach (var option in command.Options)
 		{
-			names.Add(option.Name);
+			names.Add(option.Name, McpArgumentFieldKind.Command);
 		}
 
 		if (command.Answers is { Count: > 0 })
 		{
 			foreach (var answer in command.Answers)
 			{
-				names.Add($"answer.{answer.Name}");
+				names.Add($"answer.{answer.Name}", McpArgumentFieldKind.Answer);
 			}
 		}
 
 		if (command.AcceptsPagingInput || command.EmitsPagedResult)
 		{
-			names.Add(McpResultFlowArgumentNames.Cursor);
-			names.Add(McpResultFlowArgumentNames.PageSize);
+			names.Add(McpResultFlowArgumentNames.Cursor, McpArgumentFieldKind.Cursor);
+			names.Add(McpResultFlowArgumentNames.PageSize, McpArgumentFieldKind.PageSize);
 		}
 
 		return names;
+	}
+
+	private enum McpArgumentFieldKind
+	{
+		Command,
+		Answer,
+		Cursor,
+		PageSize,
+	}
+
+	private readonly record struct AllowedArgumentField(string Name, McpArgumentFieldKind Kind);
+
+	private sealed class AllowedArgumentNames
+	{
+		private readonly Dictionary<string, AllowedArgumentField> _exactFields = new(StringComparer.Ordinal);
+		private readonly List<AllowedArgumentField> _orderedFields = [];
+
+		internal void Add(string name, McpArgumentFieldKind kind)
+		{
+			var field = new AllowedArgumentField(name, kind);
+			if (!_exactFields.TryAdd(name, field))
+			{
+				throw new InvalidOperationException(
+					$"MCP argument name collision: '{name}' is declared more than once by the tool schema.");
+			}
+
+			_orderedFields.Add(field);
+		}
+
+		internal AllowedArgumentField Resolve(string requestedName)
+		{
+			if (_exactFields.TryGetValue(requestedName, out var exact))
+			{
+				return exact;
+			}
+
+			var matches = _orderedFields
+				.Where(field => string.Equals(field.Name, requestedName, StringComparison.OrdinalIgnoreCase))
+				.ToArray();
+			return matches.Length switch
+			{
+				0 => throw new InvalidOperationException(
+					$"The MCP argument '{requestedName}' is not defined by the tool schema."),
+				1 => matches[0],
+				_ => throw new InvalidOperationException(
+					$"The MCP argument '{requestedName}' is ambiguous between schema fields "
+					+ $"{string.Join(", ", matches.Select(static field => $"'{field.Name}'"))}."),
+			};
+		}
 	}
 
 	/// <summary>
@@ -439,10 +511,18 @@ internal sealed partial class McpToolAdapter
 	/// </summary>
 	internal static List<string> ReconstructTokens(
 		string routePath,
-		IDictionary<string, object?> arguments)
+		IDictionary<string, object?> arguments) =>
+		ReconstructTokens(routePath, arguments, optionTokens: null, boolOptionNames: null);
+
+	private static List<string> ReconstructTokens(
+		string routePath,
+		IDictionary<string, object?> arguments,
+		IReadOnlyDictionary<string, string>? optionTokens,
+		IReadOnlySet<string>? boolOptionNames)
 	{
 		var tokens = new List<string>();
-		var consumedArgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var consumedArgs = new HashSet<string>(
+			optionTokens is null ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
 		foreach (var part in routePath.Split(' ', StringSplitOptions.RemoveEmptyEntries))
 		{
@@ -456,6 +536,7 @@ internal sealed partial class McpToolAdapter
 					var strValue = value.ToString() ?? "";
 					if (strValue.Length > 0)
 					{
+						ValidatePositionalArgumentValue(strValue);
 						tokens.Add(strValue);
 					}
 
@@ -475,12 +556,71 @@ internal sealed partial class McpToolAdapter
 		{
 			if (!consumedArgs.Contains(key))
 			{
-				tokens.Add($"--{key}");
-				tokens.Add(value?.ToString() ?? "");
+				var token = ResolveOptionToken(key, optionTokens);
+				var strValue = value?.ToString() ?? "";
+				if (boolOptionNames?.Contains(key) == true)
+				{
+					// Single inline token: TrySplitOptionToken (InvocationOptionParser) splits on
+					// the first '=' only, so the value survives intact even when it starts with
+					// '-' or contains '=' itself, and it can never be left dangling by
+					// ApplyBoolFlagValue to be re-lexed as a fresh option on the next iteration.
+					tokens.Add($"{token}={strValue}");
+				}
+				else
+				{
+					tokens.Add(token);
+					tokens.Add(strValue);
+				}
 			}
 		}
 
 		return tokens;
+	}
+
+	// Guards the ONE place an MCP-supplied value becomes a bare CLI token: a positional route
+	// segment. It has no separator that can escape the value the way an inline "--token=value"
+	// pair does for a bool option, so a value that would itself be lexed as an option token (and
+	// could then resolve to a route/global option — including a Hidden() one, since parsing still
+	// accepts those — via the general-purpose parser) must be rejected here instead.
+	private static void ValidatePositionalArgumentValue(string value)
+	{
+		if (InvocationOptionParser.LooksLikeOptionToken(value) && !InvocationOptionParser.IsSignedNumericLiteral(value))
+		{
+			throw new InvalidOperationException(
+				"The MCP argument value cannot start like a CLI option because it fills a positional route segment, which has no way to escape it.");
+		}
+	}
+
+	private static string ResolveOptionToken(string key, IReadOnlyDictionary<string, string>? optionTokens)
+	{
+		if (optionTokens is null)
+		{
+			return $"--{key}";
+		}
+
+		if (optionTokens.TryGetValue(key, out var exactToken))
+		{
+			return exactToken;
+		}
+
+		string? matchedToken = null;
+		foreach (var (optionName, token) in optionTokens)
+		{
+			if (!string.Equals(optionName, key, StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			if (matchedToken is not null)
+			{
+				throw new InvalidOperationException(
+					$"The MCP argument '{key}' is ambiguous because option names differ only by casing.");
+			}
+
+			matchedToken = token;
+		}
+
+		return matchedToken ?? $"--{key}";
 	}
 
 	private static CallToolResult ErrorResult(string message) => new()

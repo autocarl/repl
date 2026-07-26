@@ -13,7 +13,7 @@ namespace Repl.Mcp;
 /// </summary>
 internal sealed class McpInteractionChannel : IReplInteractionChannel
 {
-	private readonly IReadOnlyDictionary<string, string> _prefillAnswers;
+	private readonly Dictionary<string, string> _prefillAnswers;
 	private readonly InteractivityMode _mode;
 	private readonly McpServer? _server;
 	private readonly ProgressToken? _progressToken;
@@ -26,7 +26,7 @@ internal sealed class McpInteractionChannel : IReplInteractionChannel
 		ProgressToken? progressToken = null,
 		IMcpFeedback? feedback = null)
 	{
-		_prefillAnswers = prefillAnswers;
+		_prefillAnswers = new Dictionary<string, string>(prefillAnswers, StringComparer.Ordinal);
 		_mode = mode;
 		_server = server;
 		_progressToken = progressToken;
@@ -40,7 +40,7 @@ internal sealed class McpInteractionChannel : IReplInteractionChannel
 		int? defaultIndex = null,
 		AskOptions? options = null)
 	{
-		if (_prefillAnswers.TryGetValue(name, out var prefill))
+		if (TryGetPrefill(name, out var prefill))
 		{
 			return ResolveChoiceIndex(prefill, choices);
 		}
@@ -77,7 +77,7 @@ internal sealed class McpInteractionChannel : IReplInteractionChannel
 		bool? defaultValue = null,
 		AskOptions? options = null)
 	{
-		if (_prefillAnswers.TryGetValue(name, out var prefill))
+		if (TryGetPrefill(name, out var prefill))
 		{
 			return ParseBool(prefill);
 		}
@@ -113,7 +113,7 @@ internal sealed class McpInteractionChannel : IReplInteractionChannel
 		string? defaultValue = null,
 		AskOptions? options = null)
 	{
-		if (_prefillAnswers.TryGetValue(name, out var prefill))
+		if (TryGetPrefill(name, out var prefill))
 		{
 			return prefill;
 		}
@@ -149,7 +149,7 @@ internal sealed class McpInteractionChannel : IReplInteractionChannel
 		AskSecretOptions? options = null)
 	{
 		// Secrets: prefill ONLY, never elicitation or sampling (security).
-		if (_prefillAnswers.TryGetValue(name, out var prefill))
+		if (TryGetPrefill(name, out var prefill))
 		{
 			return ValueTask.FromResult(prefill);
 		}
@@ -166,7 +166,7 @@ internal sealed class McpInteractionChannel : IReplInteractionChannel
 		IReadOnlyList<int>? defaultIndices = null,
 		AskMultiChoiceOptions? options = null)
 	{
-		if (_prefillAnswers.TryGetValue(name, out var prefill))
+		if (TryGetPrefill(name, out var prefill))
 		{
 			return ParseMultiChoice(prefill, choices, options);
 		}
@@ -536,6 +536,34 @@ internal sealed class McpInteractionChannel : IReplInteractionChannel
 
 		throw new McpInteractionException(
 			$"Cannot resolve choice '{value}'. Available: {string.Join(", ", choices)}");
+	}
+
+	private bool TryGetPrefill(string name, out string prefill)
+	{
+		if (_prefillAnswers.TryGetValue(name, out var exactPrefill))
+		{
+			prefill = exactPrefill;
+			return true;
+		}
+
+		var matches = _prefillAnswers
+			.Where(pair => string.Equals(pair.Key, name, StringComparison.OrdinalIgnoreCase))
+			.ToArray();
+		if (matches.Length > 1)
+		{
+			throw new McpInteractionException(
+				$"Interactive prompt name '{name}' is ambiguous between prefills "
+				+ $"{string.Join(", ", matches.Select(static pair => $"'{pair.Key}'"))}.");
+		}
+
+		if (matches.Length == 1)
+		{
+			prefill = matches[0].Value;
+			return true;
+		}
+
+		prefill = string.Empty;
+		return false;
 	}
 
 	private static bool ParseBool(string value)

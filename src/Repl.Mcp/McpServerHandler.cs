@@ -5,6 +5,8 @@ using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Repl.Documentation;
+using Repl.Interaction;
+using Repl.Internal.Options;
 
 namespace Repl.Mcp;
 
@@ -35,14 +37,19 @@ internal sealed class McpServerHandler
 	private readonly Lock _attachLock = new();
 
 	private McpGeneratedSnapshot? _snapshot;
-	private long _snapshotVersion = 1;
+	private SnapshotVersionState _snapshotState = new(Version: 1, LastVisibilityRetractionVersion: 0);
 	private long _builtSnapshotVersion;
 	private McpServer? _server;
-	private EventHandler? _routingChangedHandler;
+	private EventHandler<RoutingInvalidatedEventArgs>? _routingChangedHandler;
 	private ITimer? _debounceTimer;
 	private int _rootsNotificationRegistered;
 	private int _compatibilityIntroServed;
 	private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(100);
+
+	// Notifications are fire-and-forget best-effort — a stuck stdio peer must not hang this
+	// indefinitely, since nothing awaits it and it would otherwise pile up one task per
+	// invalidation forever.
+	private static readonly TimeSpan NotificationSendTimeout = TimeSpan.FromSeconds(5);
 
 	public McpServerHandler(
 		ICoreReplApp app,
@@ -303,7 +310,7 @@ internal sealed class McpServerHandler
 	{
 		AttachServer(server);
 
-		var snapshotVersion = Volatile.Read(ref _snapshotVersion);
+		var snapshotVersion = Volatile.Read(ref _snapshotState).Version;
 		if (Volatile.Read(ref _builtSnapshotVersion) == snapshotVersion
 			&& _snapshot is { } cached)
 		{
@@ -313,7 +320,7 @@ internal sealed class McpServerHandler
 		await _snapshotGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 		try
 		{
-			snapshotVersion = Volatile.Read(ref _snapshotVersion);
+			snapshotVersion = Volatile.Read(ref _snapshotState).Version;
 			if (Volatile.Read(ref _builtSnapshotVersion) == snapshotVersion
 				&& _snapshot is { } refreshed)
 			{
@@ -323,26 +330,25 @@ internal sealed class McpServerHandler
 			var previousSnapshot = _snapshot;
 			try
 			{
-				await _roots.GetAsync(cancellationToken).ConfigureAwait(false);
-				var built = BuildSnapshotCore();
-				_snapshot = built;
-				if (Volatile.Read(ref _snapshotVersion) == snapshotVersion)
-				{
-					Volatile.Write(ref _builtSnapshotVersion, snapshotVersion);
-				}
-				return built;
+				return await BuildCurrentSnapshotAsync(snapshotVersion, cancellationToken).ConfigureAwait(false);
 			}
 			catch (OperationCanceledException)
 			{
 				throw;
 			}
-			catch (Exception) when (previousSnapshot is not null)
+			catch (HiddenRequiredOptionException)
 			{
+				ThrowSanitizedIfAClientAlreadyHasASchema(previousSnapshot);
+				throw;
+			}
+			catch (Exception) when (
+				previousSnapshot is not null
+				&& Volatile.Read(ref _snapshotState).LastVisibilityRetractionVersion
+					<= Volatile.Read(ref _builtSnapshotVersion))
+			{
+				// Preserve availability for transient projection failures, but leave the version dirty
+				// so the next request retries without requiring another routing mutation.
 				_snapshot = previousSnapshot;
-				if (Volatile.Read(ref _snapshotVersion) == snapshotVersion)
-				{
-					Volatile.Write(ref _builtSnapshotVersion, snapshotVersion);
-				}
 				return previousSnapshot;
 			}
 		}
@@ -352,9 +358,57 @@ internal sealed class McpServerHandler
 		}
 	}
 
+	// No snapshot has ever been served: a cold-start configuration error, not a runtime retraction
+	// reaching an already-connected client. Let the caller's rethrow carry the detailed exception so
+	// the operator sees exactly which option and route are misconfigured.
+	//
+	// Once a client HAS a working schema, the same failure must fail closed (returning the previous
+	// snapshot would keep advertising an option the app explicitly hid), but the exception's own
+	// message names that option's target, rendered token and route — precisely the identity hiding it
+	// was meant to withhold — so it must not reach the client verbatim. A generic McpException (the
+	// pattern this handler already uses for other client-facing failures) reports the failure without
+	// disclosing what triggered it.
+	private static void ThrowSanitizedIfAClientAlreadyHasASchema(McpGeneratedSnapshot? previousSnapshot)
+	{
+		if (previousSnapshot is not null)
+		{
+			throw new McpException("Tool discovery is temporarily unavailable due to a server configuration error.");
+		}
+	}
+
+	private async ValueTask<McpGeneratedSnapshot> BuildCurrentSnapshotAsync(
+		long snapshotVersion,
+		CancellationToken cancellationToken)
+	{
+		while (true)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			await _roots.GetAsync(cancellationToken).ConfigureAwait(false);
+			var built = BuildSnapshotCore();
+			var observedState = Volatile.Read(ref _snapshotState);
+
+			// Version and retraction watermark are one atomically published state. A reader can
+			// therefore never observe the new version without the visibility retraction that caused it.
+			// If that state appeared after projection started, discard the result and rebuild.
+			if (observedState.LastVisibilityRetractionVersion > snapshotVersion)
+			{
+				snapshotVersion = observedState.Version;
+				continue;
+			}
+
+			_snapshot = built;
+			if (observedState.Version == snapshotVersion)
+			{
+				Volatile.Write(ref _builtSnapshotVersion, snapshotVersion);
+			}
+			return built;
+		}
+	}
+
 	private McpGeneratedSnapshot BuildSnapshotCore()
 	{
-		var model = CreateDocumentationModel();
+		// Project once here so tools/list, tools/call and prompts/list all read the same option list.
+		var model = McpAutomationProjection.Apply(CreateDocumentationModel());
 		var adapter = new McpToolAdapter(_app, _options, _sessionServices);
 		var commandsByPath = model.Commands.ToDictionary(
 			command => command.Path,
@@ -376,7 +430,18 @@ internal sealed class McpServerHandler
 		ReplSessionIO.IsProgrammatic = true;
 		try
 		{
-			return coreApp.CreateDocumentationModel(_sessionServices);
+			// Every MCP tool invocation overlays a concrete interaction channel before entering
+			// the binder. Discovery must expose that guaranteed fallback even when the caller did
+			// not supply a base provider (or supplied one without the channel).
+			var discoveryServices = new McpServiceProviderOverlay(
+				_sessionServices,
+				new Dictionary<Type, object>
+				{
+					[typeof(IReplInteractionChannel)] = new McpInteractionChannel(
+						new Dictionary<string, string>(StringComparer.Ordinal),
+						_options.InteractivityMode),
+				});
+			return coreApp.CreateDocumentationModel(discoveryServices);
 		}
 		finally
 		{
@@ -427,6 +492,10 @@ internal sealed class McpServerHandler
 		}
 	}
 
+	internal sealed record SnapshotVersionState(
+		long Version,
+		long LastVisibilityRetractionVersion);
+
 	private void EnsureRoutingSubscription()
 	{
 		if (_routingChangedHandler is not null || _app is not CoreReplApp coreApp)
@@ -435,8 +504,8 @@ internal sealed class McpServerHandler
 		}
 
 		var weakSelf = new WeakReference<McpServerHandler>(this);
-		EventHandler? handler = null;
-		handler = (_, _) =>
+		EventHandler<RoutingInvalidatedEventArgs>? handler = null;
+		handler = (_, args) =>
 		{
 			if (!weakSelf.TryGetTarget(out var target))
 			{
@@ -444,7 +513,7 @@ internal sealed class McpServerHandler
 				return;
 			}
 
-			target.OnRoutingInvalidated();
+			target.OnRoutingInvalidated(args.IsVisibilityRetraction);
 		};
 
 		_routingChangedHandler = handler;
@@ -472,9 +541,35 @@ internal sealed class McpServerHandler
 			});
 	}
 
-	private void OnRoutingInvalidated()
+	internal static SnapshotVersionState PublishSnapshotInvalidation(
+		ref SnapshotVersionState snapshotState,
+		bool isVisibilityRetraction,
+		Action<SnapshotVersionState>? beforePublish = null)
 	{
-		Interlocked.Increment(ref _snapshotVersion);
+		SnapshotVersionState currentState;
+		SnapshotVersionState invalidatedState;
+		do
+		{
+			currentState = Volatile.Read(ref snapshotState);
+			var invalidatedVersion = currentState.Version + 1;
+			invalidatedState = new SnapshotVersionState(
+				invalidatedVersion,
+				isVisibilityRetraction
+					? invalidatedVersion
+					: currentState.LastVisibilityRetractionVersion);
+			beforePublish?.Invoke(invalidatedState);
+		}
+		while (!ReferenceEquals(
+			Interlocked.CompareExchange(ref snapshotState, invalidatedState, currentState),
+			currentState));
+
+		return invalidatedState;
+	}
+
+	private void OnRoutingInvalidated(bool isVisibilityRetraction)
+	{
+		PublishSnapshotInvalidation(ref _snapshotState, isVisibilityRetraction);
+
 		if (_options.DynamicToolCompatibility == DynamicToolCompatibilityMode.DiscoverAndCallShim)
 		{
 			Interlocked.Exchange(ref _compatibilityIntroServed, 0);
@@ -508,7 +603,8 @@ internal sealed class McpServerHandler
 				return;
 			}
 
-			await server.SendNotificationAsync(method, CancellationToken.None).ConfigureAwait(false);
+			using var timeoutCts = new CancellationTokenSource(NotificationSendTimeout);
+			await server.SendNotificationAsync(method, timeoutCts.Token).ConfigureAwait(false);
 		}
 		catch (OperationCanceledException)
 		{

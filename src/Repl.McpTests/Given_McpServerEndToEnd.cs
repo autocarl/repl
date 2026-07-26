@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
+using Repl.Interaction;
 using Repl.Mcp;
 using Repl.Parameters;
 
@@ -506,6 +508,536 @@ public sealed class Given_McpServerEndToEnd
 		result.Messages.Should().ContainSingle();
 		var text = (result.Messages[0].Content as TextContentBlock)?.Text;
 		text.Should().Be("Investigate the checkout service for this symptom: 'queue depth rising'. Start with ops_status, inspect failed checks, then propose the smallest safe next step.");
+	}
+
+	[TestMethod]
+	[Description("Hidden command options are omitted from MCP tool schemas while visible sibling options remain discoverable.")]
+	public async Task When_CommandOptionIsHidden_Then_McpToolSchemaOmitsIt()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Map(
+					"deploy",
+					([ReplOption(Name = "environment")] string environment, [ReplOption(Name = "internalMode")] bool internalMode = false) =>
+						$"{environment}:{internalMode}")
+				.WithOption("internalMode", static option => option.Hidden());
+		});
+
+		var tools = await fixture.Client.ListToolsAsync();
+		var tool = tools.Single(candidate => string.Equals(candidate.Name, "deploy", StringComparison.Ordinal));
+		var properties = tool.JsonSchema.GetProperty("properties");
+
+		properties.TryGetProperty("environment", out _).Should().BeTrue();
+		properties.TryGetProperty("internalMode", out _).Should().BeFalse();
+	}
+
+	[TestMethod]
+	[Description("A hidden option is absent from the advertised schema, so supplying it to tools/call is rejected — the same hard block a hidden command gets. This pins the guarantee that the advertised schema and the accepted argument list can never diverge, because the generated schema omits additionalProperties:false and the allow-list is the only thing enforcing it.")]
+	public async Task When_HiddenCommandOptionIsSuppliedToToolCall_Then_CallIsRejected()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Map(
+					"deploy",
+					([ReplOption(Name = "environment")] string environment, [ReplOption(Name = "internalMode")] bool internalMode = false) =>
+						$"{environment}:{internalMode}")
+				.WithOption("internalMode", static option => option.Hidden());
+		});
+
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["environment"] = "denim",
+				["internalMode"] = true,
+			}).ConfigureAwait(false);
+
+		var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text));
+
+		result.IsError.Should().BeTrue();
+		text.Should().NotContain("denim", "the handler must not run when an undeclared argument is supplied");
+
+		// The adapter's own diagnostic ("The MCP argument 'internalMode' is not defined by the
+		// tool schema.") is deliberately not asserted: the SDK replaces it with a generic
+		// "An error occurred invoking '<tool>'." before it reaches the client. That is the right
+		// outcome for a hidden option — a caller probing for one learns nothing from the failure.
+		text.Should().Contain("error occurred invoking");
+	}
+
+	[TestMethod]
+	[Description("Human documentation may retain reverse/value-only reachability, but MCP cannot reconstruct an arbitrary semantic value without an ordinary named token; the optional field is therefore omitted from both schema and allow-list while the tool remains callable.")]
+	public async Task When_OnlyReverseAliasRemainsReachable_Then_McpOmitsTheSemanticOption()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Options(options =>
+			{
+				options.Parsing.AddGlobalOption<bool>("force");
+				options.Parsing.GlobalOption("force").Hidden();
+			});
+			app.Map(
+				"deploy",
+				static string ([ReplOption(ReverseAliases = ["--no-force"])] bool force = true) => force.ToString());
+		});
+
+		var advertised = await ReadDeployPropertiesAsync(fixture).ConfigureAwait(false);
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)).ConfigureAwait(false);
+
+		advertised.Should().NotContain("force");
+		result.IsError.Should().NotBeTrue();
+		string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text))
+			.Should().Contain("True");
+	}
+
+	[TestMethod]
+	[Description("Changing inherited option casing after an MCP snapshot retracts aliases that become equivalent to a hidden alias; the next list and call must use the rebuilt schema rather than the stale adapter.")]
+	public async Task When_OptionCaseModeChangesAfterInitialList_Then_McpRetractsNewlyHiddenField()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Options(options =>
+			{
+				options.Parsing.AddGlobalOption<string>("tenant");
+				options.Parsing.GlobalOption("tenant").Hidden();
+			});
+			app.Map(
+				"deploy",
+				static string ([ReplOption(Name = "tenant", Aliases = ["--ACCOUNT"], HiddenAliases = ["--account"])] string? tenant = null) => tenant ?? "none");
+		});
+
+		var before = await ReadDeployPropertiesAsync(fixture).ConfigureAwait(false);
+		before.Should().Contain("tenant");
+
+		fixture.App.Options(options =>
+			options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive);
+
+		var after = await ReadDeployPropertiesAsync(fixture).ConfigureAwait(false);
+		var call = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["tenant"] = "north",
+			}).ConfigureAwait(false);
+
+		after.Should().NotContain("tenant");
+		call.IsError.Should().BeTrue();
+	}
+
+	[TestMethod]
+	[Description("The MCP half of the AutomationHidden pair: the advertised tool schema omits the option, and because the schema and the accepted argument list are built from the same option list, tools/call rejects it too. The help half is asserted separately, where the same option stays listed and binds.")]
+	public async Task When_CommandOptionIsAutomationHidden_Then_McpOmitsItAndRejectsIt()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Map(
+					"deploy",
+					([ReplOption(Name = "environment")] string environment, [ReplOption(Name = "internalMode")] bool internalMode = false) =>
+						$"{environment}:{internalMode}")
+				.WithOption("internalMode", static option => option.AutomationHidden());
+		});
+
+		var advertised = await ReadDeployPropertiesAsync(fixture).ConfigureAwait(false);
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["environment"] = "denim",
+				["internalMode"] = true,
+			}).ConfigureAwait(false);
+
+		advertised.Should().Contain("environment");
+		advertised.Should().NotContain("internalMode");
+		result.IsError.Should().BeTrue();
+		string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text))
+			.Should().NotContain("denim", "the handler must not run for an argument the schema never advertised");
+	}
+
+	[TestMethod]
+	[Description("An automation-hidden option that cannot be omitted leaves no valid MCP invocation: the client cannot supply it, and omitting it fails to bind. Advertising such a tool guarantees every call fails, so the command is withdrawn from MCP instead — the human command line keeps working, which is why this is not rejected at configuration time the way an all-surfaces hidden required option is.")]
+	public async Task When_AutomationHiddenOptionCannotBeOmitted_Then_TheToolIsWithdrawn()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Map("ping", () => "pong");
+			app.Map(
+					"deploy",
+					([ReplOption(Name = "internal-token", Arity = ReplArity.ExactlyOne)] string internalToken) => internalToken)
+				.WithOption("internalToken", static option => option.AutomationHidden());
+		});
+
+		var tools = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+
+		tools.Should().Contain(tool => string.Equals(tool.Name, "ping", StringComparison.Ordinal));
+		tools.Should().NotContain(tool => string.Equals(tool.Name, "deploy", StringComparison.Ordinal));
+	}
+
+	[TestMethod]
+	[Description("A DI service fallback makes an explicitly required option omittable at the same precedence point used by HandlerArgumentBinder. AutomationHidden must omit that option without withdrawing the tool, and tools/call without the argument must receive the service value.")]
+	public async Task When_AutomationHiddenRequiredOptionHasAServiceFallback_Then_TheToolRemainsInvocable()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(
+			app => app.Map(
+					"deploy",
+					([ReplOption(Name = "token", Arity = ReplArity.ExactlyOne)] string token) => token)
+				.WithOption("token", static option => option.AutomationHidden()),
+			configureServices: static services => services.AddSingleton<string>("service-token"));
+
+		var tools = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+		var tool = tools.Single(candidate => string.Equals(candidate.Name, "deploy", StringComparison.Ordinal));
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)).ConfigureAwait(false);
+		var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text));
+
+		tool.JsonSchema.GetProperty("properties").TryGetProperty("token", out _).Should().BeFalse();
+		result.IsError.Should().BeFalse();
+		text.Should().Contain("service-token");
+	}
+
+	[TestMethod]
+	[Description("MCP metadata and its call allow-list must omit a route option whose canonical token belongs to a higher-precedence hidden global. Otherwise the adapter accepts a field that GlobalOptionParser consumes before route binding.")]
+	public async Task When_HiddenGlobalOwnsRouteOptionToken_Then_McpOmitsAndRejectsThatArgument()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Options(options =>
+			{
+				options.Parsing.AddGlobalOption<string>("tenant");
+				options.Parsing.GlobalOption("tenant").Hidden();
+			});
+			app.Map(
+				"deploy",
+				static string (
+					[ReplOption] string? tenant = null,
+					[ReplOption] string? region = null) => $"{tenant}:{region}");
+		});
+
+		var tools = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+		var tool = tools.Single(candidate => string.Equals(candidate.Name, "deploy", StringComparison.Ordinal));
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["tenant"] = "acme",
+			}).ConfigureAwait(false);
+		tool.JsonSchema.GetProperty("properties").TryGetProperty("tenant", out _).Should().BeFalse();
+		tool.JsonSchema.GetProperty("properties").TryGetProperty("region", out _).Should().BeTrue();
+		result.IsError.Should().BeTrue();
+	}
+
+	[TestMethod]
+	[Description("A hidden legacy alias remains a CLI fallback but is omitted from the MCP schema and allow-list; the visible canonical argument remains callable.")]
+	public async Task When_RouteAliasIsHidden_Then_McpExposesOnlyTheCanonicalArgument()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app => app.Map(
+			"deploy",
+			static string ([ReplOption(Name = "tenant", HiddenAliases = ["--account"])] string? tenant = null) => tenant ?? "none"));
+
+		var tool = (await fixture.Client.ListToolsAsync().ConfigureAwait(false)).Single();
+		var canonical = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal) { ["tenant"] = "acme" })
+			.ConfigureAwait(false);
+		var legacy = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal) { ["account"] = "acme" })
+			.ConfigureAwait(false);
+
+		tool.JsonSchema.GetProperty("properties").TryGetProperty("tenant", out _).Should().BeTrue();
+		tool.JsonSchema.GetProperty("properties").TryGetProperty("account", out _).Should().BeFalse();
+		canonical.IsError.Should().NotBeTrue();
+		legacy.IsError.Should().BeTrue();
+	}
+
+	[TestMethod]
+	[Description("When a global shadows only the canonical route token, MCP keeps the stable semantic argument name, maps it to the exact surviving short alias, and does not collide with another option whose canonical name matches that alias.")]
+	public async Task When_HiddenGlobalOwnsRouteCanonicalToken_Then_McpUsesTheRouteAliasWithoutRenamingTheArgument()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Options(options =>
+			{
+				options.Parsing.AddGlobalOption<string>("tenant");
+				options.Parsing.GlobalOption("tenant").Hidden();
+			});
+			app.Map(
+				"deploy",
+				static string (
+					[ReplOption(Aliases = ["-t"])] string? tenant = null,
+					[ReplOption(Name = "t")] string? shortName = null) => $"{tenant ?? "none"}:{shortName ?? "none"}");
+		});
+
+		var tool = (await fixture.Client.ListToolsAsync().ConfigureAwait(false))
+			.Single(candidate => string.Equals(candidate.Name, "deploy", StringComparison.Ordinal));
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["tenant"] = "acme",
+				["t"] = "north",
+			}).ConfigureAwait(false);
+		var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text));
+		var properties = tool.JsonSchema.GetProperty("properties");
+
+		properties.TryGetProperty("tenant", out _).Should().BeTrue();
+		properties.TryGetProperty("t", out _).Should().BeTrue();
+		result.IsError.Should().NotBeTrue();
+		text.Should().Contain("acme:north");
+	}
+
+	[TestMethod]
+	[Description("A route argument and an option whose stable MCP name becomes identical after global canonical-token shadowing must fail closed instead of overwriting the JSON schema property and binding the submitted value positionally.")]
+	public async Task When_ShadowedOptionStableNameCollidesWithRouteArgument_Then_McpStartupFailsClosed()
+	{
+		var start = async () =>
+		{
+			var fixture = await McpTestFixture.CreateAsync(app =>
+			{
+				app.Options(options =>
+				{
+					options.Parsing.AddGlobalOption<string>("scope");
+					options.Parsing.GlobalOption("scope").Hidden();
+				});
+				app.Map(
+					"deploy {scope}",
+					static string (string scope, [ReplOption(Name = "scope", Aliases = ["-s"])] string? selected = null) =>
+						$"{scope}:{selected ?? "none"}");
+			}).ConfigureAwait(false);
+			try
+			{
+				_ = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+			}
+			finally
+			{
+				await fixture.DisposeAsync().ConfigureAwait(false);
+			}
+		};
+
+		var faulted = await start.Should()
+			.ThrowAsync<McpProtocolException>()
+			.WaitAsync(TimeSpan.FromSeconds(15))
+			.ConfigureAwait(false);
+
+		faulted.WithMessage("*error occurred*");
+	}
+
+	[TestMethod]
+	[Description("A case-distinct ordinary option and the synthetic MCP cursor remain separate schema fields and bind to the option and paging context respectively in one real tool call.")]
+	public async Task When_OptionDiffersFromSyntheticCursorOnlyByCase_Then_EndToEndBindingKeepsBothDestinations()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app => app.Map(
+			"inspect",
+			static string (
+				[ReplOption(Name = "_replcursor")] string? ordinary,
+				IReplPagingContext paging) => $"{ordinary ?? "none"}:{paging.Cursor ?? "none"}"));
+
+		var tool = (await fixture.Client.ListToolsAsync().ConfigureAwait(false))
+			.Single(candidate => string.Equals(candidate.Name, "inspect", StringComparison.Ordinal));
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "inspect",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["_replcursor"] = "ordinary",
+				[McpResultFlowArgumentNames.Cursor] = "opaque",
+			}).ConfigureAwait(false);
+		var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text));
+		var properties = tool.JsonSchema.GetProperty("properties");
+
+		properties.TryGetProperty("_replcursor", out _).Should().BeTrue();
+		properties.TryGetProperty(McpResultFlowArgumentNames.Cursor, out _).Should().BeTrue();
+		result.IsError.Should().NotBeTrue();
+		text.Should().Contain("ordinary:opaque");
+	}
+
+	[TestMethod]
+	[Description("A declared answer and a case-distinct ordinary option under the answer prefix remain separate destinations through schema generation, tool adaptation, and runtime interaction lookup.")]
+	public async Task When_OptionDiffersFromDeclaredAnswerOnlyByCase_Then_EndToEndBindingKeepsBothDestinations()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app => app.Map(
+				"wizard",
+				static async Task<string> (
+					[ReplOption(Name = "answer.CONFIRM")] string? ordinary,
+					IReplInteractionChannel interaction) =>
+				{
+					var answer = await interaction.AskConfirmationAsync("confirm", "Proceed?").ConfigureAwait(false);
+					return $"{ordinary ?? "none"}:{answer}";
+				})
+			.WithAnswer("confirm", "bool"));
+
+		var tool = (await fixture.Client.ListToolsAsync().ConfigureAwait(false))
+			.Single(candidate => string.Equals(candidate.Name, "wizard", StringComparison.Ordinal));
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "wizard",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["answer.CONFIRM"] = "ordinary",
+				["answer.confirm"] = false,
+			}).ConfigureAwait(false);
+		var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text));
+		var properties = tool.JsonSchema.GetProperty("properties");
+
+		properties.TryGetProperty("answer.CONFIRM", out _).Should().BeTrue();
+		properties.TryGetProperty("answer.confirm", out _).Should().BeTrue();
+		result.IsError.Should().NotBeTrue();
+		text.Should().Contain("ordinary:False");
+	}
+
+	[TestMethod]
+	[Description("MCP supplies IReplInteractionChannel, so the binder synthesizes structured progress before direct service lookup. AutomationHidden requiredness must use that same fallback, retain the tool, omit the field, and allow an argument-free call.")]
+	public async Task When_AutomationHiddenRequiredProgressUsesInteractionChannel_Then_TheToolRemainsInvocable()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(app => app.Map(
+			"sync",
+			([ReplOption(Name = "progress", Arity = ReplArity.ExactlyOne, AutomationHidden = true)] IProgress<ReplProgressEvent> progress) =>
+				progress is not null ? "progress-ready" : "missing"));
+
+		var tools = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+		var tool = tools.Single(candidate => string.Equals(candidate.Name, "sync", StringComparison.Ordinal));
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "sync",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)).ConfigureAwait(false);
+		var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text));
+
+		tool.JsonSchema.GetProperty("properties").TryGetProperty("progress", out _).Should().BeFalse();
+		result.IsError.Should().BeFalse();
+		text.Should().Contain("progress-ready");
+	}
+
+	[TestMethod]
+	[Description("An all-surfaces hidden required option with no service fallback would disappear from both schema and call allow-list while remaining mandatory. MCP startup must reject that provider-specific impossible contract promptly rather than advertise a dead tool.")]
+	public async Task When_HiddenRequiredOptionHasNoServiceFallback_Then_McpStartupFailsFast()
+	{
+		var start = async () => await McpTestFixture.CreateAsync(app =>
+			app.Map(
+				"deploy",
+				([ReplOption(Name = "token", Arity = ReplArity.ExactlyOne, Hidden = true)] string token) => token)).ConfigureAwait(false);
+
+		var faulted = await start.Should()
+			.ThrowAsync<InvalidOperationException>()
+			.WaitAsync(TimeSpan.FromSeconds(15))
+			.ConfigureAwait(false);
+
+		faulted.WithMessage("Option target 'token' (rendered as '--token') for command 'deploy' cannot be hidden because it is required.*");
+	}
+
+	[TestMethod]
+	[Description("Provider-aware requiredness also applies to visible options: if omission reaches a registered service before explicit lower-bound enforcement, MCP must not mark the field required and an argument-free call must receive that service value.")]
+	public async Task When_VisibleRequiredOptionHasAServiceFallback_Then_McpSchemaMakesItOptional()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(
+			app => app.Map(
+				"deploy",
+				([ReplOption(Name = "token", Arity = ReplArity.ExactlyOne)] string token) => token),
+			configureServices: static services => services.AddSingleton<string>("service-token"));
+
+		var tools = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+		var tool = tools.Single(candidate => string.Equals(candidate.Name, "deploy", StringComparison.Ordinal));
+		var result = await fixture.Client.CallToolAsync(
+			toolName: "deploy",
+			arguments: new Dictionary<string, object?>(StringComparer.Ordinal)).ConfigureAwait(false);
+		var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text));
+
+		tool.JsonSchema.GetProperty("properties").TryGetProperty("token", out _).Should().BeTrue();
+		if (tool.JsonSchema.TryGetProperty("required", out var required))
+		{
+			required.EnumerateArray().Select(static item => item.GetString()).Should().NotContain("token");
+		}
+		result.IsError.Should().BeFalse();
+		text.Should().Contain("service-token");
+	}
+
+	[TestMethod]
+	[Description("Hiding an option after the first tools/list must withdraw it from the next one. The MCP snapshot is rebuilt only when routing is invalidated, so a visibility change that forgets to invalidate leaves an agent seeing an option the app has retracted.")]
+	public async Task When_OptionIsHiddenAfterFirstToolsList_Then_SecondToolsListOmitsIt()
+	{
+		CommandBuilder? deploy = null;
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+			deploy = app.Map(
+				"deploy",
+				([ReplOption(Name = "environment")] string environment, [ReplOption(Name = "internalMode")] bool internalMode = false) =>
+					$"{environment}:{internalMode}"));
+
+		var advertisedBefore = await ReadDeployPropertiesAsync(fixture).ConfigureAwait(false);
+		deploy!.WithOption("internalMode", option => option.Hidden());
+		var advertisedAfter = await ReadDeployPropertiesAsync(fixture).ConfigureAwait(false);
+
+		advertisedBefore.Should().Contain("internalMode");
+		advertisedAfter.Should().NotContain("internalMode");
+		advertisedAfter.Should().Contain("environment", "hiding one option must not withdraw its siblings");
+	}
+
+	[TestMethod]
+	[Description("If a post-start visibility change makes the new MCP contract impossible, refresh must fail closed rather than restore and permanently cache the old snapshot that still advertises the retracted option. Re-exposing it must then recover normally. Because a client has already received a working schema by this point, the error must not name the option, its rendered token, or the route — that identity is exactly what Hidden() was meant to withhold.")]
+	public async Task When_RequiredOptionIsHiddenAfterFirstToolsList_Then_RefreshFailsClosedUntilConfigurationRecovers()
+	{
+		CommandBuilder? deploy = null;
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+			deploy = app.Map(
+				"deploy",
+				([ReplOption(Name = "token", Arity = ReplArity.ExactlyOne)] string token) => token));
+		var advertisedBefore = await ReadDeployPropertiesAsync(fixture).ConfigureAwait(false);
+
+		deploy!.WithOption("token", static option => option.Hidden());
+		var firstRefresh = async () => await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+		var secondRefresh = async () => await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+
+		advertisedBefore.Should().Contain("token");
+		var firstFault = await firstRefresh.Should().ThrowAsync<McpException>().ConfigureAwait(false);
+		var secondFault = await secondRefresh.Should().ThrowAsync<McpException>().ConfigureAwait(false);
+
+		firstFault.Which.Message.Should().NotContainAny("token", "--token", "deploy");
+		secondFault.Which.Message.Should().NotContainAny("token", "--token", "deploy");
+
+		deploy.WithOption("token", static option => option.Hidden(isHidden: false));
+		var advertisedAfterRecovery = await ReadDeployPropertiesAsync(fixture).ConfigureAwait(false);
+		advertisedAfterRecovery.Should().Contain("token");
+	}
+
+	[TestMethod]
+	[Description("Same contract one level up: hiding a whole command after the first tools/list withdraws its tool. This axis predates option-level visibility and shares the missing-invalidation cause, so it is pinned alongside it.")]
+	public async Task When_CommandIsHiddenAfterFirstToolsList_Then_SecondToolsListOmitsIt()
+	{
+		CommandBuilder? wizard = null;
+		await using var fixture = await McpTestFixture.CreateAsync(app =>
+		{
+			app.Map("ping", () => "pong");
+			wizard = app.Map("wizard", () => "interactive");
+		});
+
+		var before = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+		wizard!.Hidden();
+		var after = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+
+		before.Should().Contain(tool => string.Equals(tool.Name, "wizard", StringComparison.Ordinal));
+		after.Should().NotContain(tool => string.Equals(tool.Name, "wizard", StringComparison.Ordinal));
+		after.Should().Contain(tool => string.Equals(tool.Name, "ping", StringComparison.Ordinal));
+	}
+
+	[TestMethod]
+	[Description("A server that fails while starting must surface its own exception from CreateAsync. The fixture used to launch RunAsync fire-and-forget and then await the client handshake, so a start failure was observable only as an initialize timeout carrying the wrong exception — which is what pushed an earlier iteration to make production code throw synchronously just to be testable.")]
+	public async Task When_ServerStartFails_Then_FixtureSurfacesTheServerFault()
+	{
+		var start = async () => await McpTestFixture.CreateAsync(
+			app => app.Map("ping", () => "pong"),
+			configureOptions: static options => options.TransportFactory =
+				static (_, _) => throw new InvalidOperationException("ga-bu-zo-meu: transport refused to start")).ConfigureAwait(false);
+
+		var faulted = await start.Should()
+			.ThrowAsync<InvalidOperationException>()
+			.WaitAsync(TimeSpan.FromSeconds(15))
+			.ConfigureAwait(false);
+
+		faulted.WithMessage("*ga-bu-zo-meu*");
+	}
+
+	private static async Task<List<string>> ReadDeployPropertiesAsync(McpTestFixture fixture)
+	{
+		var tools = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+		var tool = tools.Single(candidate => string.Equals(candidate.Name, "deploy", StringComparison.Ordinal));
+
+		return [.. tool.JsonSchema.GetProperty("properties").EnumerateObject().Select(static property => property.Name)];
 	}
 
 	// ── Options group camelCase naming ─────────────────────────────────

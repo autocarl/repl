@@ -9,7 +9,13 @@ public sealed partial class CoreReplApp
 	public ReplDocumentationModel CreateDocumentationModel(string? targetPath = null) =>
 		DocumentationEng.CreateDocumentationModel(targetPath);
 
-	internal ReplDocumentationModel CreateDocumentationModel(
+	/// <summary>
+	/// Builds a structured documentation model using the specified provider for service-backed parameters.
+	/// </summary>
+	/// <param name="serviceProvider">Provider used to determine whether direct handler parameters can be omitted.</param>
+	/// <param name="targetPath">Optional target path to scope the model.</param>
+	/// <returns>A structured documentation model.</returns>
+	public ReplDocumentationModel CreateDocumentationModel(
 		IServiceProvider serviceProvider,
 		string? targetPath = null) =>
 		DocumentationEng.CreateDocumentationModel(serviceProvider, targetPath);

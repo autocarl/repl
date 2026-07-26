@@ -40,6 +40,7 @@ public sealed partial class CoreReplApp : ICoreReplApp
 	internal GlobalOptionsSnapshot GlobalOptionsSnapshotInstance => _globalOptionsSnapshot;
 	internal ImplicitServiceParameterRegistry ImplicitServiceParameters => _implicitServiceParameters;
 	internal ShellCompletionRuntime ShellCompletionRuntimeInstance => _shellCompletionRuntime;
+	internal IServiceProvider CurrentServiceProvider => _runtimeState.Value?.ServiceProvider ?? _services;
 	internal IReplExecutionObserver? ExecutionObserver { get; set; }
 	internal List<ContextDefinition> Contexts => _contexts;
 	internal AsyncLocal<bool> BannerRendered => _bannerRendered;
@@ -136,7 +137,23 @@ public sealed partial class CoreReplApp : ICoreReplApp
 	public CoreReplApp Options(Action<ReplOptions> configure)
 	{
 		ArgumentNullException.ThrowIfNull(configure);
+		var previousCaseSensitivity = _options.Parsing.OptionCaseSensitivity;
+		var previousGlobalOptions = _options.Parsing.GlobalOptions.ToDictionary(
+			static pair => pair.Key,
+			static pair => pair.Value,
+			StringComparer.OrdinalIgnoreCase);
+
 		configure(_options);
+
+		var globalDiscoveryChanged = previousGlobalOptions.Count != _options.Parsing.GlobalOptions.Count
+			|| previousGlobalOptions.Any(pair =>
+				!_options.Parsing.GlobalOptions.TryGetValue(pair.Key, out var current)
+				|| !ReferenceEquals(pair.Value, current));
+		if (previousCaseSensitivity != _options.Parsing.OptionCaseSensitivity || globalDiscoveryChanged)
+		{
+			InvalidateRouting(isVisibilityRetraction: true);
+		}
+
 		return this;
 	}
 
@@ -144,15 +161,17 @@ public sealed partial class CoreReplApp : ICoreReplApp
 	/// Occurs after routing has been invalidated.
 	/// Subscribers can use this to refresh derived state (e.g. MCP tool lists).
 	/// </summary>
-	internal event EventHandler? RoutingInvalidated;
+	internal event EventHandler<RoutingInvalidatedEventArgs>? RoutingInvalidated;
 
 	/// <summary>
 	/// Invalidates active routing cache so module presence predicates are re-evaluated on next resolution.
 	/// </summary>
-	public void InvalidateRouting()
+	public void InvalidateRouting() => InvalidateRouting(isVisibilityRetraction: false);
+
+	private void InvalidateRouting(bool isVisibilityRetraction)
 	{
 		Interlocked.Increment(ref _routingCacheVersion);
-		RoutingInvalidated?.Invoke(this, EventArgs.Empty);
+		RoutingInvalidated?.Invoke(this, new RoutingInvalidatedEventArgs(isVisibilityRetraction));
 	}
 
 	/// <summary>
@@ -168,7 +187,11 @@ public sealed partial class CoreReplApp : ICoreReplApp
 			: route;
 		ArgumentNullException.ThrowIfNull(handler);
 
-		var command = new CommandBuilder(route, handler);
+		var command = new CommandBuilder(
+			route,
+			handler,
+			InvalidateRouting,
+			() => _options.Parsing.OptionCaseSensitivity);
 		ApplyMetadataFromAttributes(command, handler);
 		var parsedTemplate = RouteTemplateParser.Parse(route, _options.Parsing);
 		var template = InferRouteConstraintsFromHandler(parsedTemplate, handler);
@@ -180,8 +203,15 @@ public sealed partial class CoreReplApp : ICoreReplApp
 				.Select(existingRoute => existingRoute.Template));
 
 		_commands.Add(command);
-		var optionSchema = OptionSchemaBuilder.Build(template, command, _options.Parsing, _implicitServiceParameters);
-		var routeDefinition = new RouteDefinition(template, command, moduleId, optionSchema);
+		var optionSchema = OptionSchemaBuilder.Build(
+			template,
+			command,
+			_options.Parsing,
+			_implicitServiceParameters,
+			() => _options.Parsing.OptionCaseSensitivity);
+		command.AttachOptionSchema(optionSchema);
+		command.ValidateOptionVisibility();
+		var routeDefinition = new RouteDefinition(template, command, moduleId);
 		_routes.Add(routeDefinition);
 		InvalidateRouting();
 		return command;

@@ -479,7 +479,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		var parsedOptions = InvocationOptionParser.Parse(
 			match.RemainingTokens,
 			match.Route.OptionSchema,
-			commandParsingOptions);
+			commandParsingOptions,
+			globalOptions.CustomGlobalTokenOwnership);
 		if (parsedOptions.HasErrors)
 		{
 			var firstError = parsedOptions.Diagnostics

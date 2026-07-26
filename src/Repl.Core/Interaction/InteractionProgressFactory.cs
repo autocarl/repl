@@ -12,6 +12,12 @@ internal static class InteractionProgressFactory
 		ArgumentNullException.ThrowIfNull(parameterType);
 		ArgumentNullException.ThrowIfNull(context);
 
+		if (!IsSupportedProgressType(parameterType))
+		{
+			progress = null;
+			return false;
+		}
+
 		var channel = context.ServiceProvider.GetService(typeof(IReplInteractionChannel)) as IReplInteractionChannel;
 		if (channel is null)
 		{
@@ -33,6 +39,13 @@ internal static class InteractionProgressFactory
 
 		progress = null;
 		return false;
+	}
+
+	internal static bool IsSupportedProgressType(Type parameterType)
+	{
+		ArgumentNullException.ThrowIfNull(parameterType);
+		return parameterType == typeof(IProgress<double>)
+			|| parameterType == typeof(IProgress<ReplProgressEvent>);
 	}
 
 	private sealed class PercentageProgress(

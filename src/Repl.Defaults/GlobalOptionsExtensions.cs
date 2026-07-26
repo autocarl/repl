@@ -36,7 +36,8 @@ public static class GlobalOptionsExtensions
 			{
 				var optionAttr = property.GetCustomAttribute<ReplOptionAttribute>();
 				var name = optionAttr?.Name ?? ToKebabCase(property.Name);
-				var aliases = optionAttr?.Aliases;
+				var hiddenAliases = optionAttr?.HiddenAliases ?? [];
+				var aliases = (optionAttr?.Aliases ?? []).Concat(hiddenAliases).ToArray();
 				// The effective default of a typed global option is always the prototype value:
 				// PopulateInstance starts from new T() and only overwrites parsed values. Keep
 				// the metadata aligned (even when the value equals the CLR default) so
@@ -44,7 +45,18 @@ public static class GlobalOptionsExtensions
 				var defaultValue = property.GetValue(prototype)?.ToString();
 				var description = property.GetCustomAttribute<DescriptionAttribute>()?.Description;
 
-				options.Parsing.AddGlobalOptionCore(name, property.PropertyType, aliases, defaultValue, description, typeof(T));
+				options.Parsing.AddGlobalOptionCore(
+					name,
+					property.PropertyType,
+					aliases,
+					defaultValue,
+					description,
+					typeof(T),
+					isHidden: optionAttr?.Hidden ?? false);
+				foreach (var hiddenAlias in hiddenAliases)
+				{
+					options.Parsing.GlobalOption(name).HiddenAlias(hiddenAlias);
+				}
 			}
 		});
 
@@ -78,6 +90,15 @@ public static class GlobalOptionsExtensions
 			{
 				throw new NotSupportedException(
 					$"Global option property '{optionsType.Name}.{property.Name}' declares an Arity override, which is not supported for typed global options. Remove the override or expose the option through a per-command options type.");
+			}
+
+			// Hidden is supported here and flows through to GlobalOptionDefinition, but
+			// AutomationHidden has nothing to act on: global options never enter the documentation
+			// model, so they never reach an MCP tool schema. Rejecting beats a silent no-op.
+			if (optionAttr?.AutomationHidden == true)
+			{
+				throw new NotSupportedException(
+					$"Global option property '{optionsType.Name}.{property.Name}' declares AutomationHidden, which is not supported for typed global options: global options are never exposed to programmatic surfaces, so the flag would have no effect. Remove it, or expose the option through a per-command options type.");
 			}
 
 			foreach (var valueAlias in property.GetCustomAttributes<ReplValueAliasAttribute>())

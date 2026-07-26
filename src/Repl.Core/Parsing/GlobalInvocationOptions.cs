@@ -21,6 +21,9 @@ internal sealed record GlobalInvocationOptions(
 	public IReadOnlyDictionary<string, IReadOnlyList<string>> CustomGlobalNamedOptions { get; init; } =
 		new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
 
+	internal IReadOnlyDictionary<string, GlobalOptionDefinition> CustomGlobalTokenOwnership { get; init; } =
+		new Dictionary<string, GlobalOptionDefinition>(StringComparer.Ordinal);
+
 	public IReadOnlyList<ParseDiagnostic> Diagnostics { get; init; } = [];
 
 	// The original input index of each surviving token in <see cref="RemainingTokens"/>.

@@ -410,6 +410,25 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			deadline.Dispose();
 		});
 
+	// The pending route option has a provider this bridge may run: it resolves, it is discoverable,
+	// and it opted into shell scope. A quoted value context is unsafe for provider output (see the
+	// positional path), and bailing here still lets the static enum fallback run.
+	private bool TryResolveShellScopedProvider(
+		RouteMatch match,
+		string currentTokenPrefix,
+		out OptionSchemaEntry entry,
+		out CompletionDelegate completion)
+	{
+		entry = null!;
+		completion = null!;
+
+		return !PrefixHasQuoteContext(currentTokenPrefix)
+			&& TryResolvePendingRouteOption(match, out entry)
+			&& match.Route.OptionSchema.IsEntryDiscoverable(entry)
+			&& match.Route.Command.Completions.TryGetValue(entry.ParameterName, out completion!)
+			&& match.Route.Command.IsCompletionShellScoped(entry.ParameterName);
+	}
+
 	// Runs the pending route option's value provider when it opted into the shell bridge.
 	// Returns true when the provider ran (its answer is final, even when empty), so an enum
 	// fallback never overrides an explicit provider — the interactive menu's precedence.
@@ -421,12 +440,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		List<string> candidates,
 		CancellationToken cancellationToken)
 	{
-		// A quoted value context is unsafe for provider output (see the positional path);
-		// skipping here lets the static enum fallback still run.
-		if (PrefixHasQuoteContext(currentTokenPrefix)
-			|| !TryResolvePendingRouteOption(match, out var entry)
-			|| !match.Route.Command.Completions.TryGetValue(entry.ParameterName, out var completion)
-			|| !match.Route.Command.IsCompletionShellScoped(entry.ParameterName))
+		if (!TryResolveShellScopedProvider(match, currentTokenPrefix, out var entry, out var completion))
 		{
 			return false;
 		}
@@ -589,7 +603,8 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		HashSet<string> dedupe,
 		List<string> candidates)
 	{
-		if (!TryResolvePendingRouteOption(match, out var entry))
+		if (!TryResolvePendingRouteOption(match, out var entry)
+			|| !match.Route.OptionSchema.IsEntryDiscoverable(entry))
 		{
 			return false;
 		}
@@ -722,23 +737,23 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 				? StringComparer.OrdinalIgnoreCase
 				: StringComparer.Ordinal);
-		AddGlobalShellOptionCandidates(currentTokenPrefix, optionDedupe, candidates);
+		var customGlobalOwnership = AddGlobalShellOptionCandidates(currentTokenPrefix, optionDedupe, candidates);
 
 		if (route is null)
 		{
 			return;
 		}
 
-		AddRouteShellOptionCandidates(route, currentTokenPrefix, optionDedupe, candidates);
+		AddRouteShellOptionCandidates(route, customGlobalOwnership, currentTokenPrefix, optionDedupe, candidates);
 	}
 
-	private void AddGlobalShellOptionCandidates(
+	private IReadOnlyDictionary<string, GlobalOptionDefinition> AddGlobalShellOptionCandidates(
 		string currentTokenPrefix,
 		HashSet<string> dedupe,
 		List<string> candidates)
 	{
 		var options = app.OptionsSnapshot;
-		OptionTokenCompletionSource.CollectGlobalOptionTokens(
+		return OptionTokenCompletionSource.CollectGlobalOptionTokens(
 			options,
 			currentTokenPrefix,
 			options.Parsing.OptionCaseSensitivity.ToStringComparison(),
@@ -748,12 +763,14 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 
 	private void AddRouteShellOptionCandidates(
 		RouteDefinition route,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
 		string currentTokenPrefix,
 		HashSet<string> dedupe,
 		List<string> candidates)
 	{
 		OptionTokenCompletionSource.CollectRouteOptionTokens(
-			route,
+			route.OptionSchema,
+			customGlobalOwnership,
 			currentTokenPrefix,
 			app.OptionsSnapshot.Parsing.OptionCaseSensitivity,
 			dedupe,

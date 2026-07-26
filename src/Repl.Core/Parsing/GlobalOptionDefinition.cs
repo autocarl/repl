@@ -7,4 +7,6 @@ internal sealed record GlobalOptionDefinition(
 	string? DefaultValue,
 	string? Description,
 	Type ValueType,
-	Type? OwnerType);
+	Type? OwnerType,
+	bool IsHidden,
+	IReadOnlyList<string> HiddenAliases);

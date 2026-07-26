@@ -127,7 +127,8 @@ internal static class InvocationOptionParser
 	public static OptionParsingResult Parse(
 		IReadOnlyList<string> tokens,
 		OptionSchema schema,
-		ParsingOptions options)
+		ParsingOptions options,
+		IReadOnlyDictionary<string, GlobalOptionDefinition>? customGlobalOwnership = null)
 	{
 		ArgumentNullException.ThrowIfNull(tokens);
 		ArgumentNullException.ThrowIfNull(schema);
@@ -142,6 +143,7 @@ internal static class InvocationOptionParser
 			: tokens;
 		var namedOptions = new Dictionary<string, List<string>>(tokenComparer);
 		var positionalArguments = new List<string>(tokens.Count);
+		customGlobalOwnership ??= new Dictionary<string, GlobalOptionDefinition>(StringComparer.Ordinal);
 		var parseAsPositional = false;
 
 		for (var index = 0; index < effectiveTokens.Count; index++)
@@ -187,6 +189,7 @@ internal static class InvocationOptionParser
 					inlineValue,
 					schema,
 					options,
+					customGlobalOwnership,
 					namedOptions,
 					diagnostics);
 				continue;
@@ -210,7 +213,11 @@ internal static class InvocationOptionParser
 		return new OptionParsingResult(readonlyNamedOptions, positionalArguments, diagnostics);
 	}
 
-	private static bool LooksLikeOptionToken(string token) =>
+	// Internal (not private): the MCP adapter reuses this to reject route-segment argument
+	// values that would be re-lexed as an option token once substituted into the CLI stream,
+	// since a positional segment has no separator that can escape it the way an inline
+	// "--token=value" pair does for a named option.
+	internal static bool LooksLikeOptionToken(string token) =>
 		token.Length >= 2 && token[0] == '-';
 
 	// Shared with the completion engines: a signed numeric literal (-42) is a positional
@@ -270,14 +277,17 @@ internal static class InvocationOptionParser
 		string? inlineValue,
 		OptionSchema schema,
 		ParsingOptions options,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
 		Dictionary<string, List<string>> namedOptions,
 		List<ParseDiagnostic> diagnostics)
 	{
 		if (!options.AllowUnknownOptions)
 		{
+			// DiscoverableTokens, not KnownTokens: parsing accepts every token, but suggesting one
+			// would let a caller enumerate hidden options by probing at small edit distance.
 			var suggestion = TryResolveSuggestion(
 				optionToken,
-				schema.KnownTokens,
+				[.. schema.DiscoverableTokens.Where(token => !customGlobalOwnership.ContainsKey(token))],
 				options.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive);
 			var message = suggestion is null
 				? $"Unknown option '{optionToken}'."

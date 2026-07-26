@@ -60,6 +60,127 @@ public sealed class Given_DocumentationExport
 	}
 
 	[TestMethod]
+	[Description("Mirrors the command axis one level down: an explicitly targeted command exports its hidden options, flagged, exactly as a targeted hidden command exports itself. Aggregate export still omits them, which is what keeps them out of the MCP tool schema and its argument allow-list. This targeted export is the only surface an app author has for asking which options are hidden.")]
+	public void When_ExportingExactCommandWithHiddenOption_Then_TheOptionIsIncludedAndFlagged()
+	{
+		var sut = ReplApp.Create()
+			.UseDocumentationExport();
+		sut.Map(
+				"deploy",
+				([ReplOption(Name = "environment")] string environment, [ReplOption(Name = "internalMode")] bool internalMode = false) =>
+					$"{environment}:{internalMode}")
+			.WithOption("internalMode", static option => option.Hidden());
+
+		var aggregate = ConsoleCaptureHelper.Capture(() => sut.Run(["doc", "export", "--json", "--no-logo"]));
+		var targeted = ConsoleCaptureHelper.Capture(() => sut.Run(["doc", "export", "deploy", "--json", "--no-logo"]));
+
+		aggregate.ExitCode.Should().Be(0, aggregate.Text);
+		aggregate.Text.Should().NotContain("internalMode");
+		targeted.ExitCode.Should().Be(0, targeted.Text);
+		targeted.Text.Should().Contain("internalMode");
+		targeted.Text.Should().Contain("\"isHidden\": true");
+	}
+
+	[TestMethod]
+	[Description("The exact-target export contract promises hidden options are included AND flagged. The structured formats get that for free by serializing the record, but markdown formats each field by hand, so without this it rendered a hidden option indistinguishably from a public one. Commands already print their own Hidden line; options now carry the same information.")]
+	public void When_ExportingExactCommandAsMarkdown_Then_HiddenOptionsAreFlagged()
+	{
+		var sut = ReplApp.Create()
+			.UseDocumentationExport();
+		sut.Map(
+				"deploy",
+				([ReplOption(Name = "environment")] string environment,
+					[ReplOption(Name = "internalMode")] bool internalMode = false,
+					[ReplOption(Name = "traceId")] string? traceId = null) =>
+					$"{environment}:{internalMode}:{traceId}")
+			.WithOption("internalMode", static option => option.Hidden())
+			.WithOption("traceId", static option => option.AutomationHidden());
+
+		var markdown = ConsoleCaptureHelper.Capture(() => sut.Run(["doc", "export", "deploy", "--markdown", "--no-logo"]));
+
+		markdown.ExitCode.Should().Be(0, markdown.Text);
+		markdown.Text.Should().Contain("`--internalMode`");
+		markdown.Text.Should().Contain("hidden");
+		markdown.Text.Should().Contain("`--traceId`");
+		markdown.Text.Should().Contain("automation-hidden");
+		markdown.Text.Should().Contain("`--environment`");
+	}
+
+	[TestMethod]
+	[Description("Markdown renders the surviving invocable reverse alias when global precedence removes the ordinary route token, rather than inventing the unreachable canonical spelling.")]
+	public void When_OnlyReverseAliasRemainsReachable_Then_MarkdownRendersThatAlias()
+	{
+		var sut = ReplApp.Create().UseDocumentationExport();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<bool>("force");
+			options.Parsing.GlobalOption("force").Hidden();
+		});
+		sut.Map(
+			"deploy",
+			static string ([ReplOption(ReverseAliases = ["--no-force"])] bool force = true) => force.ToString());
+
+		var markdown = ConsoleCaptureHelper.Capture(() =>
+			sut.Run(["doc", "export", "deploy", "--markdown", "--no-logo"]));
+
+		markdown.ExitCode.Should().Be(0, markdown.Text);
+		markdown.Text.Should().Contain("`--no-force`");
+		markdown.Text.Should().NotContain("`--force`");
+	}
+
+	[TestMethod]
+	[Description("Exact-target inventory retains a wholly hidden route option even when a hidden global owns its only token; every export format identifies it and preserves the hidden flag.")]
+	public void When_HiddenGlobalOwnsWhollyHiddenOptionToken_Then_ExactExportsRetainTheOption()
+	{
+		var sut = ReplApp.Create().UseDocumentationExport();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<bool>("internal-mode");
+			options.Parsing.GlobalOption("internal-mode").Hidden();
+		});
+		sut.Map(
+				"deploy",
+				static string ([ReplOption(Name = "internal-mode")] bool internalMode = false) => internalMode.ToString())
+			.WithOption("internalMode", static option => option.Hidden());
+
+		var modelOption = sut.CreateDocumentationModel("deploy").Commands.Single().Options.Single();
+		var json = ConsoleCaptureHelper.Capture(() => sut.Run(["doc", "export", "deploy", "--json", "--no-logo"]));
+		var yaml = ConsoleCaptureHelper.Capture(() => sut.Run(["doc", "export", "deploy", "--yaml", "--no-logo"]));
+		var xml = ConsoleCaptureHelper.Capture(() => sut.Run(["doc", "export", "deploy", "--xml", "--no-logo"]));
+		var markdown = ConsoleCaptureHelper.Capture(() => sut.Run(["doc", "export", "deploy", "--markdown", "--no-logo"]));
+
+		modelOption.Name.Should().Be("internal-mode");
+		modelOption.IsHidden.Should().BeTrue();
+		foreach (var export in new[] { json, yaml, xml, markdown })
+		{
+			export.ExitCode.Should().Be(0, export.Text);
+			export.Text.Should().Contain("internal-mode");
+			export.Text.Should().ContainEquivalentOf("hidden");
+		}
+	}
+
+	[TestMethod]
+	[Description("The visibility flags are new members on a serialized public record, and yaml and xml emit that record wholesale rather than field by field. Only json and markdown had coverage, so this exercises the two formats that would have broken silently.")]
+	public void When_ExportingExactCommandAsYamlOrXml_Then_VisibilityFlagsSerialize()
+	{
+		var sut = ReplApp.Create()
+			.UseDocumentationExport();
+		sut.Map(
+				"deploy",
+				([ReplOption(Name = "environment")] string environment, [ReplOption(Name = "internalMode")] bool internalMode = false) =>
+					$"{environment}:{internalMode}")
+			.WithOption("internalMode", static option => option.Hidden());
+
+		var yaml = ConsoleCaptureHelper.Capture(() => sut.Run(["doc", "export", "deploy", "--yaml", "--no-logo"]));
+		var xml = ConsoleCaptureHelper.Capture(() => sut.Run(["doc", "export", "deploy", "--xml", "--no-logo"]));
+
+		yaml.ExitCode.Should().Be(0, yaml.Text);
+		yaml.Text.Should().Contain("internalMode");
+		xml.ExitCode.Should().Be(0, xml.Text);
+		xml.Text.Should().Contain("internalMode");
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies hidden context is explicitly targeted so exact-path export includes the hidden context metadata.")]
 	public void When_ExportingExactHiddenContext_Then_HiddenContextIsIncluded()
 	{

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using Repl.Interaction;
 using Repl.Internal.Options;
 
 namespace Repl;
@@ -65,7 +66,23 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			out var notFoundResult);
 
 		var contexts = SelectDocumentationContexts(normalizedTargetPath, commands, discoverableContexts);
-		var commandDocs = commands.Select(BuildDocumentationCommand).ToArray();
+
+		// Mirrors the command axis: a targeted command exports its hidden options, flagged, the way
+		// a targeted hidden command exports itself. Aggregate models omit them — which is also what
+		// keeps them out of the MCP tool schema and its argument allow-list, since MCP always builds
+		// the aggregate model.
+		var isExactCommandTarget = commands.Length == 1
+			&& !string.IsNullOrWhiteSpace(normalizedTargetPath)
+			&& string.Equals(commands[0].Template.Template, normalizedTargetPath, StringComparison.OrdinalIgnoreCase);
+		var serviceAvailability = new Dictionary<Type, bool>();
+		var customGlobalOwnership = GlobalOptionParser.BuildCustomTokenOwnership(app.OptionsSnapshot.Parsing);
+		var commandDocs = commands
+			.Select(route => BuildDocumentationCommand(
+				route,
+				includeHiddenOptions: isExactCommandTarget,
+				serviceAvailability,
+				customGlobalOwnership))
+			.ToArray();
 		var contextDocs = contexts
 			.Select(context => new ReplDocContext(
 				Path: context.Template.Template,
@@ -74,15 +91,7 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 				IsHidden: context.IsHidden,
 				Details: context.Details))
 			.ToArray();
-		var resourceDocs = commandDocs
-			.Where(cmd => cmd.IsResource || cmd.Annotations?.ReadOnly == true)
-			.Select(cmd => new ReplDocResource(
-				Path: cmd.Path,
-				Description: cmd.Description,
-				Details: cmd.Details,
-				Arguments: cmd.Arguments,
-				Options: cmd.Options))
-			.ToArray();
+		var resourceDocs = BuildDocumentationResources(commandDocs);
 		var model = new ReplDocumentationModel(
 			App: BuildDocumentationApp(),
 			Contexts: contextDocs,
@@ -90,6 +99,17 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			Resources: resourceDocs);
 		return (model, notFoundResult);
 	}
+
+	private static ReplDocResource[] BuildDocumentationResources(IReadOnlyList<ReplDocCommand> commands) =>
+		commands
+			.Where(static command => command.IsResource || command.Annotations?.ReadOnly == true)
+			.Select(static command => new ReplDocResource(
+				Path: command.Path,
+				Description: command.Description,
+				Details: command.Details,
+				Arguments: command.Arguments,
+				Options: command.Options))
+			.ToArray();
 
 	private static RouteDefinition[] SelectDocumentationCommands(
 		string? normalizedTargetPath,
@@ -171,8 +191,17 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 		return selected;
 	}
 
-	private ReplDocCommand BuildDocumentationCommand(RouteDefinition route)
+	private ReplDocCommand BuildDocumentationCommand(
+		RouteDefinition route,
+		bool includeHiddenOptions,
+		Dictionary<Type, bool> serviceAvailability,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
 	{
+		if (!includeHiddenOptions)
+		{
+			ValidateHiddenOptionInvocability(route, serviceAvailability);
+		}
+
 		var dynamicSegments = route.Template.Segments
 			.OfType<DynamicRouteSegment>()
 			.ToArray();
@@ -181,7 +210,13 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var handlerParams = route.Command.Handler.Method.GetParameters();
 		var arguments = BuildDocumentationArguments(dynamicSegments, handlerParams);
-		var options = BuildDocumentationOptions(route, routeParameterNames, handlerParams);
+		var options = BuildDocumentationOptions(
+			route,
+			routeParameterNames,
+			handlerParams,
+			includeHiddenOptions,
+			serviceAvailability,
+			customGlobalOwnership);
 		var answers = BuildDocumentationAnswers(route.Command);
 		var acceptsPagingInput = handlerParams.Any(static parameter => parameter.ParameterType == typeof(IReplPagingContext));
 		var emitsPagedResult = IsPagedReturnType(route.Command.Handler.Method.ReturnType);
@@ -206,26 +241,39 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 	private ReplDocOption[] BuildDocumentationOptions(
 		RouteDefinition route,
 		HashSet<string> routeParameterNames,
-		ParameterInfo[] handlerParams)
+		ParameterInfo[] handlerParams,
+		bool includeHiddenOptions,
+		Dictionary<Type, bool> serviceAvailability,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
 	{
+		var schema = route.OptionSchema;
 		var regularOptions = handlerParams
 			.Where(parameter =>
-				!string.IsNullOrWhiteSpace(parameter.Name)
+				parameter.Name is { } name
 				&& parameter.ParameterType != typeof(CancellationToken)
-				&& !routeParameterNames.Contains(parameter.Name!)
+				&& !routeParameterNames.Contains(name)
 				&& !app.ImplicitServiceParameters.IsImplicitServiceParameter(parameter.ParameterType)
 				&& parameter.GetCustomAttribute<FromServicesAttribute>() is null
 				&& parameter.GetCustomAttribute<FromContextAttribute>() is null
-				&& !Attribute.IsDefined(parameter.ParameterType, typeof(ReplOptionsGroupAttribute), inherit: true))
-			.Select(parameter => BuildDocumentationOption(route.OptionSchema, parameter));
+				&& !Attribute.IsDefined(parameter.ParameterType, typeof(ReplOptionsGroupAttribute), inherit: true)
+				&& (includeHiddenOptions || !schema.IsOptionHidden(name))
+				&& ShouldIncludeDocumentationOption(
+					route, name, includeHiddenOptions, serviceAvailability, customGlobalOwnership))
+			.Select(parameter => BuildDocumentationOption(
+				schema, parameter, serviceAvailability, customGlobalOwnership));
 		var groupOptions = handlerParams
 			.Where(parameter => Attribute.IsDefined(parameter.ParameterType, typeof(ReplOptionsGroupAttribute), inherit: true))
 			.SelectMany(parameter =>
 			{
 				var defaultInstance = CreateOptionsGroupDefault(parameter.ParameterType);
 				return GetOptionsGroupProperties(parameter.ParameterType)
-					.Where(prop => prop.CanWrite)
-					.Select(prop => BuildDocumentationOptionFromProperty(route.OptionSchema, prop, defaultInstance));
+					.Where(prop =>
+						prop.CanWrite
+						&& (includeHiddenOptions || !schema.IsOptionHidden(prop.Name))
+						&& ShouldIncludeDocumentationOption(
+							route, prop.Name, includeHiddenOptions, serviceAvailability, customGlobalOwnership))
+					.Select(prop => BuildDocumentationOptionFromProperty(
+						schema, prop, defaultInstance, customGlobalOwnership));
 			});
 		return regularOptions.Concat(groupOptions).ToArray();
 	}
@@ -294,26 +342,120 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 		return new ReplDocApp(name, version, description);
 	}
 
-	// An explicit OneOrMore/ExactlyOne arity now fails binding when the option is absent
-	// (HandlerArgumentBinder), so exported docs must report it as required regardless of the
-	// CLR parameter shape.
+	// Explicit lower bounds and non-omittable CLR shapes are required only when the binding path
+	// cannot obtain the value from the active provider. This must use GetService itself — not
+	// registration metadata — because custom/external providers and null-returning factories are
+	// part of the same contract as HandlerArgumentBinder.
+	private bool IsRequiredOption(
+		OptionSchema schema,
+		string parameterName,
+		Dictionary<Type, bool> serviceAvailability)
+	{
+		if (!schema.TryGetParameter(parameterName, out var parameter))
+		{
+			return false;
+		}
+
+		var requiresFallback = parameter.ExplicitArity is ReplArity.OneOrMore or ReplArity.ExactlyOne
+			|| !parameter.CanBeOmitted;
+		return requiresFallback
+			&& (!parameter.SupportsServiceFallback
+				|| !CanResolveFromActiveServices(parameter.ParameterType, serviceAvailability));
+	}
+
+	private bool CanResolveFromActiveServices(Type parameterType, Dictionary<Type, bool> serviceAvailability)
+	{
+		// HandlerArgumentBinder synthesizes these progress types from the interaction channel before
+		// direct service lookup. Discovery must apply that same fallback and still allow an explicitly
+		// registered IProgress<T> when no channel is available.
+		if (InteractionProgressFactory.IsSupportedProgressType(parameterType)
+			&& IsServiceAvailable(typeof(IReplInteractionChannel), serviceAvailability))
+		{
+			return true;
+		}
+
+		return IsServiceAvailable(parameterType, serviceAvailability);
+	}
+
+	private bool IsServiceAvailable(Type serviceType, Dictionary<Type, bool> serviceAvailability)
+	{
+		if (serviceAvailability.TryGetValue(serviceType, out var available))
+		{
+			return available;
+		}
+
+		// GetService can activate a transient factory or throw outright — a scoped registration
+		// resolved from a root provider under ValidateScopes is a common way this happens. A
+		// misbehaving registration must not crash discovery for every other route over one option's
+		// fallback check; treat a throw here the same as a null result, unavailable.
+		try
+		{
+			available = app.CurrentServiceProvider.GetService(serviceType) is not null;
+		}
+		catch (Exception)
+		{
+			available = false;
+		}
+
+		serviceAvailability[serviceType] = available;
+		return available;
+	}
+
+	private bool ShouldIncludeDocumentationOption(
+		RouteDefinition route,
+		string parameterName,
+		bool includeHiddenOptions,
+		Dictionary<Type, bool> serviceAvailability,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
+	{
+		var schema = route.OptionSchema;
+		if (includeHiddenOptions && schema.IsOptionHidden(parameterName))
+		{
+			return true;
+		}
+
+		var displayToken = schema.ResolveDisplayToken(parameterName);
+		var hasReachableToken = schema.ResolveDiscoverableAliases(parameterName)
+			.Any(entry => !customGlobalOwnership.ContainsKey(entry.Token));
+		if (displayToken is null || hasReachableToken)
+		{
+			return true;
+		}
+
+		if (IsRequiredOption(schema, parameterName, serviceAvailability))
+		{
+			throw new HiddenRequiredOptionException(
+				parameterName,
+				displayToken,
+				route.Template.Template);
+		}
+
+		return false;
+	}
+
 	private static bool HasExplicitRequiredArity(OptionSchema schema, string parameterName) =>
 		schema.TryGetParameter(parameterName, out var schemaParameter)
 		&& schemaParameter.ExplicitArity is ReplArity.OneOrMore or ReplArity.ExactlyOne;
 
-	private static bool IsRequiredParameter(ParameterInfo parameter)
+	private void ValidateHiddenOptionInvocability(
+		RouteDefinition route,
+		Dictionary<Type, bool> serviceAvailability)
 	{
-		if (parameter.HasDefaultValue)
+		var schema = route.OptionSchema;
+		foreach (var parameter in schema.Parameters.Values)
 		{
-			return false;
-		}
+			if (parameter.Mode == ReplParameterMode.ArgumentOnly
+				|| !parameter.IsHidden
+				|| !IsRequiredOption(schema, parameter.Name, serviceAvailability))
+			{
+				continue;
+			}
 
-		if (!parameter.ParameterType.IsValueType)
-		{
-			return false;
+			throw new HiddenRequiredOptionException(
+				parameter.Name,
+				schema.ResolveDisplayToken(parameter.Name),
+				route.Template.Template);
 		}
-
-		return Nullable.GetUnderlyingType(parameter.ParameterType) is null;
 	}
 
 	internal static string GetConstraintTypeName(RouteConstraintKind kind) =>
@@ -381,10 +523,12 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 	private static ReplDocOption BuildDocumentationOptionFromProperty(
 		OptionSchema schema,
 		PropertyInfo property,
-		object defaultInstance)
+		object defaultInstance,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
 	{
-		var entries = schema.Entries
-			.Where(entry => string.Equals(entry.ParameterName, property.Name, StringComparison.OrdinalIgnoreCase))
+		var displayToken = schema.ResolveDisplayToken(property.Name);
+		var entries = schema.ResolveDiscoverableAliases(property.Name)
+			.Where(entry => !customGlobalOwnership.ContainsKey(entry.Token))
 			.ToArray();
 		var aliases = entries
 			.Where(entry => entry.TokenKind is OptionSchemaTokenKind.NamedOption or OptionSchemaTokenKind.BoolFlag)
@@ -411,7 +555,7 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			? propDefault.ToString()
 			: null;
 		return new ReplDocOption(
-			Name: aliases.Length > 0 ? aliases[0].TrimStart('-') : property.Name,
+			Name: displayToken?.TrimStart('-') ?? property.Name,
 			Type: GetFriendlyTypeName(property.PropertyType),
 			Required: HasExplicitRequiredArity(schema, property.Name),
 			Description: property.GetCustomAttribute<DescriptionAttribute>()?.Description,
@@ -419,13 +563,22 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			ReverseAliases: reverseAliases,
 			ValueAliases: valueAliases,
 			EnumValues: enumValues,
-			DefaultValue: defaultValue);
+			DefaultValue: defaultValue)
+		{
+			IsHidden = schema.IsOptionHidden(property.Name),
+			IsAutomationHidden = schema.IsOptionAutomationHidden(property.Name),
+		};
 	}
 
-	private static ReplDocOption BuildDocumentationOption(OptionSchema schema, ParameterInfo parameter)
+	private ReplDocOption BuildDocumentationOption(
+		OptionSchema schema,
+		ParameterInfo parameter,
+		Dictionary<Type, bool> serviceAvailability,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
 	{
-		var entries = schema.Entries
-			.Where(entry => string.Equals(entry.ParameterName, parameter.Name, StringComparison.OrdinalIgnoreCase))
+		var displayToken = schema.ResolveDisplayToken(parameter.Name!);
+		var entries = schema.ResolveDiscoverableAliases(parameter.Name!)
+			.Where(entry => !customGlobalOwnership.ContainsKey(entry.Token))
 			.ToArray();
 		var aliases = entries
 			.Where(entry => entry.TokenKind is OptionSchemaTokenKind.NamedOption or OptionSchemaTokenKind.BoolFlag)
@@ -451,15 +604,19 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			? parameter.DefaultValue.ToString()
 			: null;
 		return new ReplDocOption(
-			Name: aliases.Length > 0 ? aliases[0].TrimStart('-') : parameter.Name!,
+			Name: displayToken?.TrimStart('-') ?? parameter.Name!,
 			Type: GetFriendlyTypeName(parameter.ParameterType),
-			Required: IsRequiredParameter(parameter) || HasExplicitRequiredArity(schema, parameter.Name!),
+			Required: IsRequiredOption(schema, parameter.Name!, serviceAvailability),
 			Description: parameter.GetCustomAttribute<DescriptionAttribute>()?.Description,
 			Aliases: aliases,
 			ReverseAliases: reverseAliases,
 			ValueAliases: valueAliases,
 			EnumValues: enumValues,
-			DefaultValue: defaultValue);
+			DefaultValue: defaultValue)
+		{
+			IsHidden = schema.IsOptionHidden(parameter.Name!),
+			IsAutomationHidden = schema.IsOptionAutomationHidden(parameter.Name!),
+		};
 	}
 
 	[UnconditionalSuppressMessage(

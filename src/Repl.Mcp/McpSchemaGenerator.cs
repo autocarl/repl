@@ -16,6 +16,7 @@ internal static class McpSchemaGenerator
 	/// </summary>
 	public static JsonElement BuildInputSchema(ReplDocCommand command)
 	{
+		McpToolAdapter.ValidateArgumentNames(command);
 		var properties = new JsonObject();
 		var required = new JsonArray();
 

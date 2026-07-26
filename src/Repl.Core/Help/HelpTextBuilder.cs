@@ -70,10 +70,11 @@ internal static partial class HelpTextBuilder
 		var scope = scopeTokens.Count == 0 ? "root" : string.Join(' ', scopeTokens);
 		if (TryGetCommandHelpRoutes(visibleRoutes, scopeTokens, parsingOptions, out var commandHelpRoutes))
 		{
+			var customGlobalOwnership = GlobalOptionParser.BuildCustomTokenOwnership(parsingOptions);
 			return new HelpRenderDocument(
 				scope,
 				IsCommandHelp: true,
-				Commands: commandHelpRoutes.Select(CreateRenderCommand).ToArray(),
+				Commands: commandHelpRoutes.Select(route => CreateRenderCommand(route, customGlobalOwnership)).ToArray(),
 				Scopes: [],
 				GlobalOptions: [],
 				GlobalCommands: []);
@@ -155,7 +156,8 @@ internal static partial class HelpTextBuilder
 		var effectiveAmbientOptions = ambientOptions ?? new AmbientCommandOptions();
 		if (TryGetCommandHelpRoutes(visibleRoutes, scopeTokens, parsingOptions, out var commandHelpRoutes))
 		{
-			return BuildCommandHelp(commandHelpRoutes, useAnsi, effectivePalette);
+			var customGlobalOwnership = GlobalOptionParser.BuildCustomTokenOwnership(parsingOptions);
+			return BuildCommandHelp(commandHelpRoutes, customGlobalOwnership, useAnsi, effectivePalette);
 		}
 
 		var matchingRoutes = visibleRoutes
@@ -258,7 +260,9 @@ internal static partial class HelpTextBuilder
 			Aliases: route.Command.Aliases.ToArray());
 	}
 
-	private static HelpRenderCommand CreateRenderCommand(RouteDefinition route)
+	private static HelpRenderCommand CreateRenderCommand(
+		RouteDefinition route,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
 	{
 		var displayTemplate = FormatRouteTemplate(route.Template);
 		return new HelpRenderCommand(
@@ -267,7 +271,7 @@ internal static partial class HelpTextBuilder
 			Usage: displayTemplate,
 			Aliases: route.Command.Aliases.ToArray(),
 			Arguments: BuildArgumentRows(route),
-			Options: BuildOptionRows(route),
+			Options: BuildOptionRows(route, customGlobalOwnership),
 			ResultFlow: UsesResultFlow(route) ? ResultFlowRows : [],
 			Answers: BuildAnswerRows(route));
 	}
