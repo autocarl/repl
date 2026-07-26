@@ -45,6 +45,7 @@ Commands map to MCP primitives automatically:
 | `.AsPrompt()` | Prompt | Reusable instruction template |
 | `.AsMcpAppResource()` | Tool + `ui://` HTML resource | Interactive UI for capable hosts |
 | `.AutomationHidden()` | _(nothing)_ | Excluded from MCP entirely |
+| `.WithOption(name, o => o.AutomationHidden())` | Tool without that option | Option people may use but agents should not |
 
 ## Annotations
 

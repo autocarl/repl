@@ -301,6 +301,8 @@ Notes:
 |---|---|---|
 | `.AutomationHidden()` | Per-command | Interactive-only commands |
 | `.Hidden()` | Per-command | Hidden from all surfaces |
+| `.WithOption(name, o => o.AutomationHidden())` | Per-option | Option people may use but agents should not |
+| `.WithOption(name, o => o.Hidden())` | Per-option | Deprecated or diagnostic switches |
 | `CommandFilter` | App-level | `o.CommandFilter = c => !c.Path.StartsWith("admin")` |
 | Module presence + `Programmatic` | Per-module | Entire feature areas |
 
