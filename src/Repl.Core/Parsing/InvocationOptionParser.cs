@@ -287,7 +287,10 @@ internal static class InvocationOptionParser
 			// would let a caller enumerate hidden options by probing at small edit distance.
 			var suggestion = TryResolveSuggestion(
 				optionToken,
-				[.. schema.DiscoverableTokens.Where(token => !customGlobalOwnership.ContainsKey(token))],
+				[
+					.. schema.ResolveDiscoverableTokens(options.OptionCaseSensitivity)
+						.Where(token => !customGlobalOwnership.ContainsKey(token)),
+				],
 				options.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive);
 			var message = suggestion is null
 				? $"Unknown option '{optionToken}'."

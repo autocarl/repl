@@ -1364,7 +1364,12 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		{
 			AllowUnknownOptions = _options.Parsing.AllowUnknownOptions,
 			OptionCaseSensitivity = optionCaseSensitivity,
-			AllowResponseFiles = !isInteractiveSession && _options.Parsing.AllowResponseFiles,
+			// Structured/programmatic callers already provide argument boundaries. Expanding an
+			// MCP-supplied @file token here would replace one allowed value with arbitrary CLI
+			// tokens from the server filesystem, bypassing the adapter's schema allow-list.
+			AllowResponseFiles = !isInteractiveSession
+				&& !ReplSessionIO.IsProgrammatic
+				&& _options.Parsing.AllowResponseFiles,
 		};
 	}
 }

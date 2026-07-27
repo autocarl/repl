@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Repl;
 using Repl.Mcp;
 using Repl.Documentation;
@@ -609,6 +610,58 @@ public sealed class Given_McpToolAdapter
 		parseResult.NamedOptions.Should().NotContainKey("tenant");
 		parseResult.NamedOptions.Should().ContainKey("verbose");
 		parseResult.NamedOptions["verbose"].Should().ContainSingle().Which.Should().Be("-t=denim");
+	}
+
+	[TestMethod]
+	[Description("An MCP string value that names a response file remains literal during the programmatic invocation, so file contents cannot inject a hidden route option.")]
+	public async Task When_StringToolValueNamesResponseFile_Then_ProgrammaticInvocationDoesNotExpandIt()
+	{
+		var responseFile = Path.Join(Path.GetTempPath(), $"repl-mcp-review-{Guid.NewGuid():N}.rsp");
+		File.WriteAllText(responseFile, "ordinaryValue --hidden secret");
+		try
+		{
+			string? observedVisible = null;
+			string? observedHidden = null;
+			var app = ReplApp.Create();
+			app.Map(
+					"deploy",
+					([ReplOption] string? visible, [ReplOption] string? hidden) =>
+					{
+						observedVisible = visible;
+						observedHidden = hidden;
+						return "ok";
+					})
+				.WithOption("hidden", static option => option.Hidden());
+			await using var services = new ServiceCollection().BuildServiceProvider();
+			var adapter = new McpToolAdapter(app.Core, new ReplMcpServerOptions(), services);
+			adapter.RegisterRoute(
+				"deploy",
+				new ReplDocCommand(
+					Path: "deploy",
+					Description: null,
+					Aliases: [],
+					IsHidden: false,
+					Arguments: [],
+					Options: [new ReplDocOption("visible", "string", Required: false, Description: null, Aliases: [], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null)]));
+
+			var result = await adapter.InvokeAsync(
+				"deploy",
+				new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+				{
+					["visible"] = JsonSerializer.SerializeToElement($"@{responseFile}"),
+				},
+				server: null,
+				progressToken: null,
+				CancellationToken.None);
+
+			result.IsError.Should().NotBeTrue();
+			observedHidden.Should().BeNull();
+			observedVisible.Should().Be($"@{responseFile}");
+		}
+		finally
+		{
+			File.Delete(responseFile);
+		}
 	}
 
 	private static ReplDocCommand CreateCaseDistinctOptionsCommand() =>
