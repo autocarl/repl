@@ -67,14 +67,14 @@ internal static partial class HelpTextBuilder
 		var visibleRoutes = routes
 			.Where(route => !route.Command.IsHidden)
 			.ToArray();
+		var globalConfiguration = parsingOptions.CaptureGlobalOptionConfiguration();
 		var scope = scopeTokens.Count == 0 ? "root" : string.Join(' ', scopeTokens);
 		if (TryGetCommandHelpRoutes(visibleRoutes, scopeTokens, parsingOptions, out var commandHelpRoutes))
 		{
-			var customGlobalOwnership = GlobalOptionParser.BuildCustomTokenOwnership(parsingOptions);
 			return new HelpRenderDocument(
 				scope,
 				IsCommandHelp: true,
-				Commands: commandHelpRoutes.Select(route => CreateRenderCommand(route, customGlobalOwnership)).ToArray(),
+				Commands: commandHelpRoutes.Select(route => CreateRenderCommand(route, globalConfiguration)).ToArray(),
 				Scopes: [],
 				GlobalOptions: [],
 				GlobalCommands: []);
@@ -89,7 +89,7 @@ internal static partial class HelpTextBuilder
 			IsCommandHelp: false,
 			Commands: BuildScopeCommandEntries(matchingRoutes, contexts, scopeTokens, parsingOptions),
 			Scopes: BuildScopeContextEntries(contexts, scopeTokens, parsingOptions),
-			GlobalOptions: BuildGlobalOptionEntries(parsingOptions),
+			GlobalOptions: BuildGlobalOptionEntries(globalConfiguration),
 			GlobalCommands: BuildGlobalCommandEntries(effectiveAmbientOptions));
 	}
 
@@ -154,10 +154,10 @@ internal static partial class HelpTextBuilder
 		var width = renderWidth ?? ResolveRenderWidth();
 		var effectivePalette = palette ?? new DefaultAnsiPaletteProvider().Create(ThemeMode.Dark);
 		var effectiveAmbientOptions = ambientOptions ?? new AmbientCommandOptions();
+		var globalConfiguration = parsingOptions.CaptureGlobalOptionConfiguration();
 		if (TryGetCommandHelpRoutes(visibleRoutes, scopeTokens, parsingOptions, out var commandHelpRoutes))
 		{
-			var customGlobalOwnership = GlobalOptionParser.BuildCustomTokenOwnership(parsingOptions);
-			return BuildCommandHelp(commandHelpRoutes, customGlobalOwnership, useAnsi, effectivePalette);
+			return BuildCommandHelp(commandHelpRoutes, globalConfiguration, useAnsi, effectivePalette);
 		}
 
 		var matchingRoutes = visibleRoutes
@@ -169,6 +169,7 @@ internal static partial class HelpTextBuilder
 			matchingRoutes,
 			contexts,
 			parsingOptions,
+			globalConfiguration,
 			effectiveAmbientOptions,
 			width,
 			useAnsi,
@@ -262,7 +263,7 @@ internal static partial class HelpTextBuilder
 
 	private static HelpRenderCommand CreateRenderCommand(
 		RouteDefinition route,
-		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration)
 	{
 		var displayTemplate = FormatRouteTemplate(route.Template);
 		return new HelpRenderCommand(
@@ -271,7 +272,7 @@ internal static partial class HelpTextBuilder
 			Usage: displayTemplate,
 			Aliases: route.Command.Aliases.ToArray(),
 			Arguments: BuildArgumentRows(route),
-			Options: BuildOptionRows(route, customGlobalOwnership),
+			Options: BuildOptionRows(route, globalConfiguration),
 			ResultFlow: UsesResultFlow(route) ? ResultFlowRows : [],
 			Answers: BuildAnswerRows(route));
 	}
@@ -331,8 +332,9 @@ internal static partial class HelpTextBuilder
 			.Select(row => new HelpRenderEntry(row[0], row[1]))
 			.ToArray();
 
-	private static HelpRenderEntry[] BuildGlobalOptionEntries(ParsingOptions parsingOptions) =>
-		BuildGlobalOptionRows(parsingOptions)
+	private static HelpRenderEntry[] BuildGlobalOptionEntries(
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration) =>
+		BuildGlobalOptionRows(globalConfiguration)
 			.Select(row => new HelpRenderEntry(row[0], row[1]))
 			.ToArray();
 

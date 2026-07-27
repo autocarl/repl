@@ -4,6 +4,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Repl.ShellCompletion;
 using Repl.Internal.Options;
 
@@ -25,7 +26,9 @@ public sealed partial class CoreReplApp : ICoreReplApp
 	private int _nextModuleId = 1;
 	private readonly AsyncLocal<InvocationRuntimeState?> _runtimeState = new();
 	private readonly ConditionalWeakTable<IServiceProvider, RoutingCacheBucket> _routingCacheByServiceProvider = new();
+	private readonly object _configurationMutationGate = new();
 	private long _routingCacheVersion;
+	private readonly AsyncLocal<OptionsConfigurationScope?> _optionsConfigurationScope = new();
 	private readonly DefaultServiceProvider _services;
 	private readonly ShellCompletionRuntime _shellCompletionRuntime;
 	private string? _description;
@@ -50,6 +53,10 @@ public sealed partial class CoreReplApp : ICoreReplApp
 	private CoreReplApp()
 	{
 		_options.Output.SetHostAnsiSupportResolver(() => _options.Capabilities.SupportsAnsi);
+		_options.Parsing.ConfigureGlobalDiscoveryMutationCallbacks(
+			ValidateMappedOptionCaseSensitivity,
+			InvalidateRoutingFromOptionsMutation,
+			_configurationMutationGate);
 		_globalOptionsSnapshot = new GlobalOptionsSnapshot(_options.Parsing);
 		_services = CreateDefaultServiceProvider();
 		_shellCompletionRuntime = new ShellCompletionRuntime(
@@ -137,41 +144,162 @@ public sealed partial class CoreReplApp : ICoreReplApp
 	public CoreReplApp Options(Action<ReplOptions> configure)
 	{
 		ArgumentNullException.ThrowIfNull(configure);
-		var previousCaseSensitivity = _options.Parsing.OptionCaseSensitivity;
-		var previousGlobalOptions = _options.Parsing.GlobalOptions.ToDictionary(
-			static pair => pair.Key,
-			static pair => pair.Value,
-			StringComparer.OrdinalIgnoreCase);
-
-		configure(_options);
-
-		var globalDiscoveryChanged = previousGlobalOptions.Count != _options.Parsing.GlobalOptions.Count
-			|| previousGlobalOptions.Any(pair =>
-				!_options.Parsing.GlobalOptions.TryGetValue(pair.Key, out var current)
-				|| !ReferenceEquals(pair.Value, current));
-		if (previousCaseSensitivity != _options.Parsing.OptionCaseSensitivity || globalDiscoveryChanged)
+		var parentScope = _optionsConfigurationScope.Value;
+		var scope = new OptionsConfigurationScope();
+		_optionsConfigurationScope.Value = scope;
+		ExceptionDispatchInfo? configurationFailure = null;
+		IReadOnlyList<Exception> routingInvalidationExceptions = [];
+		var mergedIntoParent = true;
+		try
 		{
-			InvalidateRouting(isVisibilityRetraction: true);
+			configure(_options);
+		}
+		catch (Exception exception)
+		{
+			configurationFailure = ExceptionDispatchInfo.Capture(exception);
+		}
+		finally
+		{
+			routingInvalidationExceptions = scope.CloseAndDrain();
+			_optionsConfigurationScope.Value = parentScope;
+			if (parentScope is not null)
+			{
+				mergedIntoParent = parentScope.TryAddRange(routingInvalidationExceptions);
+			}
+		}
+
+		if (configurationFailure is not null)
+		{
+			configurationFailure.Throw();
+		}
+
+		if (parentScope is null || !mergedIntoParent)
+		{
+			ThrowRoutingInvalidationExceptions(routingInvalidationExceptions);
 		}
 
 		return this;
 	}
 
+	private void ValidateMappedOptionCaseSensitivity(ReplCaseSensitivity caseSensitivity)
+	{
+		foreach (var route in _routes)
+		{
+			OptionSchemaBuilder.ValidateTokenCollisions(
+				route.Command.OptionSchema.Entries,
+				caseSensitivity,
+				route.Template);
+		}
+	}
+
 	/// <summary>
 	/// Occurs after routing has been invalidated.
-	/// Subscribers can use this to refresh derived state (e.g. MCP tool lists).
+	/// Kept with its original delegate type for separately packaged binary consumers.
 	/// </summary>
-	internal event EventHandler<RoutingInvalidatedEventArgs>? RoutingInvalidated;
+	internal event EventHandler? RoutingInvalidated;
+
+	/// <summary>
+	/// Occurs after routing has been invalidated and includes discovery-retraction details.
+	/// </summary>
+	internal event EventHandler<RoutingInvalidatedEventArgs>? RoutingInvalidatedDetailed;
 
 	/// <summary>
 	/// Invalidates active routing cache so module presence predicates are re-evaluated on next resolution.
 	/// </summary>
 	public void InvalidateRouting() => InvalidateRouting(isVisibilityRetraction: false);
 
-	private void InvalidateRouting(bool isVisibilityRetraction)
+	private void InvalidateRouting(bool isVisibilityRetraction) =>
+		ThrowRoutingInvalidationExceptions(NotifyRoutingInvalidated(isVisibilityRetraction));
+
+	private void InvalidateRoutingFromOptionsMutation()
+	{
+		var exceptions = NotifyRoutingInvalidated(isVisibilityRetraction: true);
+		if (exceptions is null)
+		{
+			return;
+		}
+
+		if (_optionsConfigurationScope.Value is { } scope && scope.TryAddRange(exceptions))
+		{
+			return;
+		}
+
+		ThrowRoutingInvalidationExceptions(exceptions);
+	}
+
+	private List<Exception>? NotifyRoutingInvalidated(bool isVisibilityRetraction)
 	{
 		Interlocked.Increment(ref _routingCacheVersion);
-		RoutingInvalidated?.Invoke(this, new RoutingInvalidatedEventArgs(isVisibilityRetraction));
+		List<Exception>? exceptions = null;
+		foreach (EventHandler handler in RoutingInvalidated?.GetInvocationList() ?? [])
+		{
+			try
+			{
+				handler(this, EventArgs.Empty);
+			}
+			catch (Exception exception)
+			{
+				(exceptions ??= []).Add(exception);
+			}
+		}
+
+		var eventArgs = new RoutingInvalidatedEventArgs(isVisibilityRetraction);
+		foreach (EventHandler<RoutingInvalidatedEventArgs> handler in RoutingInvalidatedDetailed?.GetInvocationList() ?? [])
+		{
+			try
+			{
+				handler(this, eventArgs);
+			}
+			catch (Exception exception)
+			{
+				(exceptions ??= []).Add(exception);
+			}
+		}
+
+		return exceptions;
+	}
+
+	private static void ThrowRoutingInvalidationExceptions(IReadOnlyList<Exception>? exceptions)
+	{
+		if (exceptions is [var singleException])
+		{
+			ExceptionDispatchInfo.Capture(singleException).Throw();
+		}
+
+		if (exceptions is { Count: > 1 })
+		{
+			throw new AggregateException("Multiple routing-invalidation subscribers failed.", exceptions);
+		}
+	}
+
+	private sealed class OptionsConfigurationScope
+	{
+		private readonly Lock _gate = new();
+		private readonly List<Exception> _routingInvalidationExceptions = [];
+		private bool _closed;
+
+		public bool TryAddRange(IEnumerable<Exception> exceptions)
+		{
+			lock (_gate)
+			{
+				if (_closed)
+				{
+					return false;
+				}
+
+				_routingInvalidationExceptions.AddRange(exceptions);
+				return true;
+			}
+		}
+
+		public IReadOnlyList<Exception> CloseAndDrain()
+		{
+			lock (_gate)
+			{
+				_closed = true;
+				return [.. _routingInvalidationExceptions];
+			}
+		}
 	}
 
 	/// <summary>
@@ -187,32 +315,37 @@ public sealed partial class CoreReplApp : ICoreReplApp
 			: route;
 		ArgumentNullException.ThrowIfNull(handler);
 
-		var command = new CommandBuilder(
-			route,
-			handler,
-			InvalidateRouting,
-			() => _options.Parsing.OptionCaseSensitivity);
-		ApplyMetadataFromAttributes(command, handler);
-		var parsedTemplate = RouteTemplateParser.Parse(route, _options.Parsing);
-		var template = InferRouteConstraintsFromHandler(parsedTemplate, handler);
-		var moduleId = ResolveCurrentMappingModuleId();
-		RouteConfigurationValidator.ValidateUnique(
-			template,
-			_routes
-				.Where(existingRoute => existingRoute.ModuleId == moduleId)
-				.Select(existingRoute => existingRoute.Template));
+		CommandBuilder command;
+		lock (_configurationMutationGate)
+		{
+			command = new CommandBuilder(
+				route,
+				handler,
+				InvalidateRouting,
+				() => _options.Parsing.OptionCaseSensitivity);
+			ApplyMetadataFromAttributes(command, handler);
+			var parsedTemplate = RouteTemplateParser.Parse(route, _options.Parsing);
+			var template = InferRouteConstraintsFromHandler(parsedTemplate, handler);
+			var moduleId = ResolveCurrentMappingModuleId();
+			RouteConfigurationValidator.ValidateUnique(
+				template,
+				_routes
+					.Where(existingRoute => existingRoute.ModuleId == moduleId)
+					.Select(existingRoute => existingRoute.Template));
 
-		_commands.Add(command);
-		var optionSchema = OptionSchemaBuilder.Build(
-			template,
-			command,
-			_options.Parsing,
-			_implicitServiceParameters,
-			() => _options.Parsing.OptionCaseSensitivity);
-		command.AttachOptionSchema(optionSchema);
-		command.ValidateOptionVisibility();
-		var routeDefinition = new RouteDefinition(template, command, moduleId);
-		_routes.Add(routeDefinition);
+			var optionSchema = OptionSchemaBuilder.Build(
+				template,
+				command,
+				_options.Parsing,
+				_implicitServiceParameters,
+				() => _options.Parsing.OptionCaseSensitivity);
+			command.AttachOptionSchema(optionSchema);
+			command.ValidateOptionVisibility();
+			var routeDefinition = new RouteDefinition(template, command, moduleId);
+			_commands.Add(command);
+			_routes.Add(routeDefinition);
+		}
+
 		InvalidateRouting();
 		return command;
 	}

@@ -122,7 +122,12 @@ internal sealed class OptionSchema
 		ReplCaseSensitivity? currentGlobalCaseSensitivity = null)
 	{
 		var canonicalEntry = FindNamedEntry(parameterName);
-		if (canonicalEntry is not null
+		var hasExactRegisteredAlias = Entries.Any(entry =>
+			!ReferenceEquals(entry, canonicalEntry)
+			&& string.Equals(entry.ParameterName, parameterName, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(entry.Token, alias, StringComparison.Ordinal));
+		if (!hasExactRegisteredAlias
+			&& canonicalEntry is not null
 			&& TokensAreEquivalent(canonicalEntry, alias, currentGlobalCaseSensitivity))
 		{
 			throw new ArgumentException(
@@ -139,7 +144,8 @@ internal sealed class OptionSchema
 		for (var i = 0; i < Entries.Count; i++)
 		{
 			var entry = Entries[i];
-			if (string.Equals(entry.ParameterName, parameterName, StringComparison.OrdinalIgnoreCase)
+			if (!ReferenceEquals(entry, canonicalEntry)
+				&& string.Equals(entry.ParameterName, parameterName, StringComparison.OrdinalIgnoreCase)
 				&& TokensAreEquivalent(entry, alias, currentGlobalCaseSensitivity))
 			{
 				found = true;
@@ -183,13 +189,13 @@ internal sealed class OptionSchema
 		return string.Equals(entry.Token, token, comparison);
 	}
 
-	private DiscoveryProjection ResolveDiscoveryProjection()
-	{
-		var globalCaseSensitivity = _resolveGlobalCaseSensitivity();
-		return globalCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+	private DiscoveryProjection ResolveDiscoveryProjection() =>
+		ResolveDiscoveryProjection(_resolveGlobalCaseSensitivity());
+
+	private DiscoveryProjection ResolveDiscoveryProjection(ReplCaseSensitivity globalCaseSensitivity) =>
+		globalCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? _insensitiveDiscovery ??= BuildDiscoveryProjection(globalCaseSensitivity)
 			: _sensitiveDiscovery ??= BuildDiscoveryProjection(globalCaseSensitivity);
-	}
 
 	private DiscoveryProjection BuildDiscoveryProjection(ReplCaseSensitivity globalCaseSensitivity)
 	{
@@ -244,8 +250,21 @@ internal sealed class OptionSchema
 				StringComparer.OrdinalIgnoreCase));
 	}
 
+	internal IReadOnlyList<OptionSchemaEntry> ResolveDiscoverableEntries(
+		ReplCaseSensitivity globalCaseSensitivity) =>
+		ResolveDiscoveryProjection(globalCaseSensitivity).DiscoverableEntries;
+
+	internal IReadOnlyCollection<string> ResolveDiscoverableTokens(
+		ReplCaseSensitivity globalCaseSensitivity) =>
+		ResolveDiscoveryProjection(globalCaseSensitivity).DiscoverableTokens;
+
 	internal IReadOnlyList<OptionSchemaEntry> ResolveDiscoverableAliases(string parameterName) =>
 		ResolveDiscoveryProjection().VisibleAliasesByParameter.GetValueOrDefault(parameterName) ?? [];
+
+	internal IReadOnlyList<OptionSchemaEntry> ResolveDiscoverableAliases(
+		string parameterName,
+		ReplCaseSensitivity globalCaseSensitivity) =>
+		ResolveDiscoveryProjection(globalCaseSensitivity).VisibleAliasesByParameter.GetValueOrDefault(parameterName) ?? [];
 
 	internal bool IsEntryDiscoverable(OptionSchemaEntry entry) =>
 		ResolveDiscoveryProjection().DiscoverableEntrySet.Contains(entry);

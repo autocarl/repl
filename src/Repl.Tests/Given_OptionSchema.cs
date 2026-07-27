@@ -31,4 +31,26 @@ public sealed class Given_OptionSchema
 		updated.Entries.Should().ContainSingle(entry => entry.Token == "--ACCOUNT")
 			.Which.IsHidden.Should().BeTrue("the first matching entry genuinely changed and must not be lost because a later equivalent entry was already hidden");
 	}
+
+	[TestMethod]
+	[Description("An exact registered alias takes precedence over canonical-token equivalence when the active comparer is case-insensitive, so fluent visibility can restore that distinct alias spelling.")]
+	public void When_ExactAliasMatchesCanonicalUnderCurrentComparer_Then_ExactAliasCanBeUnhidden()
+	{
+		var schema = new OptionSchema(
+			[
+				new OptionSchemaEntry("--tenant", "tenant", OptionSchemaTokenKind.NamedOption, ReplArity.ZeroOrOne),
+				new OptionSchemaEntry("--TENANT", "tenant", OptionSchemaTokenKind.NamedOption, ReplArity.ZeroOrOne, IsHidden: true),
+			],
+			new Dictionary<string, OptionSchemaParameter>(StringComparer.OrdinalIgnoreCase)
+			{
+				["tenant"] = new OptionSchemaParameter("tenant", typeof(string), ReplParameterMode.OptionOnly),
+			},
+			ReplCaseSensitivity.CaseInsensitive);
+
+		var updated = schema.WithAliasVisibility("tenant", "--TENANT", isHidden: false);
+
+		updated.Entries.Should().ContainSingle(entry => entry.Token == "--TENANT")
+			.Which.IsHidden.Should().BeFalse();
+	}
+
 }

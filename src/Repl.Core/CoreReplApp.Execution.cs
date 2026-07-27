@@ -68,6 +68,18 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		_options.Interaction.SetObserver(observer: ExecutionObserver);
 		try
 		{
+			if (ReplSessionIO.IsProgrammatic && !ReplSessionIO.HasCurrentProgrammaticInvocationContract)
+			{
+				_ = await RenderOutputAsync(
+						Results.Validation(
+							"The programmatic invocation adapter is incompatible with this Repl.Core version. "
+							+ "Update Repl.Mcp to the same package version."),
+						requestedFormat: null,
+						cancellationToken)
+					.ConfigureAwait(false);
+				return 1;
+			}
+
 			var globalOptions = GlobalOptionParser.Parse(args, _options.Output, _options.Parsing);
 			if (await TryHandleGlobalDiagnosticsAsync(globalOptions, cancellationToken).ConfigureAwait(false) is { } globalDiagnosticsExitCode) return globalDiagnosticsExitCode;
 
@@ -461,7 +473,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	{
 		var activeGraph = ResolveActiveRoutingGraph();
 		_options.Interaction.SetPrefilledAnswers(globalOptions.PromptAnswers);
-		var commandParsingOptions = BuildEffectiveCommandParsingOptions();
+		var commandParsingOptions = BuildEffectiveCommandParsingOptions(globalOptions.GlobalOptionConfiguration.CaseSensitivity);
 		var optionComparer = commandParsingOptions.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? StringComparer.OrdinalIgnoreCase
 			: StringComparer.Ordinal;
@@ -1345,13 +1357,13 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		return merged;
 	}
 
-	private ParsingOptions BuildEffectiveCommandParsingOptions()
+	private ParsingOptions BuildEffectiveCommandParsingOptions(ReplCaseSensitivity optionCaseSensitivity)
 	{
 		var isInteractiveSession = _runtimeState.Value?.IsInteractiveSession == true;
 		return new ParsingOptions
 		{
 			AllowUnknownOptions = _options.Parsing.AllowUnknownOptions,
-			OptionCaseSensitivity = _options.Parsing.OptionCaseSensitivity,
+			OptionCaseSensitivity = optionCaseSensitivity,
 			AllowResponseFiles = !isInteractiveSession && _options.Parsing.AllowResponseFiles,
 		};
 	}

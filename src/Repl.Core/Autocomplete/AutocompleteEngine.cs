@@ -620,12 +620,13 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
-		var comparison = ResolveOptionStringComparison();
+		var globalConfiguration = app.OptionsSnapshot.Parsing.CaptureGlobalOptionConfiguration();
+		var comparison = globalConfiguration.CaseSensitivity.ToStringComparison();
 		var comparer = StringComparer.FromComparison(comparison);
 		var tokens = new List<string>();
 		var dedupe = new HashSet<string>(comparer);
 		var customGlobalOwnership = OptionTokenCompletionSource.CollectGlobalOptionTokens(
-			app.OptionsSnapshot, currentTokenPrefix, comparison, dedupe, tokens);
+			app.OptionsSnapshot, globalConfiguration, currentTokenPrefix, comparison, dedupe, tokens);
 
 		// Source route options from the single route this prefix resolves to (already
 		// computed for the whole pass), and only when EVERY positional segment — required or
@@ -639,7 +640,7 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 				match.Route.OptionSchema,
 				customGlobalOwnership,
 				currentTokenPrefix,
-				app.OptionsSnapshot.Parsing.OptionCaseSensitivity,
+				globalConfiguration.CaseSensitivity,
 				dedupe,
 				tokens);
 		}

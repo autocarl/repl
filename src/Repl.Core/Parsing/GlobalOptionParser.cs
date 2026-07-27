@@ -23,7 +23,8 @@ internal static class GlobalOptionParser
 		ArgumentNullException.ThrowIfNull(outputOptions);
 		ArgumentNullException.ThrowIfNull(parsingOptions);
 
-		var tokenComparer = parsingOptions.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+		var globalConfiguration = parsingOptions.CaptureGlobalOptionConfiguration();
+		var tokenComparer = globalConfiguration.CaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? StringComparer.OrdinalIgnoreCase
 			: StringComparer.Ordinal;
 		var remaining = new List<string>(args.Count);
@@ -31,9 +32,9 @@ internal static class GlobalOptionParser
 		var promptAnswers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		var customGlobalValues = new Dictionary<string, List<string>>(tokenComparer);
 		var diagnostics = new List<ParseDiagnostic>();
-		var customTokenMap = BuildCustomTokenOwnership(parsingOptions);
-		var options = new GlobalInvocationOptions(remaining);
-		var optionComparison = parsingOptions.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+		var customTokenMap = globalConfiguration.Ownership;
+		var options = new GlobalInvocationOptions(remaining, globalConfiguration);
+		var optionComparison = globalConfiguration.CaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? StringComparison.OrdinalIgnoreCase
 			: StringComparison.Ordinal;
 
@@ -119,7 +120,6 @@ internal static class GlobalOptionParser
 		{
 			PromptAnswers = promptAnswers,
 			CustomGlobalNamedOptions = readonlyCustomGlobalValues,
-			CustomGlobalTokenOwnership = customTokenMap,
 			Diagnostics = diagnostics,
 			RemainingTokenIndices = remainingIndices,
 		};
@@ -304,12 +304,11 @@ internal static class GlobalOptionParser
 	internal static bool IsGlobalTokenDiscoverable(
 		string token,
 		GlobalOptionDefinition expectedOwner,
-		IReadOnlyDictionary<string, GlobalOptionDefinition> ownership,
-		ParsingOptions parsingOptions) =>
-		ownership.TryGetValue(token, out var actualOwner)
+		ParsingOptions.GlobalOptionConfigurationSnapshot configuration) =>
+		configuration.Ownership.TryGetValue(token, out var actualOwner)
 		&& ReferenceEquals(actualOwner, expectedOwner)
 		&& !actualOwner.IsHidden
-		&& !parsingOptions.IsGlobalOptionAliasHidden(actualOwner, token);
+		&& !configuration.IsAliasHidden(actualOwner, token);
 
 	private static bool TryParseCustomGlobalOption(
 		IReadOnlyList<string> args,

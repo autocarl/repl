@@ -43,6 +43,7 @@ internal static class OptionTokenCompletionSource
 	/// <returns>The custom global token ownership used to filter lower-precedence route candidates.</returns>
 	internal static IReadOnlyDictionary<string, GlobalOptionDefinition> CollectGlobalOptionTokens(
 		ReplOptions options,
+		ParsingOptions.GlobalOptionConfigurationSnapshot configuration,
 		string currentTokenPrefix,
 		StringComparison comparison,
 		HashSet<string> dedupe,
@@ -76,14 +77,14 @@ internal static class OptionTokenCompletionSource
 		// Visibility is decided per TOKEN, not per definition: GlobalOptionParser gives a colliding
 		// token to the LAST registration, so a token owned by a visible definition here may in fact
 		// bind a hidden one. Build that authoritative ownership map once for this completion pass.
-		var ownership = GlobalOptionParser.BuildCustomTokenOwnership(options.Parsing);
-		foreach (var custom in options.Parsing.GlobalOptions.Values)
+		var ownership = configuration.Ownership;
+		foreach (var custom in configuration.Definitions.Values)
 		{
-			TryAddGlobalToken(custom.CanonicalToken, custom, ownership, options.Parsing, currentTokenPrefix, comparison, dedupe, results);
+			TryAddGlobalToken(custom.CanonicalToken, custom, configuration, currentTokenPrefix, comparison, dedupe, results);
 
 			foreach (var alias in custom.Aliases)
 			{
-				TryAddGlobalToken(alias, custom, ownership, options.Parsing, currentTokenPrefix, comparison, dedupe, results);
+				TryAddGlobalToken(alias, custom, configuration, currentTokenPrefix, comparison, dedupe, results);
 			}
 		}
 
@@ -93,14 +94,13 @@ internal static class OptionTokenCompletionSource
 	private static void TryAddGlobalToken(
 		string token,
 		GlobalOptionDefinition expectedOwner,
-		IReadOnlyDictionary<string, GlobalOptionDefinition> ownership,
-		ParsingOptions parsingOptions,
+		ParsingOptions.GlobalOptionConfigurationSnapshot configuration,
 		string currentTokenPrefix,
 		StringComparison comparison,
 		HashSet<string> dedupe,
 		List<string> results)
 	{
-		if (!GlobalOptionParser.IsGlobalTokenDiscoverable(token, expectedOwner, ownership, parsingOptions))
+		if (!GlobalOptionParser.IsGlobalTokenDiscoverable(token, expectedOwner, configuration))
 		{
 			return;
 		}
@@ -123,7 +123,7 @@ internal static class OptionTokenCompletionSource
 		HashSet<string> dedupe,
 		List<string> results)
 	{
-		foreach (var entry in schema.DiscoverableEntries)
+		foreach (var entry in schema.ResolveDiscoverableEntries(globalCaseSensitivity))
 		{
 			// GlobalOptionParser consumes custom globals before route parsing. Suppress every
 			// route token owned by that projection — including hidden globals that contributed no

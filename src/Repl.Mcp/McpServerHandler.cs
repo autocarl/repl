@@ -509,7 +509,7 @@ internal sealed class McpServerHandler
 		{
 			if (!weakSelf.TryGetTarget(out var target))
 			{
-				coreApp.RoutingInvalidated -= handler;
+				coreApp.RoutingInvalidatedDetailed -= handler;
 				return;
 			}
 
@@ -517,7 +517,7 @@ internal sealed class McpServerHandler
 		};
 
 		_routingChangedHandler = handler;
-		coreApp.RoutingInvalidated += handler;
+		coreApp.RoutingInvalidatedDetailed += handler;
 	}
 
 	private void EnsureRootsNotificationHandler(McpServer server)
@@ -620,7 +620,7 @@ internal sealed class McpServerHandler
 	{
 		if (_routingChangedHandler is not null && _app is CoreReplApp coreApp)
 		{
-			coreApp.RoutingInvalidated -= _routingChangedHandler;
+			coreApp.RoutingInvalidatedDetailed -= _routingChangedHandler;
 			_routingChangedHandler = null;
 		}
 

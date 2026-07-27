@@ -1,7 +1,8 @@
 namespace Repl;
 
 internal sealed record GlobalInvocationOptions(
-	IReadOnlyList<string> RemainingTokens)
+	IReadOnlyList<string> RemainingTokens,
+	ParsingOptions.GlobalOptionConfigurationSnapshot GlobalOptionConfiguration)
 {
 	public bool HelpRequested { get; init; }
 
@@ -21,8 +22,8 @@ internal sealed record GlobalInvocationOptions(
 	public IReadOnlyDictionary<string, IReadOnlyList<string>> CustomGlobalNamedOptions { get; init; } =
 		new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
 
-	internal IReadOnlyDictionary<string, GlobalOptionDefinition> CustomGlobalTokenOwnership { get; init; } =
-		new Dictionary<string, GlobalOptionDefinition>(StringComparer.Ordinal);
+	internal IReadOnlyDictionary<string, GlobalOptionDefinition> CustomGlobalTokenOwnership =>
+		GlobalOptionConfiguration.Ownership;
 
 	public IReadOnlyList<ParseDiagnostic> Diagnostics { get; init; } = [];
 

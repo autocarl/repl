@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 
@@ -35,16 +36,15 @@ public sealed class ParsingOptions
 	];
 	private readonly Dictionary<string, Func<string, bool>> _customRouteConstraints =
 		new(StringComparer.OrdinalIgnoreCase);
-	private readonly Dictionary<string, GlobalOptionDefinition> _globalOptions =
-		new(StringComparer.OrdinalIgnoreCase);
-
-	// Built once per registration/visibility generation, not per lookup: help renders it twice,
-	// completion rebuilds it on every keystroke, and it was previously reconstructed — one
-	// dictionary plus an insert per alias — on every single call. Any mutator that can change
-	// which token maps to which definition (registration, visibility, or the comparer itself)
-	// must null this out; a stale cache would silently keep serving a token to its old owner.
-	private IReadOnlyDictionary<string, GlobalOptionDefinition>? _customTokenOwnershipCache;
-	private ReplCaseSensitivity _optionCaseSensitivity = ReplCaseSensitivity.CaseSensitive;
+	// Definitions, case sensitivity, and derived token ownership are published together. Every
+	// update copies the definitions and swaps one immutable snapshot by CAS, so readers never
+	// enumerate a Dictionary while a writer mutates it and concurrent writers cannot lose updates.
+	private GlobalOptionConfigurationSnapshot _globalOptionState = CreateGlobalOptionConfigurationSnapshot(
+		ReplCaseSensitivity.CaseSensitive,
+		new Dictionary<string, GlobalOptionDefinition>(StringComparer.OrdinalIgnoreCase));
+	private Action<ReplCaseSensitivity>? _validateOptionCaseSensitivityChange;
+	private Action? _globalDiscoveryChanged;
+	private object? _configurationMutationGate;
 
 	/// <summary>
 	/// Gets or sets a value indicating whether unknown options are allowed.
@@ -56,12 +56,17 @@ public sealed class ParsingOptions
 	/// </summary>
 	public ReplCaseSensitivity OptionCaseSensitivity
 	{
-		get => _optionCaseSensitivity;
-		set
+		get => Volatile.Read(ref _globalOptionState).CaseSensitivity;
+		set => UpdateGlobalOptionConfigurationSnapshot(state =>
 		{
-			_optionCaseSensitivity = value;
-			_customTokenOwnershipCache = null;
-		}
+			if (state.CaseSensitivity == value)
+			{
+				return state;
+			}
+
+			_validateOptionCaseSensitivityChange?.Invoke(value);
+			return CreateGlobalOptionConfigurationSnapshot(value, CloneDefinitions(state));
+		});
 	}
 
 	/// <summary>
@@ -74,7 +79,11 @@ public sealed class ParsingOptions
 	/// </summary>
 	public NumericParsingCulture NumericCulture { get; set; } = NumericParsingCulture.Invariant;
 
-	internal IReadOnlyDictionary<string, GlobalOptionDefinition> GlobalOptions => _globalOptions;
+	internal IReadOnlyDictionary<string, GlobalOptionDefinition> GlobalOptions =>
+		CaptureGlobalOptionConfiguration().Definitions;
+
+	internal GlobalOptionConfigurationSnapshot CaptureGlobalOptionConfiguration() =>
+		Volatile.Read(ref _globalOptionState);
 
 	internal IFormatProvider NumericFormatProvider => NumericCulture == NumericParsingCulture.Current
 		? CultureInfo.CurrentCulture
@@ -189,16 +198,17 @@ public sealed class ParsingOptions
 
 	private string ResolveGlobalOptionKey(string requested)
 	{
+		var definitions = Volatile.Read(ref _globalOptionState).Definitions;
 		// Keyed probe first; the scan below only covers a caller passing the rendered token
 		// ("--tenant") for an option registered under its bare name, or the reverse.
-		if (_globalOptions.ContainsKey(requested))
+		if (definitions.ContainsKey(requested))
 		{
 			return requested;
 		}
 
 		var canonicalToken = NormalizeLongToken(requested);
 
-		return _globalOptions.Values.FirstOrDefault(option =>
+		return definitions.Values.FirstOrDefault(option =>
 			string.Equals(option.CanonicalToken, canonicalToken, StringComparison.OrdinalIgnoreCase))
 			?.Name
 			?? throw new KeyNotFoundException($"No global option named '{requested}' is registered.");
@@ -207,55 +217,58 @@ public sealed class ParsingOptions
 	// Re-reads the entry instead of closing over the definition the builder was created from: a
 	// retained builder must not write back a stale record. Not reachable today, since duplicate
 	// registration throws, but the closure form was one added mutator away from silently reverting.
-	internal void SetGlobalOptionHidden(string canonicalName, bool isHidden)
-	{
-		if (_globalOptions.TryGetValue(canonicalName, out var definition))
+	internal void SetGlobalOptionHidden(string canonicalName, bool isHidden) =>
+		UpdateGlobalOptionConfigurationSnapshot(state =>
 		{
-			_globalOptions[canonicalName] = definition with { IsHidden = isHidden };
-			_customTokenOwnershipCache = null;
-		}
-	}
-
-	internal void SetGlobalOptionAliasHidden(string canonicalName, string alias, bool isHidden)
-	{
-		if (!_globalOptions.TryGetValue(canonicalName, out var definition))
-		{
-			return;
-		}
-
-		var normalizedAlias = NormalizeAliasToken(alias.Trim());
-		var comparer = ResolveOptionTokenComparer();
-		var registeredAlias = definition.Aliases.FirstOrDefault(candidate =>
-			string.Equals(candidate, normalizedAlias, StringComparison.Ordinal));
-		if (registeredAlias is null)
-		{
-			var matches = definition.Aliases.Where(candidate => comparer.Equals(candidate, normalizedAlias)).ToArray();
-			registeredAlias = matches.Length switch
+			if (!state.Definitions.TryGetValue(canonicalName, out var definition)
+				|| definition.IsHidden == isHidden)
 			{
-				0 => throw new KeyNotFoundException(
-					$"No alias token '{alias}' is registered for global option '{canonicalName}'."),
-				1 => matches[0],
-				_ => throw new InvalidOperationException(
-					$"Alias token '{alias}' is ambiguous for global option '{canonicalName}' because registered aliases differ only by casing."),
-			};
-		}
+				return state;
+			}
 
-		// Store the selected registered spelling exactly. Runtime membership still uses the active
-		// comparer, but exact storage prevents a temporary case-insensitive mode from collapsing
-		// distinct tokens if the application later restores case-sensitive parsing.
-		var hiddenAliases = definition.HiddenAliases.ToHashSet(StringComparer.Ordinal);
-		if (isHidden)
-		{
-			hiddenAliases.Add(registeredAlias);
-		}
-		else
-		{
-			hiddenAliases.RemoveWhere(candidate => comparer.Equals(candidate, registeredAlias));
-		}
+			var definitions = CloneDefinitions(state);
+			definitions[canonicalName] = definition with { IsHidden = isHidden };
+			return CreateGlobalOptionConfigurationSnapshot(state.CaseSensitivity, definitions);
+		});
 
-		_globalOptions[canonicalName] = definition with { HiddenAliases = [.. hiddenAliases] };
-		_customTokenOwnershipCache = null;
-	}
+	internal void SetGlobalOptionAliasHidden(string canonicalName, string alias, bool isHidden) =>
+		UpdateGlobalOptionConfigurationSnapshot(state =>
+		{
+			if (!state.Definitions.TryGetValue(canonicalName, out var definition))
+			{
+				return state;
+			}
+
+			var normalizedAlias = NormalizeAliasToken(alias.Trim());
+			var comparer = ResolveOptionTokenComparer(state.CaseSensitivity);
+			var registeredAlias = definition.Aliases.FirstOrDefault(candidate =>
+				string.Equals(candidate, normalizedAlias, StringComparison.Ordinal));
+			if (registeredAlias is null)
+			{
+				var matches = definition.Aliases.Where(candidate => comparer.Equals(candidate, normalizedAlias)).ToArray();
+				registeredAlias = matches.Length switch
+				{
+					0 => throw new KeyNotFoundException(
+						$"No alias token '{alias}' is registered for global option '{canonicalName}'."),
+					1 => matches[0],
+					_ => throw new InvalidOperationException(
+						$"Alias token '{alias}' is ambiguous for global option '{canonicalName}' because registered aliases differ only by casing."),
+				};
+			}
+
+			var hiddenAliases = definition.HiddenAliases.ToHashSet(StringComparer.Ordinal);
+			var changed = isHidden
+				? hiddenAliases.Add(registeredAlias)
+				: hiddenAliases.RemoveWhere(candidate => comparer.Equals(candidate, registeredAlias)) > 0;
+			if (!changed)
+			{
+				return state;
+			}
+
+			var definitions = CloneDefinitions(state);
+			definitions[canonicalName] = definition with { HiddenAliases = [.. hiddenAliases] };
+			return CreateGlobalOptionConfigurationSnapshot(state.CaseSensitivity, definitions);
+		});
 
 	// The canonical token's visibility is governed solely by the definition's own IsHidden, never
 	// by HiddenAliases: a case-distinct hidden alias (registered while case-sensitive) can become
@@ -269,11 +282,13 @@ public sealed class ParsingOptions
 	// Ordinal identifies only the canonical spelling itself; every other alias string still falls
 	// through to the normal effective-comparer membership check below.
 	internal bool IsGlobalOptionAliasHidden(GlobalOptionDefinition definition, string token) =>
-		!string.Equals(token, definition.CanonicalToken, StringComparison.Ordinal)
-		&& definition.HiddenAliases.Contains(token, ResolveOptionTokenComparer());
+		CaptureGlobalOptionConfiguration().IsAliasHidden(definition, token);
 
 	private StringComparer ResolveOptionTokenComparer() =>
-		OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+		ResolveOptionTokenComparer(OptionCaseSensitivity);
+
+	private static StringComparer ResolveOptionTokenComparer(ReplCaseSensitivity caseSensitivity) =>
+		caseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? StringComparer.OrdinalIgnoreCase
 			: StringComparer.Ordinal;
 
@@ -305,62 +320,120 @@ public sealed class ParsingOptions
 		name = string.IsNullOrWhiteSpace(name)
 			? throw new ArgumentException("Global option name cannot be empty.", nameof(name))
 			: name.Trim();
-
 		var normalizedCanonical = NormalizeLongToken(name);
-		if (_globalOptions.TryGetValue(name, out var existing))
+
+		UpdateGlobalOptionConfigurationSnapshot(state =>
 		{
-			throw new InvalidOperationException(BuildDuplicateGlobalOptionMessage(name, existing.OwnerType, ownerType));
-		}
+			if (state.Definitions.TryGetValue(name, out var existing))
+			{
+				throw new InvalidOperationException(BuildDuplicateGlobalOptionMessage(name, existing.OwnerType, ownerType));
+			}
 
-		// Two different Names ("tenant" and "--tenant") can normalize to the identical canonical
-		// token. Left unrejected, GlobalOption(name) resolves that token to whichever definition
-		// happens to enumerate first — an ambiguity, not a deterministic choice — so ANY caller
-		// mutating "the" option by that token could silently be mutating the wrong one.
-		var canonicalCollision = _globalOptions.Values.FirstOrDefault(candidate =>
-			string.Equals(candidate.CanonicalToken, normalizedCanonical, StringComparison.OrdinalIgnoreCase));
-		if (canonicalCollision is not null)
-		{
-			throw new InvalidOperationException(
-				$"A global option named '{canonicalCollision.Name}' already renders as the same token "
-				+ $"'{normalizedCanonical}' that registering '{name}' would produce.");
-		}
+			var canonicalCollision = state.Definitions.Values.FirstOrDefault(candidate =>
+				string.Equals(candidate.CanonicalToken, normalizedCanonical, StringComparison.OrdinalIgnoreCase));
+			if (canonicalCollision is not null)
+			{
+				throw new InvalidOperationException(
+					$"A global option named '{canonicalCollision.Name}' already renders as the same token "
+					+ $"'{normalizedCanonical}' that registering '{name}' would produce.");
+			}
 
-		var tokenComparer = ResolveOptionTokenComparer();
-		var normalizedAliases = (aliases ?? [])
-			.Where(alias => !string.IsNullOrWhiteSpace(alias))
-			.Select(alias => NormalizeAliasToken(alias.Trim()))
-			.Distinct(tokenComparer)
-			.Where(alias => !tokenComparer.Equals(alias, normalizedCanonical))
-			.ToArray();
-
-		_globalOptions[name] = new GlobalOptionDefinition(
-			Name: name,
-			CanonicalToken: normalizedCanonical,
-			Aliases: normalizedAliases,
-			DefaultValue: defaultValue,
-			Description: description,
-			ValueType: valueType,
-			OwnerType: ownerType,
-			IsHidden: isHidden,
-			HiddenAliases: []);
-		_customTokenOwnershipCache = null;
+			var tokenComparer = ResolveOptionTokenComparer(state.CaseSensitivity);
+			var normalizedAliases = (aliases ?? [])
+				.Where(alias => !string.IsNullOrWhiteSpace(alias))
+				.Select(alias => NormalizeAliasToken(alias.Trim()))
+				.Distinct(tokenComparer)
+				.Where(alias => !tokenComparer.Equals(alias, normalizedCanonical))
+				.ToArray();
+			var definitions = CloneDefinitions(state);
+			definitions[name] = new GlobalOptionDefinition(
+				Name: name,
+				CanonicalToken: normalizedCanonical,
+				Aliases: normalizedAliases,
+				DefaultValue: defaultValue,
+				Description: description,
+				ValueType: valueType,
+				OwnerType: ownerType,
+				IsHidden: isHidden,
+				HiddenAliases: []);
+			return CreateGlobalOptionConfigurationSnapshot(state.CaseSensitivity, definitions);
+		});
 	}
 
-	// The last-registered definition wins a token/alias collision: assigning an existing
-	// dictionary key replaces its owner while preserving the token's first-seen output order.
-	// Cached because parsing, help, and completion all need this projection, completion rebuilds
-	// it on every keystroke, and Values/Aliases are immutable between the mutators above that
-	// invalidate it.
-	internal IReadOnlyDictionary<string, GlobalOptionDefinition> ResolveCustomTokenOwnership()
+	// The last-registered definition wins a token/alias collision. Ownership is derived while the
+	// private definitions copy is still mutable, then both are wrapped and published atomically.
+	internal IReadOnlyDictionary<string, GlobalOptionDefinition> ResolveCustomTokenOwnership() =>
+		CaptureGlobalOptionConfiguration().Ownership;
+
+	internal void ConfigureGlobalDiscoveryMutationCallbacks(
+		Action<ReplCaseSensitivity> validateOptionCaseSensitivityChange,
+		Action globalDiscoveryChanged,
+		object configurationMutationGate)
 	{
-		if (_customTokenOwnershipCache is { } cached)
+		ArgumentNullException.ThrowIfNull(validateOptionCaseSensitivityChange);
+		ArgumentNullException.ThrowIfNull(globalDiscoveryChanged);
+		ArgumentNullException.ThrowIfNull(configurationMutationGate);
+		_validateOptionCaseSensitivityChange = validateOptionCaseSensitivityChange;
+		_globalDiscoveryChanged = globalDiscoveryChanged;
+		_configurationMutationGate = configurationMutationGate;
+	}
+
+	private void UpdateGlobalOptionConfigurationSnapshot(Func<GlobalOptionConfigurationSnapshot, GlobalOptionConfigurationSnapshot> update)
+	{
+		var changed = _configurationMutationGate is { } gate
+			? UpdateGlobalOptionConfigurationSnapshotUnderGate(update, gate)
+			: TryUpdateGlobalOptionConfigurationSnapshot(update);
+		if (changed)
 		{
-			return cached;
+			_globalDiscoveryChanged?.Invoke();
+		}
+	}
+
+	private bool UpdateGlobalOptionConfigurationSnapshotUnderGate(
+		Func<GlobalOptionConfigurationSnapshot, GlobalOptionConfigurationSnapshot> update,
+		object gate)
+	{
+		lock (gate)
+		{
+			return TryUpdateGlobalOptionConfigurationSnapshot(update);
+		}
+	}
+
+	private bool TryUpdateGlobalOptionConfigurationSnapshot(Func<GlobalOptionConfigurationSnapshot, GlobalOptionConfigurationSnapshot> update)
+	{
+		while (true)
+		{
+			var current = Volatile.Read(ref _globalOptionState);
+			var updated = update(current);
+			if (ReferenceEquals(current, updated))
+			{
+				return false;
+			}
+
+			if (ReferenceEquals(Interlocked.CompareExchange(ref _globalOptionState, updated, current), current))
+			{
+				return true;
+			}
+		}
+	}
+
+	private static Dictionary<string, GlobalOptionDefinition> CloneDefinitions(GlobalOptionConfigurationSnapshot state)
+	{
+		var definitions = new Dictionary<string, GlobalOptionDefinition>(StringComparer.OrdinalIgnoreCase);
+		foreach (var pair in state.Definitions)
+		{
+			definitions.Add(pair.Key, pair.Value);
 		}
 
-		var comparer = ResolveOptionTokenComparer();
-		var ownership = new Dictionary<string, GlobalOptionDefinition>(comparer);
-		foreach (var definition in _globalOptions.Values)
+		return definitions;
+	}
+
+	private static GlobalOptionConfigurationSnapshot CreateGlobalOptionConfigurationSnapshot(
+		ReplCaseSensitivity caseSensitivity,
+		Dictionary<string, GlobalOptionDefinition> definitions)
+	{
+		var ownership = new Dictionary<string, GlobalOptionDefinition>(ResolveOptionTokenComparer(caseSensitivity));
+		foreach (var definition in definitions.Values)
 		{
 			ownership[definition.CanonicalToken] = definition;
 			foreach (var alias in definition.Aliases)
@@ -369,8 +442,24 @@ public sealed class ParsingOptions
 			}
 		}
 
-		_customTokenOwnershipCache = ownership;
-		return ownership;
+		return new GlobalOptionConfigurationSnapshot(
+			caseSensitivity,
+			new ReadOnlyDictionary<string, GlobalOptionDefinition>(definitions),
+			new ReadOnlyDictionary<string, GlobalOptionDefinition>(ownership));
+	}
+
+	internal sealed record GlobalOptionConfigurationSnapshot(
+		ReplCaseSensitivity CaseSensitivity,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> Definitions,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> Ownership)
+	{
+		internal bool IsAliasHidden(GlobalOptionDefinition definition, string token) =>
+			!string.Equals(token, definition.CanonicalToken, StringComparison.Ordinal)
+			&& definition.HiddenAliases.Contains(
+				token,
+				CaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+					? StringComparer.OrdinalIgnoreCase
+					: StringComparer.Ordinal);
 	}
 
 	private static string BuildDuplicateGlobalOptionMessage(string name, Type? existingOwner, Type? newOwner)

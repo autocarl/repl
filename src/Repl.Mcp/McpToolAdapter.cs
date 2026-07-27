@@ -15,6 +15,7 @@ namespace Repl.Mcp;
 /// </summary>
 internal sealed partial class McpToolAdapter
 {
+	private const int ProgrammaticInvocationContractVersion = 1;
 	internal const string ForcedOutputFormat = "json";
 	private const string TextPlainMimeType = "text/plain";
 
@@ -222,6 +223,7 @@ internal sealed partial class McpToolAdapter
 			isHostedSession: true))
 		{
 			ReplSessionIO.IsProgrammatic = true;
+			using var invocationContract = ReplSessionIO.PushProgrammaticInvocationContract(ProgrammaticInvocationContractVersion);
 			var exitCode = await invocableApp.RunSubInvocationAsync(
 				effectiveTokens.ToArray(), mcpServices, ct).ConfigureAwait(false);
 
@@ -335,7 +337,7 @@ internal sealed partial class McpToolAdapter
 		// smuggle or fails the whole call with a diagnostic when its value looks option-like, so
 		// only bool options need the inline "--name=value" form that makes re-lexing impossible.
 		var boolOptionNames = command.Options
-			.Where(static option => string.Equals(option.Type, "bool", StringComparison.Ordinal))
+			.Where(static option => IsBooleanTypeName(option.Type))
 			.Select(static option => option.Name)
 			.ToHashSet(StringComparer.Ordinal);
 		return PrepareExecution(command.Path, arguments, allowedArgumentNames, optionTokens, boolOptionNames);
@@ -590,6 +592,10 @@ internal sealed partial class McpToolAdapter
 				"The MCP argument value cannot start like a CLI option because it fills a positional route segment, which has no way to escape it.");
 		}
 	}
+
+	private static bool IsBooleanTypeName(string typeName) =>
+		string.Equals(typeName, "bool", StringComparison.Ordinal)
+		|| string.Equals(typeName, "bool?", StringComparison.Ordinal);
 
 	private static string ResolveOptionToken(string key, IReadOnlyDictionary<string, string>? optionTokens)
 	{

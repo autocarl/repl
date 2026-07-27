@@ -55,7 +55,7 @@ internal static class OptionSchemaBuilder
 		}
 
 		ValidatePositionalBindingCompatibility(regularPositionalParameterNames, groupPositionalPropertyNames);
-		ValidateTokenCollisions(entries, parsingOptions, template);
+		ValidateTokenCollisions(entries, parsingOptions.OptionCaseSensitivity, template);
 		return new OptionSchema(
 			entries,
 			parameters,
@@ -630,9 +630,9 @@ internal static class OptionSchemaBuilder
 		}
 	}
 
-	private static void ValidateTokenCollisions(
+	internal static void ValidateTokenCollisions(
 		IReadOnlyList<OptionSchemaEntry> entries,
-		ParsingOptions parsingOptions,
+		ReplCaseSensitivity globalCaseSensitivity,
 		RouteTemplate template)
 	{
 		// Collisions are decided per PAIR under each entry's effective case sensitivity, not
@@ -656,8 +656,8 @@ internal static class OptionSchemaBuilder
 			{
 				var ordinalEqual = string.Equals(existing.Token, entry.Token, StringComparison.Ordinal);
 				var bothInsensitive =
-					(existing.CaseSensitivity ?? parsingOptions.OptionCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive
-					&& (entry.CaseSensitivity ?? parsingOptions.OptionCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive;
+					(existing.CaseSensitivity ?? globalCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive
+					&& (entry.CaseSensitivity ?? globalCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive;
 				if (!ordinalEqual && !bothInsensitive)
 				{
 					continue;

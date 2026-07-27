@@ -17,13 +17,13 @@ internal static partial class HelpTextBuilder
 
 	private static string BuildCommandHelp(
 		RouteDefinition[] routes,
-		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
 		bool useAnsi,
 		AnsiPalette palette)
 	{
 		if (routes.Length == 1)
 		{
-			return BuildSingleCommandHelp(routes[0], customGlobalOwnership, useAnsi, palette);
+			return BuildSingleCommandHelp(routes[0], globalConfiguration, useAnsi, palette);
 		}
 
 		var rows = routes
@@ -52,7 +52,7 @@ internal static partial class HelpTextBuilder
 
 	private static string BuildSingleCommandHelp(
 		RouteDefinition route,
-		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
 		bool useAnsi,
 		AnsiPalette palette)
 	{
@@ -62,7 +62,7 @@ internal static partial class HelpTextBuilder
 			? string.Empty
 			: $"{Environment.NewLine}Aliases: {string.Join(", ", route.Command.Aliases)}";
 		var argumentSection = BuildArgumentSection(route, useAnsi, palette);
-		var optionSection = BuildOptionSection(route, customGlobalOwnership, useAnsi, palette);
+		var optionSection = BuildOptionSection(route, globalConfiguration, useAnsi, palette);
 		var resultFlowSection = BuildResultFlowSection(route, useAnsi, palette);
 		var answerSection = BuildAnswerSection(route, useAnsi, palette);
 		if (!useAnsi)
@@ -151,11 +151,11 @@ internal static partial class HelpTextBuilder
 
 	private static string BuildOptionSection(
 		RouteDefinition route,
-		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
 		bool useAnsi,
 		AnsiPalette palette)
 	{
-		var optionRows = BuildOptionRows(route, customGlobalOwnership);
+		var optionRows = BuildOptionRows(route, globalConfiguration);
 		if (optionRows.Length == 0)
 		{
 			return string.Empty;
@@ -181,13 +181,13 @@ internal static partial class HelpTextBuilder
 		OptionSchema schema,
 		OptionSchemaParameter schemaParameter,
 		Dictionary<string, ParameterInfo> parameters,
-		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
 		Dictionary<string, (PropertyInfo Property, object DefaultInstance)>? groupProperties = null)
 	{
-		var entries = schema.DiscoverableEntries
+		var entries = schema.ResolveDiscoverableEntries(globalConfiguration.CaseSensitivity)
 			.Where(entry =>
 				string.Equals(entry.ParameterName, schemaParameter.Name, StringComparison.OrdinalIgnoreCase)
-				&& !customGlobalOwnership.ContainsKey(entry.Token)
+				&& !globalConfiguration.Ownership.ContainsKey(entry.Token)
 				&& entry.TokenKind is OptionSchemaTokenKind.NamedOption
 					or OptionSchemaTokenKind.BoolFlag
 					or OptionSchemaTokenKind.ReverseFlag
@@ -276,7 +276,7 @@ internal static partial class HelpTextBuilder
 
 	private static HelpRenderEntry[] BuildOptionRows(
 		RouteDefinition route,
-		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration)
 	{
 		var parameters = route.Command.Handler.Method.GetParameters()
 			.Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
@@ -302,7 +302,7 @@ internal static partial class HelpTextBuilder
 				route.OptionSchema,
 				parameter,
 				parameters,
-				customGlobalOwnership,
+				globalConfiguration,
 				groupProperties))
 			.Where(row => row is not null)
 			.Select(row => new HelpRenderEntry(row![0], row[1]))
@@ -405,6 +405,7 @@ internal static partial class HelpTextBuilder
 		RouteDefinition[] routes,
 		IReadOnlyList<ContextDefinition> contexts,
 		ParsingOptions parsingOptions,
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
 		AmbientCommandOptions ambientOptions,
 		int renderWidth,
 		bool useAnsi,
@@ -437,7 +438,7 @@ internal static partial class HelpTextBuilder
 			AppendIndentedRows(builder, scopeRows, renderWidth, GetCommandRowsStyle(useAnsi, palette));
 		}
 
-		var globalOptionRows = BuildGlobalOptionRows(parsingOptions);
+		var globalOptionRows = BuildGlobalOptionRows(globalConfiguration);
 		if (globalOptionRows.Length > 0)
 		{
 			builder.AppendLine();
@@ -607,24 +608,23 @@ internal static partial class HelpTextBuilder
 		return [.. rows];
 	}
 
-	private static string[][] BuildGlobalOptionRows(ParsingOptions parsingOptions)
+	private static string[][] BuildGlobalOptionRows(
+		ParsingOptions.GlobalOptionConfigurationSnapshot configuration)
 	{
-		ArgumentNullException.ThrowIfNull(parsingOptions);
-
 		// Visibility is decided per TOKEN, not per definition: GlobalOptionParser gives a colliding
 		// token to the LAST registration. Build that ownership once, then keep a token only on the
 		// exact definition that owns it and only when that owner is visible. The canonical token has
 		// no special weight: a definition whose canonical token was claimed elsewhere may still be
 		// reachable through an alias nobody took.
-		var ownership = GlobalOptionParser.BuildCustomTokenOwnership(parsingOptions);
-		var customRows = parsingOptions.GlobalOptions.Values
+		var ownership = configuration.Ownership;
+		var customRows = configuration.Definitions.Values
 			.OrderBy(option => option.Name, StringComparer.OrdinalIgnoreCase)
 			.Select(option => new
 			{
 				Option = option,
 				OwnedTokens = option.Aliases
 					.Prepend(option.CanonicalToken)
-					.Where(token => GlobalOptionParser.IsGlobalTokenDiscoverable(token, option, ownership, parsingOptions))
+					.Where(token => GlobalOptionParser.IsGlobalTokenDiscoverable(token, option, configuration))
 					.ToArray(),
 			})
 			.Where(static row => row.OwnedTokens.Length > 0)

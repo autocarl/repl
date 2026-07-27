@@ -733,21 +733,27 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		// OrdinalIgnoreCase set: under case-sensitive option parsing, "-m" and "-M" can bind
 		// to different parameters and both are executable, so they must not collapse. (Option
 		// tokens start with '-' and never collide with command names, so a separate set is safe.)
+		var globalConfiguration = app.OptionsSnapshot.Parsing.CaptureGlobalOptionConfiguration();
 		var optionDedupe = new HashSet<string>(
-			app.OptionsSnapshot.Parsing.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
+			globalConfiguration.CaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 				? StringComparer.OrdinalIgnoreCase
 				: StringComparer.Ordinal);
-		var customGlobalOwnership = AddGlobalShellOptionCandidates(currentTokenPrefix, optionDedupe, candidates);
+		var customGlobalOwnership = AddGlobalShellOptionCandidates(
+			globalConfiguration,
+			currentTokenPrefix,
+			optionDedupe,
+			candidates);
 
 		if (route is null)
 		{
 			return;
 		}
 
-		AddRouteShellOptionCandidates(route, customGlobalOwnership, currentTokenPrefix, optionDedupe, candidates);
+		AddRouteShellOptionCandidates(route, customGlobalOwnership, globalConfiguration.CaseSensitivity, currentTokenPrefix, optionDedupe, candidates);
 	}
 
 	private IReadOnlyDictionary<string, GlobalOptionDefinition> AddGlobalShellOptionCandidates(
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
 		string currentTokenPrefix,
 		HashSet<string> dedupe,
 		List<string> candidates)
@@ -755,15 +761,17 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		var options = app.OptionsSnapshot;
 		return OptionTokenCompletionSource.CollectGlobalOptionTokens(
 			options,
+			globalConfiguration,
 			currentTokenPrefix,
-			options.Parsing.OptionCaseSensitivity.ToStringComparison(),
+			globalConfiguration.CaseSensitivity.ToStringComparison(),
 			dedupe,
 			candidates);
 	}
 
-	private void AddRouteShellOptionCandidates(
+	private static void AddRouteShellOptionCandidates(
 		RouteDefinition route,
 		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
+		ReplCaseSensitivity globalCaseSensitivity,
 		string currentTokenPrefix,
 		HashSet<string> dedupe,
 		List<string> candidates)
@@ -772,7 +780,7 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			route.OptionSchema,
 			customGlobalOwnership,
 			currentTokenPrefix,
-			app.OptionsSnapshot.Parsing.OptionCaseSensitivity,
+			globalCaseSensitivity,
 			dedupe,
 			candidates);
 	}

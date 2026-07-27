@@ -495,6 +495,28 @@ public sealed class Given_McpToolAdapter
 	}
 
 	[TestMethod]
+	[Description("Nullable bool options use the same inline token boundary as bool options, so an MCP string value can never be re-lexed as a separate hidden CLI alias.")]
+	public void When_NullableBoolOptionValueIsReconstructed_Then_EmbeddedAsSingleInlineToken()
+	{
+		var command = new ReplDocCommand(
+			Path: "deploy",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [],
+			Options: [new ReplDocOption("verbose", "bool?", Required: false, Description: null, Aliases: [], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null)]);
+
+		var (tokens, _) = McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["verbose"] = JsonSerializer.SerializeToElement("-t=denim"),
+			});
+
+		tokens.Should().Equal("deploy", "--verbose=-t=denim");
+	}
+
+	[TestMethod]
 	[Description("PrepareExecution rejects positional route-segment values that look like a CLI option token: unlike an option, a positional segment has no separator that can escape the value, so it would be re-lexed as a fresh option once substituted into the token stream.")]
 	public void When_PositionalArgumentValueLooksLikeOptionToken_Then_Rejected()
 	{
