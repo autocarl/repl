@@ -861,6 +861,7 @@ public sealed partial class CoreReplApp : ICoreReplApp
 			discoverableContexts,
 			scopeTokens,
 			_options.Parsing,
+			CurrentServiceProvider,
 			_options.AmbientCommands,
 			renderWidth: settings.Width,
 			useAnsi: settings.UseAnsi,

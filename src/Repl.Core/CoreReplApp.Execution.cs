@@ -1126,6 +1126,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				discoverableContexts,
 				globalOptions.RemainingTokens,
 				_options.Parsing,
+				CurrentServiceProvider,
 				_options.AmbientCommands,
 				out var customHelpOutput))
 		{
@@ -1136,7 +1137,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			discoverableRoutes,
 			discoverableContexts,
 			globalOptions.RemainingTokens,
-			_options.Parsing);
+			_options.Parsing,
+			CurrentServiceProvider);
 		return await RenderOutputAsync(machineHelp, requestedFormat, cancellationToken).ConfigureAwait(false);
 	}
 

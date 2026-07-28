@@ -432,17 +432,29 @@ public sealed class Given_HelpDiscovery
 		var sut = ReplApp.Create(services => services.AddSingleton<string>("service-token"));
 		var command = sut.Map(
 			"deploy",
-			([ReplOption(Name = "token", Arity = ReplArity.ExactlyOne)] string token) => token);
+			([ReplOption(Name = "token", Arity = ReplArity.ExactlyOne, Mode = ReplParameterMode.OptionOnly)] string token) => token);
 
 		var fluentAct = () => command.WithOption("token", static option => option.Hidden());
 		var declarativeAct = () => sut.Map(
 			"publish",
-			([ReplOption(Name = "token", Arity = ReplArity.ExactlyOne, Hidden = true)] string token) => token);
+			([ReplOption(Name = "token", Arity = ReplArity.ExactlyOne, Hidden = true, Mode = ReplParameterMode.OptionOnly)] string token) => token);
 
 		fluentAct.Should().NotThrow();
 		declarativeAct.Should().NotThrow();
+		var deployHelp = ConsoleCaptureHelper.Capture(() => sut.Run(["deploy", "--help", "--no-logo"]));
+		var publishHelp = ConsoleCaptureHelper.Capture(() => sut.Run(["publish", "--help", "--no-logo"]));
+		var markdownHelp = ConsoleCaptureHelper.Capture(() => sut.Run(["publish", "--help", "--output:markdown", "--no-logo"]));
+		var jsonHelp = ConsoleCaptureHelper.Capture(() => sut.Run(["publish", "--help", "--output:json", "--no-logo"]));
 		var deploy = ConsoleCaptureHelper.Capture(() => sut.Run(["deploy", "--no-logo"]));
 		var publish = ConsoleCaptureHelper.Capture(() => sut.Run(["publish", "--no-logo"]));
+		deployHelp.ExitCode.Should().Be(0, deployHelp.Text);
+		deployHelp.Text.Should().NotContain("--token");
+		publishHelp.ExitCode.Should().Be(0, publishHelp.Text);
+		publishHelp.Text.Should().NotContain("--token");
+		markdownHelp.ExitCode.Should().Be(0, markdownHelp.Text);
+		markdownHelp.Text.Should().NotContain("--token");
+		jsonHelp.ExitCode.Should().Be(0, jsonHelp.Text);
+		jsonHelp.Text.Should().NotContain("--token");
 		deploy.ExitCode.Should().Be(0, deploy.Text);
 		deploy.Text.Should().Contain("service-token");
 		publish.ExitCode.Should().Be(0, publish.Text);
@@ -456,13 +468,16 @@ public sealed class Given_HelpDiscovery
 		var sut = ReplApp.Create();
 		sut.Map(
 			"sync",
-			([ReplOption(Name = "progress", Arity = ReplArity.ExactlyOne, Hidden = true)] IProgress<double> progress) =>
+			([ReplOption(Name = "progress", Arity = ReplArity.ExactlyOne, Hidden = true, Mode = ReplParameterMode.OptionOnly)] IProgress<double> progress) =>
 				progress is not null ? "progress-ready" : "missing");
 
 		var document = () => sut.CreateDocumentationModel();
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["sync", "--help", "--no-logo"]));
 		var invocation = ConsoleCaptureHelper.Capture(() => sut.Run(["sync", "--no-logo"]));
 
 		document.Should().NotThrow();
+		help.ExitCode.Should().Be(0, help.Text);
+		help.Text.Should().NotContain("--progress");
 		invocation.ExitCode.Should().Be(0);
 		invocation.Text.Should().Contain("progress-ready");
 	}
@@ -646,6 +661,67 @@ public sealed class Given_HelpDiscovery
 			options.Parsing.GlobalOption("tenant").Hidden();
 		});
 		sut.Map("deploy", static string (PositionalTenantOptions options) => options.Tenant);
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["deploy", "--help", "--no-logo"]));
+		var invocation = ConsoleCaptureHelper.Capture(() => sut.Run(["deploy", "acme", "--no-logo"]));
+
+		help.ExitCode.Should().Be(0, help.Text);
+		help.Text.Should().NotContain("--tenant");
+		invocation.ExitCode.Should().Be(0, invocation.Text);
+		invocation.Text.Should().Contain("acme");
+	}
+
+	[TestMethod]
+	[Description("A hidden global cannot satisfy a direct OptionOnly parameter when the parser rejects the duplicate global/route token. If that token is the only route spelling and no provider fallback exists, command help must fail closed instead of describing no usable invocation.")]
+	public void When_HiddenGlobalOwnsRequiredDirectOptionToken_Then_CommandHelpFailsClosed()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<string>("tenant");
+			options.Parsing.GlobalOption("tenant").Hidden();
+		});
+		sut.Map(
+			"deploy",
+			static string ([ReplOption(Arity = ReplArity.ExactlyOne, Mode = ReplParameterMode.OptionOnly)] string tenant) => tenant);
+
+		foreach (var format in new[] { "human", "markdown", "json" })
+		{
+			var help = () => sut.Run(["deploy", "--help", $"--output:{format}", "--no-logo"]);
+
+			help.Should().Throw<InvalidOperationException>()
+				.WithMessage("*tenant*--tenant*cannot be hidden because it is required*");
+		}
+	}
+
+	[TestMethod]
+	[Description("A wholly hidden direct OptionOnly parameter with no active service fallback is still required by execution. Command help must reject that impossible visible contract just like aggregate documentation does.")]
+	public void When_RequiredDirectOptionIsHiddenWithoutService_Then_CommandHelpFailsClosed()
+	{
+		var sut = ReplApp.Create();
+		sut.Map(
+			"deploy",
+			static string ([ReplOption(Name = "token", Arity = ReplArity.ExactlyOne, Hidden = true, Mode = ReplParameterMode.OptionOnly)] string token) => token);
+
+		var help = () => sut.Run(["deploy", "--help", "--no-logo"]);
+
+		help.Should().Throw<InvalidOperationException>()
+			.WithMessage("*token*--token*cannot be hidden because it is required*");
+	}
+
+	[TestMethod]
+	[Description("A direct OptionAndPositional parameter remains reachable through positional binding when a hidden global owns its named token, so command help and positional execution must remain valid.")]
+	public void When_HiddenGlobalOwnsOptionAndPositionalDirectToken_Then_CommandHelpAndPositionalInvocationRemainValid()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<string>("tenant");
+			options.Parsing.GlobalOption("tenant").Hidden();
+		});
+		sut.Map(
+			"deploy",
+			static string ([ReplOption(Arity = ReplArity.ExactlyOne, Mode = ReplParameterMode.OptionAndPositional)] string tenant) => tenant);
 
 		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["deploy", "--help", "--no-logo"]));
 		var invocation = ConsoleCaptureHelper.Capture(() => sut.Run(["deploy", "acme", "--no-logo"]));
@@ -970,6 +1046,16 @@ public sealed class Given_HelpDiscovery
 
 		output.ExitCode.Should().Be(0);
 		output.Text.Should().Contain("contact list");
+	}
+
+	[TestMethod]
+	[Description("Repl.Spectre ships separately and can be compiled against an older Repl.Core. Keep the legacy five-argument help factory and BuildRenderModel call shape so upgrading only Core does not fail with MissingMethodException.")]
+	public void When_ReplSpectreUsesLegacyHelpFactoryAbi_Then_TheFiveArgumentCallShapeRemainsAvailable()
+	{
+		HelpOutputFactory factory = static (routes, contexts, scopeTokens, parsingOptions, ambientOptions) =>
+			HelpTextBuilder.BuildRenderModel(routes, contexts, scopeTokens, parsingOptions, ambientOptions);
+
+		factory.Should().NotBeNull();
 	}
 
 	[TestMethod]

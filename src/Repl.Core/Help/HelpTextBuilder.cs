@@ -22,23 +22,46 @@ internal static partial class HelpTextBuilder
 		["--answer:<name>[=value]", "Provide prompt answers in non-interactive execution."],
 	];
 
+	private static readonly AsyncLocal<IServiceProvider?> CurrentHelpServiceProvider = new();
+
+	internal static IDisposable PushServiceProvider(IServiceProvider serviceProvider)
+	{
+		ArgumentNullException.ThrowIfNull(serviceProvider);
+		var previous = CurrentHelpServiceProvider.Value;
+		CurrentHelpServiceProvider.Value = serviceProvider;
+		return new HelpServiceProviderScope(previous);
+	}
+
 	public static HelpDocumentModel BuildModel(
 		IReadOnlyList<RouteDefinition> routes,
 		IReadOnlyList<ContextDefinition> contexts,
 		IReadOnlyList<string> scopeTokens,
-		ParsingOptions parsingOptions)
+		ParsingOptions parsingOptions,
+		IServiceProvider serviceProvider)
 	{
 		ArgumentNullException.ThrowIfNull(routes);
 		ArgumentNullException.ThrowIfNull(contexts);
 		ArgumentNullException.ThrowIfNull(scopeTokens);
 		ArgumentNullException.ThrowIfNull(parsingOptions);
+		ArgumentNullException.ThrowIfNull(serviceProvider);
 
 		var visibleRoutes = routes
 			.Where(route => !route.Command.IsHidden)
 			.ToArray();
+		var globalConfiguration = parsingOptions.CaptureGlobalOptionConfiguration();
 		var scope = scopeTokens.Count == 0 ? "root" : string.Join(' ', scopeTokens);
 		if (TryGetCommandHelpRoutes(visibleRoutes, scopeTokens, parsingOptions, out var commandHelpRoutes))
 		{
+			var serviceAvailability = new Dictionary<Type, bool>();
+			foreach (var route in commandHelpRoutes)
+			{
+				_ = BuildOptionRows(
+					route,
+					globalConfiguration,
+					serviceProvider,
+					serviceAvailability);
+			}
+
 			return new HelpDocumentModel(
 				scope,
 				commandHelpRoutes.Select(CreateCommandModel).ToArray(),
@@ -52,17 +75,35 @@ internal static partial class HelpTextBuilder
 		return new HelpDocumentModel(scope, commands, DateTimeOffset.UtcNow);
 	}
 
+	// Keep this five-argument ABI for separately shipped friend assemblies such as Repl.Spectre.
+	// An older binary still emits a call to this exact CLR signature when only Repl.Core is upgraded.
 	public static HelpRenderDocument BuildRenderModel(
 		IReadOnlyList<RouteDefinition> routes,
 		IReadOnlyList<ContextDefinition> contexts,
 		IReadOnlyList<string> scopeTokens,
 		ParsingOptions parsingOptions,
+		AmbientCommandOptions? ambientOptions = null) =>
+		BuildRenderModel(
+			routes,
+			contexts,
+			scopeTokens,
+			parsingOptions,
+			CurrentHelpServiceProvider.Value ?? EmptyServiceProvider.Instance,
+			ambientOptions);
+
+	public static HelpRenderDocument BuildRenderModel(
+		IReadOnlyList<RouteDefinition> routes,
+		IReadOnlyList<ContextDefinition> contexts,
+		IReadOnlyList<string> scopeTokens,
+		ParsingOptions parsingOptions,
+		IServiceProvider serviceProvider,
 		AmbientCommandOptions? ambientOptions = null)
 	{
 		ArgumentNullException.ThrowIfNull(routes);
 		ArgumentNullException.ThrowIfNull(contexts);
 		ArgumentNullException.ThrowIfNull(scopeTokens);
 		ArgumentNullException.ThrowIfNull(parsingOptions);
+		ArgumentNullException.ThrowIfNull(serviceProvider);
 
 		var visibleRoutes = routes
 			.Where(route => !route.Command.IsHidden)
@@ -71,10 +112,13 @@ internal static partial class HelpTextBuilder
 		var scope = scopeTokens.Count == 0 ? "root" : string.Join(' ', scopeTokens);
 		if (TryGetCommandHelpRoutes(visibleRoutes, scopeTokens, parsingOptions, out var commandHelpRoutes))
 		{
+			var serviceAvailability = new Dictionary<Type, bool>();
 			return new HelpRenderDocument(
 				scope,
 				IsCommandHelp: true,
-				Commands: commandHelpRoutes.Select(route => CreateRenderCommand(route, globalConfiguration)).ToArray(),
+				Commands: commandHelpRoutes
+					.Select(route => CreateRenderCommand(route, globalConfiguration, serviceProvider, serviceAvailability))
+					.ToArray(),
 				Scopes: [],
 				GlobalOptions: [],
 				GlobalCommands: []);
@@ -137,6 +181,7 @@ internal static partial class HelpTextBuilder
 		IReadOnlyList<ContextDefinition> contexts,
 		IReadOnlyList<string> scopeTokens,
 		ParsingOptions parsingOptions,
+		IServiceProvider serviceProvider,
 		AmbientCommandOptions? ambientOptions = null,
 		int? renderWidth = null,
 		bool useAnsi = false,
@@ -146,6 +191,7 @@ internal static partial class HelpTextBuilder
 		ArgumentNullException.ThrowIfNull(contexts);
 		ArgumentNullException.ThrowIfNull(scopeTokens);
 		ArgumentNullException.ThrowIfNull(parsingOptions);
+		ArgumentNullException.ThrowIfNull(serviceProvider);
 
 		var visibleRoutes = routes
 			.Where(route => !route.Command.IsHidden)
@@ -157,7 +203,13 @@ internal static partial class HelpTextBuilder
 		var globalConfiguration = parsingOptions.CaptureGlobalOptionConfiguration();
 		if (TryGetCommandHelpRoutes(visibleRoutes, scopeTokens, parsingOptions, out var commandHelpRoutes))
 		{
-			return BuildCommandHelp(commandHelpRoutes, globalConfiguration, useAnsi, effectivePalette);
+			return BuildCommandHelp(
+				commandHelpRoutes,
+				globalConfiguration,
+				serviceProvider,
+				new Dictionary<Type, bool>(),
+				useAnsi,
+				effectivePalette);
 		}
 
 		var matchingRoutes = visibleRoutes
@@ -263,7 +315,9 @@ internal static partial class HelpTextBuilder
 
 	private static HelpRenderCommand CreateRenderCommand(
 		RouteDefinition route,
-		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration)
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
+		IServiceProvider serviceProvider,
+		Dictionary<Type, bool> serviceAvailability)
 	{
 		var displayTemplate = FormatRouteTemplate(route.Template);
 		return new HelpRenderCommand(
@@ -272,7 +326,7 @@ internal static partial class HelpTextBuilder
 			Usage: displayTemplate,
 			Aliases: route.Command.Aliases.ToArray(),
 			Arguments: BuildArgumentRows(route),
-			Options: BuildOptionRows(route, globalConfiguration),
+			Options: BuildOptionRows(route, globalConfiguration, serviceProvider, serviceAvailability),
 			ResultFlow: UsesResultFlow(route) ? ResultFlowRows : [],
 			Answers: BuildAnswerRows(route));
 	}
@@ -408,5 +462,28 @@ internal static partial class HelpTextBuilder
 		}
 
 		return true;
+	}
+
+	private sealed class HelpServiceProviderScope(IServiceProvider? previous) : IDisposable
+	{
+		private bool _disposed;
+
+		public void Dispose()
+		{
+			if (_disposed)
+			{
+				return;
+			}
+
+			CurrentHelpServiceProvider.Value = previous;
+			_disposed = true;
+		}
+	}
+
+	private sealed class EmptyServiceProvider : IServiceProvider
+	{
+		public static EmptyServiceProvider Instance { get; } = new();
+
+		public object? GetService(Type serviceType) => null;
 	}
 }

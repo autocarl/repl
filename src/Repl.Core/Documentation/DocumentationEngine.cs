@@ -392,9 +392,10 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 	// cannot obtain the value from the active provider. This must use GetService itself — not
 	// registration metadata — because custom/external providers and null-returning factories are
 	// part of the same contract as HandlerArgumentBinder.
-	private bool IsRequiredOption(
+	internal static bool IsRequiredOption(
 		OptionSchema schema,
 		string parameterName,
+		IServiceProvider serviceProvider,
 		Dictionary<Type, bool> serviceAvailability)
 	{
 		if (!schema.TryGetParameter(parameterName, out var parameter))
@@ -406,24 +407,30 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			|| !parameter.CanBeOmitted;
 		return requiresFallback
 			&& (!parameter.SupportsServiceFallback
-				|| !CanResolveFromActiveServices(parameter.ParameterType, serviceAvailability));
+				|| !CanResolveFromActiveServices(parameter.ParameterType, serviceProvider, serviceAvailability));
 	}
 
-	private bool CanResolveFromActiveServices(Type parameterType, Dictionary<Type, bool> serviceAvailability)
+	private static bool CanResolveFromActiveServices(
+		Type parameterType,
+		IServiceProvider serviceProvider,
+		Dictionary<Type, bool> serviceAvailability)
 	{
 		// HandlerArgumentBinder synthesizes these progress types from the interaction channel before
 		// direct service lookup. Discovery must apply that same fallback and still allow an explicitly
 		// registered IProgress<T> when no channel is available.
 		if (InteractionProgressFactory.IsSupportedProgressType(parameterType)
-			&& IsServiceAvailable(typeof(IReplInteractionChannel), serviceAvailability))
+			&& IsServiceAvailable(typeof(IReplInteractionChannel), serviceProvider, serviceAvailability))
 		{
 			return true;
 		}
 
-		return IsServiceAvailable(parameterType, serviceAvailability);
+		return IsServiceAvailable(parameterType, serviceProvider, serviceAvailability);
 	}
 
-	private bool IsServiceAvailable(Type serviceType, Dictionary<Type, bool> serviceAvailability)
+	private static bool IsServiceAvailable(
+		Type serviceType,
+		IServiceProvider serviceProvider,
+		Dictionary<Type, bool> serviceAvailability)
 	{
 		if (serviceAvailability.TryGetValue(serviceType, out var available))
 		{
@@ -436,7 +443,7 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 		// fallback check; treat a throw here the same as a null result, unavailable.
 		try
 		{
-			available = app.CurrentServiceProvider.GetService(serviceType) is not null;
+			available = serviceProvider.GetService(serviceType) is not null;
 		}
 		catch (Exception)
 		{
@@ -513,7 +520,7 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 					parameterName,
 					includeHiddenOptions: false,
 					customGlobalOwnership)
-				|| !IsRequiredOption(schema, parameterName, serviceAvailability))
+				|| !IsRequiredOption(schema, parameterName, app.CurrentServiceProvider, serviceAvailability))
 			{
 				continue;
 			}
@@ -534,7 +541,7 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 		{
 			if (parameter.Mode == ReplParameterMode.ArgumentOnly
 				|| !parameter.IsHidden
-				|| !IsRequiredOption(schema, parameter.Name, serviceAvailability))
+				|| !IsRequiredOption(schema, parameter.Name, app.CurrentServiceProvider, serviceAvailability))
 			{
 				continue;
 			}
@@ -694,7 +701,7 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 		return new ReplDocOption(
 			Name: displayToken?.TrimStart('-') ?? parameter.Name!,
 			Type: GetFriendlyTypeName(parameter.ParameterType),
-			Required: IsRequiredOption(schema, parameter.Name!, serviceAvailability),
+			Required: IsRequiredOption(schema, parameter.Name!, app.CurrentServiceProvider, serviceAvailability),
 			Description: parameter.GetCustomAttribute<DescriptionAttribute>()?.Description,
 			Aliases: aliases,
 			ReverseAliases: reverseAliases,

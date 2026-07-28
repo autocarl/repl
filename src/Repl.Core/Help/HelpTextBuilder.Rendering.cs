@@ -18,12 +18,19 @@ internal static partial class HelpTextBuilder
 	private static string BuildCommandHelp(
 		RouteDefinition[] routes,
 		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
+		IServiceProvider serviceProvider,
+		Dictionary<Type, bool> serviceAvailability,
 		bool useAnsi,
 		AnsiPalette palette)
 	{
 		if (routes.Length == 1)
 		{
-			return BuildSingleCommandHelp(routes[0], globalConfiguration, useAnsi, palette);
+			return BuildSingleCommandHelp(routes[0], globalConfiguration, serviceProvider, serviceAvailability, useAnsi, palette);
+		}
+
+		foreach (var route in routes)
+		{
+			_ = BuildOptionRows(route, globalConfiguration, serviceProvider, serviceAvailability);
 		}
 
 		var rows = routes
@@ -53,6 +60,8 @@ internal static partial class HelpTextBuilder
 	private static string BuildSingleCommandHelp(
 		RouteDefinition route,
 		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
+		IServiceProvider serviceProvider,
+		Dictionary<Type, bool> serviceAvailability,
 		bool useAnsi,
 		AnsiPalette palette)
 	{
@@ -62,7 +71,7 @@ internal static partial class HelpTextBuilder
 			? string.Empty
 			: $"{Environment.NewLine}Aliases: {string.Join(", ", route.Command.Aliases)}";
 		var argumentSection = BuildArgumentSection(route, useAnsi, palette);
-		var optionSection = BuildOptionSection(route, globalConfiguration, useAnsi, palette);
+		var optionSection = BuildOptionSection(route, globalConfiguration, serviceProvider, serviceAvailability, useAnsi, palette);
 		var resultFlowSection = BuildResultFlowSection(route, useAnsi, palette);
 		var answerSection = BuildAnswerSection(route, useAnsi, palette);
 		if (!useAnsi)
@@ -152,10 +161,12 @@ internal static partial class HelpTextBuilder
 	private static string BuildOptionSection(
 		RouteDefinition route,
 		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
+		IServiceProvider serviceProvider,
+		Dictionary<Type, bool> serviceAvailability,
 		bool useAnsi,
 		AnsiPalette palette)
 	{
-		var optionRows = BuildOptionRows(route, globalConfiguration);
+		var optionRows = BuildOptionRows(route, globalConfiguration, serviceProvider, serviceAvailability);
 		if (optionRows.Length == 0)
 		{
 			return string.Empty;
@@ -183,6 +194,8 @@ internal static partial class HelpTextBuilder
 		Dictionary<string, ParameterInfo> parameters,
 		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
 		string route,
+		IServiceProvider serviceProvider,
+		Dictionary<Type, bool> serviceAvailability,
 		Dictionary<string, (PropertyInfo Property, object DefaultInstance)>? groupProperties = null)
 	{
 		var entries = schema.ResolveDiscoverableEntries(globalConfiguration.CaseSensitivity)
@@ -197,7 +210,12 @@ internal static partial class HelpTextBuilder
 			.ToArray();
 		if (entries.Length == 0)
 		{
-			ValidateRequiredGroupOptionReachability(schema, schemaParameter, groupProperties, route);
+			ValidateRequiredOptionReachability(
+				schema,
+				schemaParameter,
+				route,
+				serviceProvider,
+				serviceAvailability);
 			return null;
 		}
 
@@ -241,23 +259,27 @@ internal static partial class HelpTextBuilder
 		return [left, right];
 	}
 
-	private static void ValidateRequiredGroupOptionReachability(
+	private static void ValidateRequiredOptionReachability(
 		OptionSchema schema,
 		OptionSchemaParameter schemaParameter,
-		Dictionary<string, (PropertyInfo Property, object DefaultInstance)>? groupProperties,
-		string route)
+		string route,
+		IServiceProvider serviceProvider,
+		Dictionary<Type, bool> serviceAvailability)
 	{
-		var isRequiredGroupProperty = schemaParameter.Mode == ReplParameterMode.OptionOnly
-			&& groupProperties?.ContainsKey(schemaParameter.Name) == true
-			&& (schemaParameter.ExplicitArity is ReplArity.OneOrMore or ReplArity.ExactlyOne
-				|| !schemaParameter.CanBeOmitted);
-		if (isRequiredGroupProperty)
-		{
-			throw new HiddenRequiredOptionException(
+		if (schemaParameter.Mode != ReplParameterMode.OptionOnly
+			|| !DocumentationEngine.IsRequiredOption(
+				schema,
 				schemaParameter.Name,
-				schema.ResolveDisplayToken(schemaParameter.Name),
-				route);
+				serviceProvider,
+				serviceAvailability))
+		{
+			return;
 		}
+
+		throw new HiddenRequiredOptionException(
+			schemaParameter.Name,
+			schema.ResolveDisplayToken(schemaParameter.Name),
+			route);
 	}
 
 	private static HelpRenderEntry[] BuildArgumentRows(RouteDefinition route)
@@ -297,7 +319,9 @@ internal static partial class HelpTextBuilder
 
 	private static HelpRenderEntry[] BuildOptionRows(
 		RouteDefinition route,
-		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration)
+		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
+		IServiceProvider serviceProvider,
+		Dictionary<Type, bool> serviceAvailability)
 	{
 		var parameters = route.Command.Handler.Method.GetParameters()
 			.Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
@@ -318,13 +342,15 @@ internal static partial class HelpTextBuilder
 			}
 		}
 
-		return route.OptionSchema.DiscoverableParameters
+		return route.OptionSchema.Parameters.Values
 			.Select(parameter => BuildOptionRow(
 				route.OptionSchema,
 				parameter,
 				parameters,
 				globalConfiguration,
 				route.Template.Template,
+				serviceProvider,
+				serviceAvailability,
 				groupProperties))
 			.Where(row => row is not null)
 			.Select(row => new HelpRenderEntry(row![0], row[1]))
