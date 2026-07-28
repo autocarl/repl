@@ -269,6 +269,25 @@ internal sealed class OptionSchema
 	internal bool IsEntryDiscoverable(OptionSchemaEntry entry) =>
 		ResolveDiscoveryProjection().DiscoverableEntrySet.Contains(entry);
 
+	internal bool IsEntryDiscoverableForTypedToken(
+		OptionSchemaEntry entry,
+		string typedToken,
+		ReplCaseSensitivity globalCaseSensitivity)
+	{
+		// A canonical entry remains discoverable when a case-equivalent alias is hidden, but the
+		// caller must not use that canonical fallback to reactivate the exact hidden spelling.
+		// Preserve ordinary case-insensitive canonical input by vetoing only an exact registered
+		// hidden token for the same semantic entry.
+		var exactHiddenEquivalent = Entries.Any(candidate =>
+			candidate.IsHidden
+			&& string.Equals(candidate.Token, typedToken, StringComparison.Ordinal)
+			&& string.Equals(candidate.ParameterName, entry.ParameterName, StringComparison.OrdinalIgnoreCase)
+			&& candidate.TokenKind == entry.TokenKind
+			&& string.Equals(candidate.InjectedValue, entry.InjectedValue, StringComparison.Ordinal));
+		return !exactHiddenEquivalent
+			&& ResolveDiscoveryProjection(globalCaseSensitivity).DiscoverableEntrySet.Contains(entry);
+	}
+
 	internal bool IsAliasDiscoverable(OptionSchemaEntry entry) =>
 		ResolveDiscoveryProjection().VisibleAliasSet.Contains(entry);
 

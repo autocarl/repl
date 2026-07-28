@@ -1590,11 +1590,14 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
-		var entries = match.Route.OptionSchema.ResolveToken(
-			pendingOptionToken, app.OptionsSnapshot.Parsing.OptionCaseSensitivity);
+		var caseSensitivity = app.OptionsSnapshot.Parsing.OptionCaseSensitivity;
+		var entries = match.Route.OptionSchema.ResolveToken(pendingOptionToken, caseSensitivity);
 		foreach (var entry in entries)
 		{
-			if (!match.Route.OptionSchema.IsEntryDiscoverable(entry))
+			if (!match.Route.OptionSchema.IsEntryDiscoverableForTypedToken(
+					entry,
+					pendingOptionToken,
+					caseSensitivity))
 			{
 				continue;
 			}

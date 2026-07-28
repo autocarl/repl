@@ -664,7 +664,8 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 			return false;
 		}
 
-		var matches = match.Route.OptionSchema.ResolveToken(previousToken, app.OptionsSnapshot.Parsing.OptionCaseSensitivity);
+		var caseSensitivity = app.OptionsSnapshot.Parsing.OptionCaseSensitivity;
+		var matches = match.Route.OptionSchema.ResolveToken(previousToken, caseSensitivity);
 		var distinct = matches
 			.DistinctBy(candidate => (candidate.ParameterName, candidate.TokenKind, candidate.InjectedValue), ShellOptionSchemaEntryComparer.Instance)
 			.ToArray();
@@ -682,7 +683,10 @@ internal sealed class ShellCompletionEngine(CoreReplApp app)
 		}
 
 		entry = distinct[0];
-		return true;
+		return match.Route.OptionSchema.IsEntryDiscoverableForTypedToken(
+			entry,
+			previousToken,
+			caseSensitivity);
 	}
 
 	private static void TryAddShellCompletionCandidate(

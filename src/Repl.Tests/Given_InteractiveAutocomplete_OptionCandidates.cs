@@ -242,6 +242,28 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 	}
 
 	[TestMethod]
+	[Description("When a later case-insensitive mode makes a hidden alias parser-equivalent to the canonical token, the exact hidden spelling still cannot activate value completion; the canonical spelling remains the positive control on both interactive and shell surfaces.")]
+	public async Task When_GlobalCaseModeMakesHiddenAliasCanonicalEquivalent_Then_TypedHiddenSpellingDoesNotCompleteValues()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+			"deploy",
+			static string ([ReplOption(Name = "tenant", HiddenAliases = ["--TENANT"])] ProbeMode tenant = ProbeMode.Debug) => tenant.ToString());
+		sut.Options(options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive);
+
+		var hiddenInteractive = await ResolveAutocompleteAsync(sut, "deploy --TENANT ").ConfigureAwait(false);
+		var shell = new ShellCompletionEngine(sut);
+		var hiddenShell = await ResolveShellCandidatesAsync(shell, "app deploy --TENANT ").ConfigureAwait(false);
+		var canonicalInteractive = await ResolveAutocompleteAsync(sut, "deploy --tenant ").ConfigureAwait(false);
+		var canonicalShell = await ResolveShellCandidatesAsync(shell, "app deploy --tenant ").ConfigureAwait(false);
+
+		hiddenInteractive.Suggestions.Should().BeEmpty();
+		hiddenShell.Should().BeEmpty();
+		canonicalInteractive.Suggestions.Select(static suggestion => suggestion.Value).Should().Contain(nameof(ProbeMode.Debug));
+		canonicalShell.Should().Contain(nameof(ProbeMode.Debug));
+	}
+
+	[TestMethod]
 	[Description("A hidden option does not expose its enum values even after the caller types its token by hand — probing must not confirm the option exists. The visible sibling is asserted in the same pass as a positive control: two bare BeEmpty assertions would also pass if this shape offered no values at all, and would then stay green with the visibility filter deleted.")]
 	public async Task When_HiddenEnumOptionAwaitsValue_Then_OnlyTheVisibleSiblingOffersValues()
 	{

@@ -182,6 +182,7 @@ internal static partial class HelpTextBuilder
 		OptionSchemaParameter schemaParameter,
 		Dictionary<string, ParameterInfo> parameters,
 		ParsingOptions.GlobalOptionConfigurationSnapshot globalConfiguration,
+		string route,
 		Dictionary<string, (PropertyInfo Property, object DefaultInstance)>? groupProperties = null)
 	{
 		var entries = schema.ResolveDiscoverableEntries(globalConfiguration.CaseSensitivity)
@@ -196,6 +197,7 @@ internal static partial class HelpTextBuilder
 			.ToArray();
 		if (entries.Length == 0)
 		{
+			ValidateRequiredGroupOptionReachability(schema, schemaParameter, groupProperties, route);
 			return null;
 		}
 
@@ -237,6 +239,25 @@ internal static partial class HelpTextBuilder
 			: $"{tokenDisplay} {placeholder}";
 		var right = $"{description}{defaultValue}".Trim();
 		return [left, right];
+	}
+
+	private static void ValidateRequiredGroupOptionReachability(
+		OptionSchema schema,
+		OptionSchemaParameter schemaParameter,
+		Dictionary<string, (PropertyInfo Property, object DefaultInstance)>? groupProperties,
+		string route)
+	{
+		var isRequiredGroupProperty = schemaParameter.Mode == ReplParameterMode.OptionOnly
+			&& groupProperties?.ContainsKey(schemaParameter.Name) == true
+			&& (schemaParameter.ExplicitArity is ReplArity.OneOrMore or ReplArity.ExactlyOne
+				|| !schemaParameter.CanBeOmitted);
+		if (isRequiredGroupProperty)
+		{
+			throw new HiddenRequiredOptionException(
+				schemaParameter.Name,
+				schema.ResolveDisplayToken(schemaParameter.Name),
+				route);
+		}
 	}
 
 	private static HelpRenderEntry[] BuildArgumentRows(RouteDefinition route)
@@ -303,6 +324,7 @@ internal static partial class HelpTextBuilder
 				parameter,
 				parameters,
 				globalConfiguration,
+				route.Template.Template,
 				groupProperties))
 			.Where(row => row is not null)
 			.Select(row => new HelpRenderEntry(row![0], row[1]))

@@ -33,6 +33,18 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 		return CreateDocumentationModel(targetPath);
 	}
 
+	internal ReplDocumentationModel CreateDocumentationModel(
+		IServiceProvider serviceProvider,
+		Func<ReplDocCommand, bool> commandFilter)
+	{
+		ArgumentNullException.ThrowIfNull(serviceProvider);
+		ArgumentNullException.ThrowIfNull(commandFilter);
+
+		using var runtimeStateScope = app.PushRuntimeState(serviceProvider, isInteractiveSession: false);
+		var (model, _) = CreateDocumentationModelCore(targetPath: null, commandFilter);
+		return model;
+	}
+
 	/// <summary>
 	/// Internal documentation model creation that supports not-found result for help rendering.
 	/// </summary>
@@ -42,7 +54,9 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 		return notFoundResult is null ? model : notFoundResult;
 	}
 
-	private (ReplDocumentationModel Model, IReplResult? NotFoundResult) CreateDocumentationModelCore(string? targetPath)
+	private (ReplDocumentationModel Model, IReplResult? NotFoundResult) CreateDocumentationModelCore(
+		string? targetPath,
+		Func<ReplDocCommand, bool>? commandFilter = null)
 	{
 		var activeGraph = app.ResolveActiveRoutingGraph();
 		var normalizedTargetPath = NormalizePath(targetPath);
@@ -76,13 +90,12 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			&& string.Equals(commands[0].Template.Template, normalizedTargetPath, StringComparison.OrdinalIgnoreCase);
 		var serviceAvailability = new Dictionary<Type, bool>();
 		var customGlobalOwnership = GlobalOptionParser.BuildCustomTokenOwnership(app.OptionsSnapshot.Parsing);
-		var commandDocs = commands
-			.Select(route => BuildDocumentationCommand(
-				route,
-				includeHiddenOptions: isExactCommandTarget,
-				serviceAvailability,
-				customGlobalOwnership))
-			.ToArray();
+		var commandDocs = BuildDocumentationCommands(
+			commands,
+			isExactCommandTarget,
+			serviceAvailability,
+			customGlobalOwnership,
+			commandFilter);
 		var contextDocs = contexts
 			.Select(context => new ReplDocContext(
 				Path: context.Template.Template,
@@ -98,6 +111,38 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			Commands: commandDocs,
 			Resources: resourceDocs);
 		return (model, notFoundResult);
+	}
+
+	private ReplDocCommand[] BuildDocumentationCommands(
+		RouteDefinition[] routes,
+		bool includeHiddenOptions,
+		Dictionary<Type, bool> serviceAvailability,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
+		Func<ReplDocCommand, bool>? commandFilter)
+	{
+		var commands = new List<ReplDocCommand>(routes.Length);
+		foreach (var route in routes)
+		{
+			var command = BuildDocumentationCommand(
+				route,
+				includeHiddenOptions,
+				validateInvocability: commandFilter is null,
+				serviceAvailability,
+				customGlobalOwnership);
+			if (commandFilter is not null && !commandFilter(command))
+			{
+				continue;
+			}
+
+			if (commandFilter is not null && !includeHiddenOptions)
+			{
+				ValidateDocumentationInvocability(route, serviceAvailability, customGlobalOwnership);
+			}
+
+			commands.Add(command);
+		}
+
+		return [.. commands];
 	}
 
 	private static ReplDocResource[] BuildDocumentationResources(IReadOnlyList<ReplDocCommand> commands) =>
@@ -194,12 +239,13 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 	private ReplDocCommand BuildDocumentationCommand(
 		RouteDefinition route,
 		bool includeHiddenOptions,
+		bool validateInvocability,
 		Dictionary<Type, bool> serviceAvailability,
 		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
 	{
-		if (!includeHiddenOptions)
+		if (!includeHiddenOptions && validateInvocability)
 		{
-			ValidateHiddenOptionInvocability(route, serviceAvailability);
+			ValidateDocumentationInvocability(route, serviceAvailability, customGlobalOwnership);
 		}
 
 		var dynamicSegments = route.Template.Segments
@@ -258,7 +304,7 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 				&& !Attribute.IsDefined(parameter.ParameterType, typeof(ReplOptionsGroupAttribute), inherit: true)
 				&& (includeHiddenOptions || !schema.IsOptionHidden(name))
 				&& ShouldIncludeDocumentationOption(
-					route, name, includeHiddenOptions, serviceAvailability, customGlobalOwnership))
+					route, name, includeHiddenOptions, customGlobalOwnership))
 			.Select(parameter => BuildDocumentationOption(
 				schema, parameter, serviceAvailability, customGlobalOwnership));
 		var groupOptions = handlerParams
@@ -271,7 +317,7 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 						prop.CanWrite
 						&& (includeHiddenOptions || !schema.IsOptionHidden(prop.Name))
 						&& ShouldIncludeDocumentationOption(
-							route, prop.Name, includeHiddenOptions, serviceAvailability, customGlobalOwnership))
+							route, prop.Name, includeHiddenOptions, customGlobalOwnership))
 					.Select(prop => BuildDocumentationOptionFromProperty(
 						schema, prop, defaultInstance, customGlobalOwnership));
 			});
@@ -401,11 +447,10 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 		return available;
 	}
 
-	private bool ShouldIncludeDocumentationOption(
+	private static bool ShouldIncludeDocumentationOption(
 		RouteDefinition route,
 		string parameterName,
 		bool includeHiddenOptions,
-		Dictionary<Type, bool> serviceAvailability,
 		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
 	{
 		var schema = route.OptionSchema;
@@ -422,20 +467,63 @@ internal sealed class DocumentationEngine(CoreReplApp app)
 			return true;
 		}
 
-		if (IsRequiredOption(schema, parameterName, serviceAvailability))
-		{
-			throw new HiddenRequiredOptionException(
-				parameterName,
-				displayToken,
-				route.Template.Template);
-		}
-
 		return false;
 	}
 
 	private static bool HasExplicitRequiredArity(OptionSchema schema, string parameterName) =>
 		schema.TryGetParameter(parameterName, out var schemaParameter)
 		&& schemaParameter.ExplicitArity is ReplArity.OneOrMore or ReplArity.ExactlyOne;
+
+	private void ValidateDocumentationInvocability(
+		RouteDefinition route,
+		Dictionary<Type, bool> serviceAvailability,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership)
+	{
+		ValidateHiddenOptionInvocability(route, serviceAvailability);
+
+		var schema = route.OptionSchema;
+		var routeParameterNames = route.Template.Segments
+			.OfType<DynamicRouteSegment>()
+			.Select(static segment => segment.Name)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var handlerParams = route.Command.Handler.Method.GetParameters();
+		var regularOptionNames = handlerParams
+			.Where(parameter =>
+				parameter.Name is not null
+				&& parameter.ParameterType != typeof(CancellationToken)
+				&& !routeParameterNames.Contains(parameter.Name)
+				&& !app.ImplicitServiceParameters.IsImplicitServiceParameter(parameter.ParameterType)
+				&& parameter.GetCustomAttribute<FromServicesAttribute>() is null
+				&& parameter.GetCustomAttribute<FromContextAttribute>() is null
+				&& !Attribute.IsDefined(parameter.ParameterType, typeof(ReplOptionsGroupAttribute), inherit: true))
+			.Select(static parameter => parameter.Name!);
+		var groupOptionNames = handlerParams
+			.Where(parameter => Attribute.IsDefined(parameter.ParameterType, typeof(ReplOptionsGroupAttribute), inherit: true))
+			.SelectMany(parameter => GetOptionsGroupProperties(parameter.ParameterType))
+			.Where(static property => property.CanWrite)
+			.Select(static property => property.Name);
+
+		foreach (var parameterName in regularOptionNames
+			.Concat(groupOptionNames)
+			.Distinct(StringComparer.OrdinalIgnoreCase))
+		{
+			if (schema.IsOptionHidden(parameterName)
+				|| ShouldIncludeDocumentationOption(
+					route,
+					parameterName,
+					includeHiddenOptions: false,
+					customGlobalOwnership)
+				|| !IsRequiredOption(schema, parameterName, serviceAvailability))
+			{
+				continue;
+			}
+
+			throw new HiddenRequiredOptionException(
+				parameterName,
+				schema.ResolveDisplayToken(parameterName),
+				route.Template.Template);
+		}
+	}
 
 	private void ValidateHiddenOptionInvocability(
 		RouteDefinition route,

@@ -674,6 +674,53 @@ public sealed class Given_McpServerEndToEnd
 	}
 
 	[TestMethod]
+	[Description("An MCP CommandFilter defines the discovery boundary before hidden-required validation: an excluded CLI-only command cannot prevent server startup, while unrelated tools remain available.")]
+	public async Task When_CommandFilterExcludesCliOnlyRequiredHiddenOption_Then_ServerStartsWithRemainingTools()
+	{
+		var filterCalls = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		await using var fixture = await McpTestFixture.CreateAsync(
+			app =>
+			{
+				app.Map("ping", static () => "pong");
+				app.Map(
+					"local",
+					static string ([ReplOption(Name = "token", Hidden = true, Arity = ReplArity.ExactlyOne)] string token) => token);
+			},
+			options => options.CommandFilter = command =>
+			{
+				filterCalls[command.Path] = filterCalls.GetValueOrDefault(command.Path) + 1;
+				return !string.Equals(command.Path, "local", StringComparison.OrdinalIgnoreCase);
+			});
+
+		var tools = await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+
+		tools.Should().ContainSingle(tool => string.Equals(tool.Name, "ping", StringComparison.Ordinal));
+		tools.Should().NotContain(tool => string.Equals(tool.Name, "local", StringComparison.Ordinal));
+		filterCalls["ping"].Should().Be(1);
+		filterCalls["local"].Should().Be(1);
+	}
+
+	[TestMethod]
+	[Description("When CommandFilter retains a command with an impossible hidden-required contract, root-aware discovery still rejects it and evaluates the predicate only once.")]
+	public async Task When_CommandFilterIncludesCliOnlyRequiredHiddenOption_Then_DiscoveryRejectsIt()
+	{
+		var filterCalls = 0;
+		await using var fixture = await McpTestFixture.CreateAsync(
+			app => app.Map(
+				"deploy",
+				static string ([ReplOption(Name = "token", Hidden = true, Arity = ReplArity.ExactlyOne)] string token) => token),
+			options => options.CommandFilter = _ =>
+			{
+				filterCalls++;
+				return true;
+			});
+		var discover = async () => await fixture.Client.ListToolsAsync().ConfigureAwait(false);
+
+		await discover.Should().ThrowAsync<McpException>().ConfigureAwait(false);
+		filterCalls.Should().Be(1);
+	}
+
+	[TestMethod]
 	[Description("A DI service fallback makes an explicitly required option omittable at the same precedence point used by HandlerArgumentBinder. AutomationHidden must omit that option without withdrawing the tool, and tools/call without the argument must receive the service value.")]
 	public async Task When_AutomationHiddenRequiredOptionHasAServiceFallback_Then_TheToolRemainsInvocable()
 	{

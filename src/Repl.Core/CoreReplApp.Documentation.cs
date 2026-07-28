@@ -20,6 +20,11 @@ public sealed partial class CoreReplApp
 		string? targetPath = null) =>
 		DocumentationEng.CreateDocumentationModel(serviceProvider, targetPath);
 
+	internal ReplDocumentationModel CreateDocumentationModel(
+		IServiceProvider serviceProvider,
+		Func<ReplDocCommand, bool> commandFilter) =>
+		DocumentationEng.CreateDocumentationModel(serviceProvider, commandFilter);
+
 	/// <summary>
 	/// Internal documentation model creation that supports not-found result for help rendering.
 	/// </summary>

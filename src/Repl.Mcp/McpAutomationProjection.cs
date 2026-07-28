@@ -27,10 +27,8 @@ internal static class McpAutomationProjection
 		}
 
 		var projected = model.Commands
-			.Where(static command => !command.Options.Any(static option => IsUnavailable(option) && option.Required))
-			.Select(static command => HasUnavailableOption(command)
-				? command with { Options = [.. command.Options.Where(static option => !IsUnavailable(option))] }
-				: command)
+			.Select(static command => Apply(command))
+			.OfType<ReplDocCommand>()
 			.ToArray();
 
 		// Resources are projected from the command list, so a withdrawn command must not linger there.
@@ -42,6 +40,24 @@ internal static class McpAutomationProjection
 		{
 			Commands = projected,
 			Resources = [.. model.Resources.Where(resource => retained.Contains(resource.Path))],
+		};
+	}
+
+	internal static ReplDocCommand? Apply(ReplDocCommand command)
+	{
+		if (!HasUnavailableOption(command))
+		{
+			return command;
+		}
+
+		if (command.Options.Any(static option => IsUnavailable(option) && option.Required))
+		{
+			return null;
+		}
+
+		return command with
+		{
+			Options = [.. command.Options.Where(static option => !IsUnavailable(option))],
 		};
 	}
 

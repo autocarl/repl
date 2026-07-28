@@ -618,6 +618,45 @@ public sealed class Given_HelpDiscovery
 	}
 
 	[TestMethod]
+	[Description("If a hidden global owns the only token of a required options-group property, command help must fail closed instead of omitting the unreachable option from an apparently usable command.")]
+	public void When_HiddenGlobalOwnsRequiredGroupOptionToken_Then_CommandHelpFailsClosed()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<string>("tenant");
+			options.Parsing.GlobalOption("tenant").Hidden();
+		});
+		sut.Map("deploy", static string (RequiredTenantOptions options) => options.Tenant);
+
+		var help = () => sut.Run(["deploy", "--help", "--no-logo"]);
+
+		help.Should().Throw<InvalidOperationException>()
+			.WithMessage("*Tenant*--tenant*cannot be hidden because it is required*");
+	}
+
+	[TestMethod]
+	[Description("A globally shadowed named token does not make an OptionAndPositional group property unreachable: positional binding still satisfies its lower bound, so command help remains available and execution accepts the positional value.")]
+	public void When_HiddenGlobalOwnsOptionAndPositionalGroupToken_Then_CommandHelpAndPositionalInvocationRemainValid()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<string>("tenant");
+			options.Parsing.GlobalOption("tenant").Hidden();
+		});
+		sut.Map("deploy", static string (PositionalTenantOptions options) => options.Tenant);
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["deploy", "--help", "--no-logo"]));
+		var invocation = ConsoleCaptureHelper.Capture(() => sut.Run(["deploy", "acme", "--no-logo"]));
+
+		help.ExitCode.Should().Be(0, help.Text);
+		help.Text.Should().NotContain("--tenant");
+		invocation.ExitCode.Should().Be(0, invocation.Text);
+		invocation.Text.Should().Contain("acme");
+	}
+
+	[TestMethod]
 	[Description("DI fallback applies to direct handler parameters only. The binder constructs an options group before its service fallback, so registering the same property type must not make a hidden required group property look invocable.")]
 	public void When_HiddenRequiredGroupPropertyTypeIsRegisteredAsAService_Then_MappingStillThrows()
 	{
@@ -1224,6 +1263,20 @@ public sealed class Given_HelpDiscovery
 	}
 
 	private static string SendHandler([ComponentDescriptionAttribute("Message to send to all watching sessions")] string message) => message;
+
+	[ReplOptionsGroup]
+	private sealed class PositionalTenantOptions
+	{
+		[ReplOption(Mode = ReplParameterMode.OptionAndPositional, Arity = ReplArity.ExactlyOne)]
+		public string Tenant { get; set; } = null!;
+	}
+
+	[ReplOptionsGroup]
+	private sealed class RequiredTenantOptions
+	{
+		[ReplOption(Mode = ReplParameterMode.OptionOnly, Arity = ReplArity.ExactlyOne)]
+		public string Tenant { get; set; } = null!;
+	}
 
 	[ReplOptionsGroup]
 	private sealed class HiddenRequiredOptions

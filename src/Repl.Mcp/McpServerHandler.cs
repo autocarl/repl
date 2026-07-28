@@ -113,6 +113,14 @@ internal sealed class McpServerHandler
 		var serverName = _options.ServerName ?? ResolveAppName() ?? "repl-mcp-server";
 		var serverVersion = _options.ServerVersion ?? "1.0.0";
 
+		// Preserve fail-fast validation when every command belongs to MCP. With a filter, defer
+		// projection until the root-aware snapshot so the user predicate is not invoked eagerly and
+		// then repeated for the same commands during the first discovery request.
+		if (_options.CommandFilter is null)
+		{
+			_ = CreateDocumentationModel();
+		}
+
 		return new McpServerOptions
 		{
 			ServerInfo = new Implementation { Name = serverName, Version = serverVersion },
@@ -153,17 +161,9 @@ internal sealed class McpServerHandler
 
 	private string? ResolveAppName()
 	{
-		var previousProgrammatic = ReplSessionIO.IsProgrammatic;
-		ReplSessionIO.IsProgrammatic = true;
-		try
-		{
-			var model = CreateDocumentationModel();
-			return model.App.Name;
-		}
-		finally
-		{
-			ReplSessionIO.IsProgrammatic = previousProgrammatic;
-		}
+		var coreApp = _app as CoreReplApp
+			?? throw new InvalidOperationException("MCP server handler requires CoreReplApp.");
+		return coreApp.BuildDocumentationApp().Name;
 	}
 
 	private async ValueTask<ListToolsResult> ListToolsAsync(
@@ -430,24 +430,26 @@ internal sealed class McpServerHandler
 		ReplSessionIO.IsProgrammatic = true;
 		try
 		{
-			// Every MCP tool invocation overlays a concrete interaction channel before entering
-			// the binder. Discovery must expose that guaranteed fallback even when the caller did
-			// not supply a base provider (or supplied one without the channel).
-			var discoveryServices = new McpServiceProviderOverlay(
-				_sessionServices,
-				new Dictionary<Type, object>
-				{
-					[typeof(IReplInteractionChannel)] = new McpInteractionChannel(
-						new Dictionary<string, string>(StringComparer.Ordinal),
-						_options.InteractivityMode),
-				});
-			return coreApp.CreateDocumentationModel(discoveryServices);
+			return coreApp.CreateDocumentationModel(CreateDiscoveryServices(), IsMcpCandidateBeforeValidation);
 		}
 		finally
 		{
 			ReplSessionIO.IsProgrammatic = previousProgrammatic;
 		}
 	}
+
+	// Every MCP tool invocation overlays a concrete interaction channel before entering the
+	// binder. Discovery must expose that guaranteed fallback even when the caller did not supply
+	// a base provider (or supplied one without the channel).
+	private McpServiceProviderOverlay CreateDiscoveryServices() =>
+		new(
+			_sessionServices,
+			new Dictionary<Type, object>
+			{
+				[typeof(IReplInteractionChannel)] = new McpInteractionChannel(
+					new Dictionary<string, string>(StringComparer.Ordinal),
+					_options.InteractivityMode),
+			});
 
 	private void ValidateCompatibilityToolNames(IReadOnlyList<McpServerTool> tools)
 	{
@@ -666,10 +668,34 @@ internal sealed class McpServerHandler
 			return true;
 		}
 
-		var model = CreateDocumentationModel();
-		return model.Commands.Any(static command =>
-			command.Metadata?.ContainsKey(McpAppMetadata.ResourceMetadataKey) == true
-			|| command.Metadata?.ContainsKey(McpAppMetadata.CommandMetadataKey) == true);
+		var coreApp = _app as CoreReplApp
+			?? throw new InvalidOperationException("MCP server handler requires CoreReplApp.");
+		var previousProgrammatic = ReplSessionIO.IsProgrammatic;
+		ReplSessionIO.IsProgrammatic = true;
+		try
+		{
+			using var runtimeStateScope = coreApp.PushRuntimeState(
+				CreateDiscoveryServices(),
+				isInteractiveSession: false);
+			var activeGraph = coreApp.ResolveActiveRoutingGraph();
+			var commands = coreApp.ResolveDiscoverableRoutes(
+				activeGraph.Routes,
+				activeGraph.Contexts,
+				Array.Empty<string>(),
+				StringComparison.OrdinalIgnoreCase);
+
+			// This capability probe historically ignores CommandFilter. Inspect route metadata directly
+			// so the filter remains a once-per-snapshot predicate and excluded invalid CLI routes are not
+			// documented or validated merely to decide whether the optional Apps extension is advertised.
+			return commands.Any(static route =>
+				!route.Command.IsHidden
+				&& (route.Command.Metadata.ContainsKey(McpAppMetadata.ResourceMetadataKey)
+					|| route.Command.Metadata.ContainsKey(McpAppMetadata.CommandMetadataKey)));
+		}
+		finally
+		{
+			ReplSessionIO.IsProgrammatic = previousProgrammatic;
+		}
 	}
 
 	private static Tool CreateCompatibilityDiscoverTool() => new()
@@ -1031,10 +1057,18 @@ internal sealed class McpServerHandler
 		return [.. prompts.Values];
 	}
 
-	private bool IsToolCandidate(ReplDocCommand command) =>
+	private bool IsMcpCandidateBeforeValidation(ReplDocCommand unprojectedCommand)
+	{
+		var command = McpAutomationProjection.Apply(unprojectedCommand);
+		return command is not null
+			&& !command.IsHidden
+			&& command.Annotations?.AutomationHidden != true
+			&& (_options.CommandFilter is not { } filter || filter(command));
+	}
+
+	private static bool IsToolCandidate(ReplDocCommand command) =>
 		!command.IsHidden
-		&& command.Annotations?.AutomationHidden != true
-		&& (_options.CommandFilter is not { } filter || filter(command));
+		&& command.Annotations?.AutomationHidden != true;
 
 	private static McpServerPrimitiveCollection<T> ToCollection<T>(IReadOnlyList<T> items)
 		where T : IMcpServerPrimitive
