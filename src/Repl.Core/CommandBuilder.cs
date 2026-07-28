@@ -1,3 +1,6 @@
+using System.Reflection;
+using Repl.Internal.Options;
+
 namespace Repl;
 
 /// <summary>
@@ -11,15 +14,37 @@ public sealed class CommandBuilder
 	private readonly Dictionary<string, CompletionProviderScope> _completionScopes =
 		new(StringComparer.OrdinalIgnoreCase);
 
+	// Option visibility lives on this immutable schema, not on the builder, so every discovery
+	// surface reads one source. Swapped whole via CompareExchange rather than mutated: no lock,
+	// because a blocking wait on another managed thread deadlocks on single-threaded WASM.
+	private OptionSchema _optionSchema = OptionSchema.Empty;
+
+	// Derived discovery state (most visibly the MCP tool snapshot) is rebuilt only when routing
+	// is invalidated, so any visibility change made after Map has to say so.
+	private readonly Action<bool>? _invalidateRouting;
+	private readonly Func<ReplCaseSensitivity>? _resolveOptionCaseSensitivity;
+
 	/// <summary>
 	/// Initializes a new instance of the <see cref="CommandBuilder"/> class.
 	/// </summary>
 	/// <param name="route">The command route template.</param>
 	/// <param name="handler">The command handler delegate.</param>
-	internal CommandBuilder(string route, Delegate handler)
+	/// <param name="invalidateRouting">
+	/// Invoked when metadata that discovery surfaces derive from changes after registration.
+	/// </param>
+	/// <param name="resolveOptionCaseSensitivity">
+	/// Resolves the current global option-token comparison mode for post-registration visibility changes.
+	/// </param>
+	internal CommandBuilder(
+		string route,
+		Delegate handler,
+		Action<bool>? invalidateRouting = null,
+		Func<ReplCaseSensitivity>? resolveOptionCaseSensitivity = null)
 	{
 		Route = route;
 		Handler = handler;
+		_invalidateRouting = invalidateRouting;
+		_resolveOptionCaseSensitivity = resolveOptionCaseSensitivity;
 		SupportsHostedProtocolPassthrough = ComputeSupportsHostedProtocolPassthrough(handler);
 	}
 
@@ -140,6 +165,182 @@ public sealed class CommandBuilder
 	}
 
 	/// <summary>
+	/// Configures one option's metadata.
+	/// </summary>
+	/// <remarks>
+	/// The callback shape is deliberate: this type and <see cref="OptionBuilder"/> both expose
+	/// <c>Hidden</c> and <c>AutomationHidden</c>, so an API returning the option builder would let
+	/// <c>.Option("x").Hidden()</c> sit in a chain reading exactly like the command-level call while
+	/// meaning something quite different, with nothing to signal that the subject changed. Passing a
+	/// callback keeps the subject explicit and the chain on the command.
+	/// </remarks>
+	/// <param name="targetName">Handler parameter or options-group property name.</param>
+	/// <param name="configure">Receives the option metadata builder.</param>
+	/// <returns>The same command builder instance.</returns>
+	/// <exception cref="KeyNotFoundException">No such option target is registered for this command.</exception>
+	/// <exception cref="InvalidOperationException">
+	/// <paramref name="configure"/> hid an options-group property that a required arity or
+	/// non-omittable CLR shape makes impossible to omit from an invocation.
+	/// </exception>
+	public CommandBuilder WithOption(string targetName, Action<OptionBuilder> configure)
+	{
+		ArgumentNullException.ThrowIfNull(configure);
+		configure(SelectOption(targetName));
+
+		return this;
+	}
+
+	private OptionBuilder SelectOption(string targetName)
+	{
+		targetName = string.IsNullOrWhiteSpace(targetName)
+			? throw new ArgumentException("Option target name cannot be empty.", nameof(targetName))
+			: targetName;
+		var schema = OptionSchema;
+		if (!schema.TryGetParameter(targetName, out var parameter)
+			|| parameter.Mode == ReplParameterMode.ArgumentOnly)
+		{
+			// List the candidates: the target is the CLR parameter or property name, not the rendered
+			// token, and that mismatch is the mistake this exception almost always reports.
+			var candidates = schema.Parameters.Values
+				.Where(static candidate => candidate.Mode != ReplParameterMode.ArgumentOnly)
+				.Select(static candidate => candidate.Name)
+				.Order(StringComparer.Ordinal);
+
+			throw new KeyNotFoundException(
+				$"No option target named '{targetName}' is registered for command '{Route}'. "
+				+ $"Known option targets: {string.Join(", ", candidates)}.");
+		}
+
+		return new OptionBuilder(
+			isHidden => UpdateOptionParameter(
+				targetName,
+				current => current with { IsHidden = isHidden },
+				isVisibilityRetraction: isHidden),
+			isAutomationHidden => UpdateOptionParameter(
+				targetName,
+				current => current with { IsAutomationHidden = isAutomationHidden },
+				isVisibilityRetraction: isAutomationHidden),
+			(alias, isHidden) => UpdateOptionAliasVisibility(targetName, alias, isHidden));
+	}
+
+	internal OptionSchema OptionSchema => Volatile.Read(ref _optionSchema);
+
+	internal void AttachOptionSchema(OptionSchema schema) => Volatile.Write(ref _optionSchema, schema);
+
+	/// <summary>
+	/// Publishes a new schema with the target parameter's metadata updated.
+	/// </summary>
+	/// <remarks>
+	/// A retry loop rather than a plain write: the schema is also the parsing contract, so a
+	/// concurrent update must not drop the other one. Unknown targets are impossible here because
+	/// <see cref="SelectOption"/> already rejected them.
+	/// </remarks>
+	private void UpdateOptionParameter(
+		string targetName,
+		Func<OptionSchemaParameter, OptionSchemaParameter> update,
+		bool isVisibilityRetraction)
+	{
+		while (true)
+		{
+			var current = Volatile.Read(ref _optionSchema);
+			if (!current.TryGetParameter(targetName, out var parameter))
+			{
+				return;
+			}
+
+			var updated = update(parameter);
+			if (updated == parameter)
+			{
+				return;
+			}
+
+			var candidate = current.WithParameter(updated);
+
+			// Validate before publishing so the throw carries the caller's own Hidden() frame and
+			// the schema is never left in a state no invocation could satisfy.
+			ValidateOptionVisibility(candidate);
+			if (ReferenceEquals(Interlocked.CompareExchange(ref _optionSchema, candidate, current), current))
+			{
+				_invalidateRouting?.Invoke(isVisibilityRetraction);
+				return;
+			}
+		}
+	}
+
+	private void UpdateOptionAliasVisibility(string targetName, string alias, bool isHidden)
+	{
+		while (true)
+		{
+			var current = Volatile.Read(ref _optionSchema);
+			var candidate = current.WithAliasVisibility(
+				targetName,
+				alias,
+				isHidden,
+				_resolveOptionCaseSensitivity?.Invoke());
+			if (ReferenceEquals(candidate, current))
+			{
+				// Already in the requested state: WithAliasVisibility returned the same instance.
+				// Mirrors UpdateOptionParameter's no-op early exit — no schema swap, no routing
+				// invalidation, over a call that changed nothing.
+				return;
+			}
+
+			if (ReferenceEquals(Interlocked.CompareExchange(ref _optionSchema, candidate, current), current))
+			{
+				_invalidateRouting?.Invoke(isHidden);
+				return;
+			}
+		}
+	}
+
+	internal void ValidateOptionVisibility() => ValidateOptionVisibility(OptionSchema);
+
+	/// <summary>
+	/// Rejects a hidden option that no invocation could omit.
+	/// </summary>
+	/// <remarks>
+	/// Runs at configuration time only — from <see cref="CoreReplApp.Map(string, Delegate)"/> for the
+	/// declarative form and from the fluent setter for the other. It deliberately does not run on any
+	/// execution or completion path: <c>Run</c> reports failures as an exit code and has no general
+	/// catch, so throwing from there escapes the host unhandled.
+	/// </remarks>
+	private void ValidateOptionVisibility(OptionSchema schema)
+	{
+		foreach (var parameter in schema.Parameters.Values)
+		{
+			if (parameter.Mode == ReplParameterMode.ArgumentOnly || !parameter.IsHidden)
+			{
+				continue;
+			}
+
+			// Two independent ways an option can be mandatory, and each needs the right evidence.
+			//
+			// Only an EXPLICITLY declared arity counts: an inferred ExactlyOne describes how many
+			// values the token consumes when present, not whether the option may be absent, so a
+			// nullable reference parameter infers ExactlyOne yet binds null happily when omitted.
+			//
+			// The CLR shape is the other authority. Direct handler parameters cannot be rejected at
+			// mapping time, though: Run and MCP may supply an external provider later, and the binder
+			// consults it before enforcing either lower bound. Provider-aware documentation validates
+			// those paths at the discovery boundary. Options-group properties never reach that fallback,
+			// so their impossible hidden configuration remains an immediate error.
+			var requiresFallback = parameter.ExplicitArity is ReplArity.ExactlyOne or ReplArity.OneOrMore
+				|| !parameter.CanBeOmitted;
+			if (!requiresFallback || parameter.SupportsServiceFallback)
+			{
+				continue;
+			}
+
+			// Name the rendered token as well as the CLR target: an operator greps argv for
+			// '--internal-token' and would not find the parameter name anywhere.
+			throw new HiddenRequiredOptionException(
+				parameter.Name,
+				schema.ResolveDisplayToken(parameter.Name),
+				Route);
+		}
+	}
+
+	/// <summary>
 	/// Adds a completion provider for a target parameter, invoked by in-process surfaces only
 	/// (the interactive Tab menu and the <c>complete</c> ambient command).
 	/// </summary>
@@ -214,6 +415,7 @@ public sealed class CommandBuilder
 	public CommandBuilder Hidden(bool isHidden = true)
 	{
 		IsHidden = isHidden;
+		_invalidateRouting?.Invoke(isHidden);
 		return this;
 	}
 
@@ -333,6 +535,7 @@ public sealed class CommandBuilder
 	public CommandBuilder AutomationHidden(bool value = true)
 	{
 		Annotations = (Annotations ?? new CommandAnnotations()) with { AutomationHidden = value };
+		_invalidateRouting?.Invoke(value);
 		return this;
 	}
 
@@ -348,6 +551,7 @@ public sealed class CommandBuilder
 		var builder = new CommandAnnotationsBuilder();
 		configure(builder);
 		Annotations = builder.Build();
+		_invalidateRouting?.Invoke(Annotations.AutomationHidden);
 		return this;
 	}
 

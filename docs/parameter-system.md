@@ -26,6 +26,7 @@ Application-facing parameter DSL:
   - explicit `Aliases` (full tokens, for example `-m`, `--mode`)
   - explicit `ReverseAliases` (for example `--no-verbose`)
   - `Mode` (`OptionOnly`, `ArgumentOnly`, `OptionAndPositional`)
+  - `Hidden` to suppress discovery without changing parsing or binding
   - optional per-parameter `CaseSensitivity`
   - optional `Arity`
 - `ReplArgumentAttribute`
@@ -40,6 +41,8 @@ Supporting enums:
 - `ReplCaseSensitivity`
 - `ReplParameterMode`
 - `ReplArity`
+
+Option visibility can also be configured fluently with `CommandBuilder.WithOption(targetName, option => option.Hidden())` and `ParsingOptions.GlobalOption(name).Hidden()`. Fluent visibility overrides the attribute value, including `.Hidden(isHidden: false)`. Unknown targets fail during configuration instead of being ignored. Hidden options must be omittable, but inferred `ExactlyOne` alone does not make an omittable nullable/defaulted CLR parameter invalid. Required options-group properties fail immediately during mapping because their binder never consults DI. Required direct handler parameters are validated later, when aggregate documentation or MCP discovery knows the active provider; discovery accepts them when the binder can synthesize progress from `IReplInteractionChannel` or resolve the parameter from DI, and otherwise emits the required-hidden diagnostic.
 
 ### Options groups
 
@@ -107,6 +110,9 @@ This same schema drives:
 - command help option sections
 - shell option completion candidates
 - exported documentation option metadata
+- generated MCP tool and prompt schemas
+
+Hidden options are filtered from those discovery surfaces, while the same schema continues to accept and bind their tokens during direct execution.
 
 ## System.CommandLine comparison
 

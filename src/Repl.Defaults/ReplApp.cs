@@ -114,8 +114,31 @@ public sealed class ReplApp : IReplApp
 	public void InvalidateRouting() => _core.InvalidateRouting();
 
 	/// <inheritdoc />
-	public ReplDocumentationModel CreateDocumentationModel(string? targetPath = null) =>
-		_core.CreateDocumentationModel(targetPath);
+	public ReplDocumentationModel CreateDocumentationModel(string? targetPath = null)
+	{
+		if (_sharedProvider is { } sharedProvider)
+		{
+			return _core.CreateDocumentationModel(sharedProvider, targetPath);
+		}
+
+		// Documentation needs the configured services for provider-aware requiredness, but it
+		// must not finalize the app's mutable registration phase. A short-lived provider gives
+		// discovery the current descriptors while leaving Run free to build the shared provider
+		// after later Use* extensions have registered their services.
+		using var discoveryProvider = _services.BuildServiceProvider();
+		return _core.CreateDocumentationModel(discoveryProvider, targetPath);
+	}
+
+	/// <summary>
+	/// Builds a structured documentation model using an externally managed provider for service-backed parameters.
+	/// </summary>
+	/// <param name="serviceProvider">Provider used to determine whether direct handler parameters can be omitted.</param>
+	/// <param name="targetPath">Optional target path to scope the model.</param>
+	/// <returns>A structured documentation model.</returns>
+	public ReplDocumentationModel CreateDocumentationModel(
+		IServiceProvider serviceProvider,
+		string? targetPath = null) =>
+		_core.CreateDocumentationModel(serviceProvider, targetPath);
 
 	/// <summary>
 	/// Maps a route and command handler.
@@ -758,7 +781,7 @@ public sealed class ReplApp : IReplApp
 		public void InvalidateRouting() => _map.InvalidateRouting();
 
 		public ReplDocumentationModel CreateDocumentationModel(string? targetPath = null) =>
-			_map.CreateDocumentationModel(targetPath);
+			root.CreateDocumentationModel(targetPath);
 
 		IContextBuilder ICoreReplApp.Context(string segment, Action<ICoreReplApp> configure, Delegate? validation) =>
 			Context(segment, scoped => configure(scoped), validation);

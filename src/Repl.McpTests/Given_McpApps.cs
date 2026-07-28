@@ -23,6 +23,28 @@ public sealed class Given_McpApps
 	}
 
 	[TestMethod]
+	[Description("The MCP Apps capability probe inspects route metadata without re-invoking CommandFilter; the predicate runs once per command in the generated snapshot.")]
+	public void When_CommandFilterIsConfigured_Then_StaticAppsCapabilityProbeDoesNotReinvokeIt()
+	{
+		var app = ReplApp.Create();
+		app.Map("dashboard", () => "open dashboard")
+			.ReadOnly()
+			.WithMcpApp("ui://contacts/dashboard", McpAppVisibility.ModelAndApp);
+		var filterCalls = 0;
+
+		var options = app.BuildMcpServerOptions(o => o.CommandFilter = _ =>
+		{
+			filterCalls++;
+			return true;
+		});
+
+		filterCalls.Should().Be(1);
+#pragma warning disable MCPEXP001
+		options.Capabilities!.Extensions.Should().ContainKey(McpAppMetadata.ExtensionName);
+#pragma warning restore MCPEXP001
+	}
+
+	[TestMethod]
 	[Description("WithMcpApp adds UI metadata to the MCP tool declaration.")]
 	public void When_CommandHasMcpApp_Then_ToolContainsUiMetadata()
 	{

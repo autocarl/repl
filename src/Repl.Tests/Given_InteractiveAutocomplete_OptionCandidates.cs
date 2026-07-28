@@ -25,6 +25,268 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 	}
 
 	[TestMethod]
+	[Description("Hidden route options and all their aliases are omitted from the completion source shared by interactive and shell completion.")]
+	public async Task When_RouteOptionIsHidden_Then_CompletionOmitsCanonicalAndAliasTokens()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+				"deploy",
+				static string (
+					[ReplOption(Aliases = ["-e"])] string environment,
+					[ReplOption(Name = "internal-mode", Aliases = ["-i"], ReverseAliases = ["--no-internal-mode"])]
+					[ReplValueAlias("--internal", "true")] bool internalMode = false) =>
+					$"{environment}:{internalMode}")
+			.WithOption("internalMode", static option => option.Hidden());
+
+		var interactiveLong = await ResolveAutocompleteAsync(sut, "deploy --").ConfigureAwait(false);
+		var interactiveShort = await ResolveAutocompleteAsync(sut, "deploy -").ConfigureAwait(false);
+		var shellEngine = new ShellCompletionEngine(sut);
+		var shellLong = await ResolveShellCandidatesAsync(shellEngine, "app deploy --").ConfigureAwait(false);
+		var shellShort = await ResolveShellCandidatesAsync(shellEngine, "app deploy -").ConfigureAwait(false);
+
+		var interactiveLongValues = interactiveLong.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		var interactiveShortValues = interactiveShort.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		interactiveLongValues.Should().Contain("--environment");
+		interactiveLongValues.Should().NotContain("--internal-mode");
+		interactiveLongValues.Should().NotContain("--no-internal-mode");
+		interactiveLongValues.Should().NotContain("--internal");
+		interactiveShortValues.Should().Contain("-e");
+		interactiveShortValues.Should().NotContain("-i");
+		shellLong.Should().Contain("--environment");
+		shellLong.Should().NotContain("--internal-mode");
+		shellLong.Should().NotContain("--no-internal-mode");
+		shellLong.Should().NotContain("--internal");
+		shellShort.Should().Contain("-e");
+		shellShort.Should().NotContain("-i");
+	}
+
+	[TestMethod]
+	[Description("A hidden legacy alias is absent from both completion surfaces and cannot activate value completion when typed manually, while the same option's canonical token remains fully discoverable.")]
+	public async Task When_RouteAliasIsHidden_Then_CompletionKeepsOnlyTheCanonicalTokenAndValues()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<string>("organization", aliases: ["--legacy-org", "--LEGACY-ORG"]);
+			options.Parsing.GlobalOption("organization").HiddenAlias("--legacy-org");
+		});
+		sut.Map(
+			"deploy",
+			static string ([ReplOption(Name = "mode", HiddenAliases = ["--legacy-mode"])] ProbeMode mode = ProbeMode.Debug) => mode.ToString());
+
+		var interactiveNames = await ResolveAutocompleteAsync(sut, "deploy --").ConfigureAwait(false);
+		var shellNames = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app deploy --").ConfigureAwait(false);
+		var hiddenInteractiveValues = await ResolveAutocompleteAsync(sut, "deploy --legacy-mode ").ConfigureAwait(false);
+		var hiddenShellValues = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app deploy --legacy-mode ").ConfigureAwait(false);
+		var visibleInteractiveValues = await ResolveAutocompleteAsync(sut, "deploy --mode ").ConfigureAwait(false);
+		var visibleShellValues = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app deploy --mode ").ConfigureAwait(false);
+
+		interactiveNames.Suggestions.Select(static suggestion => suggestion.Value)
+			.Should().Contain(["--mode", "--organization", "--LEGACY-ORG"])
+			.And.NotContain(["--legacy-mode", "--legacy-org"]);
+		shellNames.Should().Contain(["--mode", "--organization", "--LEGACY-ORG"])
+			.And.NotContain(["--legacy-mode", "--legacy-org"]);
+		hiddenInteractiveValues.Suggestions.Should().BeEmpty();
+		hiddenShellValues.Should().BeEmpty();
+		visibleInteractiveValues.Suggestions.Select(static suggestion => suggestion.Value).Should().Contain(nameof(ProbeMode.Debug));
+		visibleShellValues.Should().Contain(nameof(ProbeMode.Debug));
+	}
+
+	[TestMethod]
+	[Description("A hidden alias shadows a visible alias with equivalent casing under the option's effective case-insensitive comparer, so neither spelling leaks through option-name or value completion.")]
+	public async Task When_CaseInsensitiveVisibleAliasMatchesHiddenAlias_Then_HiddenPrecedenceWins()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+			"deploy",
+			static string ([ReplOption(
+				Name = "mode",
+				Aliases = ["--LEGACY-MODE"],
+				HiddenAliases = ["--legacy-mode"],
+				CaseSensitivity = ReplCaseSensitivity.CaseInsensitive)] ProbeMode mode = ProbeMode.Debug) => mode.ToString());
+
+		var interactiveNames = await ResolveAutocompleteAsync(sut, "deploy --").ConfigureAwait(false);
+		var shellNames = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app deploy --").ConfigureAwait(false);
+		var interactiveValues = await ResolveAutocompleteAsync(sut, "deploy --LEGACY-MODE ").ConfigureAwait(false);
+		var shellValues = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app deploy --LEGACY-MODE ").ConfigureAwait(false);
+
+		interactiveNames.Suggestions.Select(static suggestion => suggestion.Value)
+			.Should().Contain("--mode")
+			.And.NotContain(["--legacy-mode", "--LEGACY-MODE"]);
+		shellNames.Should().Contain("--mode").And.NotContain(["--legacy-mode", "--LEGACY-MODE"]);
+		interactiveValues.Suggestions.Should().BeEmpty();
+		shellValues.Should().BeEmpty();
+	}
+
+	[TestMethod]
+	[Description("Fluent hiding uses the option's effective global case-insensitive comparer, so all parser-equivalent alias spellings disappear from option-name and value completion while the canonical token stays visible.")]
+	public async Task When_FluentAliasHasCaseEquivalentInInsensitiveMode_Then_AllEquivalentSpellingsAreHiddenFromCompletion()
+	{
+		var sut = CoreReplApp.Create();
+		var command = sut.Map(
+			"deploy",
+			static string ([ReplOption(Name = "mode", Aliases = ["--legacy-mode", "--LEGACY-MODE"])] ProbeMode mode = ProbeMode.Debug) => mode.ToString());
+		sut.Options(static options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive);
+		command.WithOption("mode", static option => option.HiddenAlias("--legacy-mode"));
+
+		var interactiveNames = await ResolveAutocompleteAsync(sut, "deploy --").ConfigureAwait(false);
+		var shellNames = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app deploy --").ConfigureAwait(false);
+		var hiddenInteractiveValues = await ResolveAutocompleteAsync(sut, "deploy --LEGACY-MODE ").ConfigureAwait(false);
+		var hiddenShellValues = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app deploy --LEGACY-MODE ").ConfigureAwait(false);
+		var canonicalInteractiveValues = await ResolveAutocompleteAsync(sut, "deploy --mode ").ConfigureAwait(false);
+
+		interactiveNames.Suggestions.Select(static suggestion => suggestion.Value)
+			.Should().Contain("--mode").And.NotContain(["--legacy-mode", "--LEGACY-MODE"]);
+		shellNames.Should().Contain("--mode").And.NotContain(["--legacy-mode", "--LEGACY-MODE"]);
+		hiddenInteractiveValues.Suggestions.Should().BeEmpty();
+		hiddenShellValues.Should().BeEmpty();
+		canonicalInteractiveValues.Suggestions.Select(static suggestion => suggestion.Value).Should().Contain(nameof(ProbeMode.Debug));
+	}
+
+	[TestMethod]
+	[Description("After mapping under the sensitive default, switching to case-insensitive mode and unhiding through opposite casing restores one deduplicated completion representative and values for both spellings.")]
+	public async Task When_GlobalCaseModeChangesAfterMappingAndAliasIsUnhidden_Then_OneEquivalentSpellingReturnsToCompletion()
+	{
+		var sut = CoreReplApp.Create();
+		var command = sut.Map(
+			"deploy",
+			static string ([ReplOption(Name = "mode", Aliases = ["--legacy-mode", "--LEGACY-MODE"])] ProbeMode mode = ProbeMode.Debug) => mode.ToString());
+		sut.Options(static options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive);
+		command.WithOption("mode", static option =>
+		{
+			option.HiddenAlias("--legacy-mode");
+			option.HiddenAlias("--LEGACY-MODE", isHidden: false);
+		});
+
+		var interactiveNames = await ResolveAutocompleteAsync(sut, "deploy --").ConfigureAwait(false);
+		var shell = new ShellCompletionEngine(sut);
+		var shellNames = await ResolveShellCandidatesAsync(shell, "app deploy --").ConfigureAwait(false);
+		var lowerValues = await ResolveAutocompleteAsync(sut, "deploy --legacy-mode ").ConfigureAwait(false);
+		var upperValues = await ResolveShellCandidatesAsync(shell, "app deploy --LEGACY-MODE ").ConfigureAwait(false);
+
+		interactiveNames.Suggestions.Select(static suggestion => suggestion.Value)
+			.Should().Contain("--legacy-mode");
+		shellNames.Should().Contain("--legacy-mode");
+		lowerValues.Suggestions.Select(static suggestion => suggestion.Value).Should().Contain(nameof(ProbeMode.Debug));
+		upperValues.Should().Contain(nameof(ProbeMode.Debug));
+	}
+
+	[TestMethod]
+	[Description("Global hide followed by opposite-case unhide uses the current case-insensitive comparer, restoring one deduplicated representative to interactive and shell completion.")]
+	public async Task When_GlobalAliasIsUnhiddenThroughEquivalentCasing_Then_OneRepresentativeReturnsToCompletion()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options =>
+			options.Parsing.AddGlobalOption<string>("organization", aliases: ["--legacy-org", "--LEGACY-ORG"]));
+		sut.Options(options =>
+		{
+			options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive;
+			options.Parsing.GlobalOption("organization").HiddenAlias("--legacy-org");
+			options.Parsing.GlobalOption("organization").HiddenAlias("--LEGACY-ORG", isHidden: false);
+		});
+		sut.Map("deploy", static () => "ok");
+
+		var interactive = await ResolveAutocompleteAsync(sut, "--").ConfigureAwait(false);
+		var shell = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app --").ConfigureAwait(false);
+
+		interactive.Suggestions.Select(static suggestion => suggestion.Value)
+			.Should().Contain("--legacy-org");
+		shell.Should().Contain("--legacy-org");
+	}
+
+	[TestMethod]
+	[Description("A case-sensitive option override wins over the case-insensitive global mode in fluent visibility and completion: only the exact hidden alias and its values disappear.")]
+	public async Task When_FluentAliasUsesSensitiveOverrideUnderInsensitiveGlobal_Then_OnlyExactSpellingIsHiddenFromCompletion()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(static options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive);
+		sut.Map(
+				"deploy",
+				static string ([ReplOption(Name = "mode", Aliases = ["--legacy-mode", "--LEGACY-MODE"], CaseSensitivity = ReplCaseSensitivity.CaseSensitive)] ProbeMode mode = ProbeMode.Debug) => mode.ToString())
+			.WithOption("mode", static option => option.HiddenAlias("--legacy-mode"));
+
+		var interactiveNames = await ResolveAutocompleteAsync(sut, "deploy --").ConfigureAwait(false);
+		var shell = new ShellCompletionEngine(sut);
+		var shellNames = await ResolveShellCandidatesAsync(shell, "app deploy --").ConfigureAwait(false);
+		var hiddenValues = await ResolveAutocompleteAsync(sut, "deploy --legacy-mode ").ConfigureAwait(false);
+		var visibleValues = await ResolveShellCandidatesAsync(shell, "app deploy --LEGACY-MODE ").ConfigureAwait(false);
+
+		interactiveNames.Suggestions.Select(static suggestion => suggestion.Value)
+			.Should().Contain("--LEGACY-MODE").And.NotContain("--legacy-mode");
+		shellNames.Should().Contain("--LEGACY-MODE").And.NotContain("--legacy-mode");
+		hiddenValues.Suggestions.Should().BeEmpty();
+		visibleValues.Should().Contain(nameof(ProbeMode.Debug));
+	}
+
+	[TestMethod]
+	[Description("Changing the inherited global case mode after mapping reevaluates declarative hidden-alias precedence for interactive and shell name/value completion without hiding the canonical token.")]
+	public async Task When_GlobalCaseModeChangesAfterMapping_Then_DeclarativeHiddenAliasCompletionIsReevaluated()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+			"deploy",
+			static string ([ReplOption(Name = "mode", Aliases = ["--LEGACY-MODE"], HiddenAliases = ["--legacy-mode"])] ProbeMode mode = ProbeMode.Debug) => mode.ToString());
+		sut.Options(options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive);
+
+		var interactiveNames = await ResolveAutocompleteAsync(sut, "deploy --").ConfigureAwait(false);
+		var shell = new ShellCompletionEngine(sut);
+		var shellNames = await ResolveShellCandidatesAsync(shell, "app deploy --").ConfigureAwait(false);
+		var interactiveValues = await ResolveAutocompleteAsync(sut, "deploy --LEGACY-MODE ").ConfigureAwait(false);
+		var shellValues = await ResolveShellCandidatesAsync(shell, "app deploy --legacy-mode ").ConfigureAwait(false);
+
+		interactiveNames.Suggestions.Select(static suggestion => suggestion.Value)
+			.Should().Contain("--mode").And.NotContain("--LEGACY-MODE").And.NotContain("--legacy-mode");
+		shellNames.Should().Contain("--mode").And.NotContain("--LEGACY-MODE").And.NotContain("--legacy-mode");
+		interactiveValues.Suggestions.Should().BeEmpty();
+		shellValues.Should().BeEmpty();
+	}
+
+	[TestMethod]
+	[Description("When a later case-insensitive mode makes a hidden alias parser-equivalent to the canonical token, the exact hidden spelling still cannot activate value completion; the canonical spelling remains the positive control on both interactive and shell surfaces.")]
+	public async Task When_GlobalCaseModeMakesHiddenAliasCanonicalEquivalent_Then_TypedHiddenSpellingDoesNotCompleteValues()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+			"deploy",
+			static string ([ReplOption(Name = "tenant", HiddenAliases = ["--TENANT"])] ProbeMode tenant = ProbeMode.Debug) => tenant.ToString());
+		sut.Options(options => options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive);
+
+		var hiddenInteractive = await ResolveAutocompleteAsync(sut, "deploy --TENANT ").ConfigureAwait(false);
+		var shell = new ShellCompletionEngine(sut);
+		var hiddenShell = await ResolveShellCandidatesAsync(shell, "app deploy --TENANT ").ConfigureAwait(false);
+		var canonicalInteractive = await ResolveAutocompleteAsync(sut, "deploy --tenant ").ConfigureAwait(false);
+		var canonicalShell = await ResolveShellCandidatesAsync(shell, "app deploy --tenant ").ConfigureAwait(false);
+
+		hiddenInteractive.Suggestions.Should().BeEmpty();
+		hiddenShell.Should().BeEmpty();
+		canonicalInteractive.Suggestions.Select(static suggestion => suggestion.Value).Should().Contain(nameof(ProbeMode.Debug));
+		canonicalShell.Should().Contain(nameof(ProbeMode.Debug));
+	}
+
+	[TestMethod]
+	[Description("A hidden option does not expose its enum values even after the caller types its token by hand — probing must not confirm the option exists. The visible sibling is asserted in the same pass as a positive control: two bare BeEmpty assertions would also pass if this shape offered no values at all, and would then stay green with the visibility filter deleted.")]
+	public async Task When_HiddenEnumOptionAwaitsValue_Then_OnlyTheVisibleSiblingOffersValues()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Map(
+				"deploy",
+				static string (
+					[ReplOption(Name = "secret-mode")] ProbeMode secretMode = ProbeMode.Debug,
+					[ReplOption(Name = "denim-mode")] ProbeMode denimMode = ProbeMode.Debug) => $"{secretMode}{denimMode}")
+			.WithOption("secretMode", static option => option.Hidden());
+
+		var hiddenInteractive = await ResolveAutocompleteAsync(sut, "deploy --secret-mode ").ConfigureAwait(false);
+		var hiddenShell = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app deploy --secret-mode ").ConfigureAwait(false);
+		var visibleInteractive = await ResolveAutocompleteAsync(sut, "deploy --denim-mode ").ConfigureAwait(false);
+		var visibleShell = await ResolveShellCandidatesAsync(new ShellCompletionEngine(sut), "app deploy --denim-mode ").ConfigureAwait(false);
+
+		hiddenInteractive.Suggestions.Select(static suggestion => suggestion.Value).Should().BeEmpty();
+		hiddenShell.Should().BeEmpty();
+		visibleInteractive.Suggestions.Select(static suggestion => suggestion.Value).Should().Contain(nameof(ProbeMode.Debug));
+		visibleShell.Should().Contain(nameof(ProbeMode.Debug));
+	}
+
+	[TestMethod]
 	[Description("Interactive autocomplete filters option suggestions by a partial option prefix.")]
 	public async Task When_CurrentTokenIsPartialOptionPrefix_Then_FiltersOptionSuggestions()
 	{
@@ -161,6 +423,32 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 		var values = result.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
 		values.Should().NotContain("ga", because: "provider values are parameter values, not option names");
 		values.Should().Contain("--force");
+	}
+
+	[TestMethod]
+	[Description("Global parsing runs before route parsing. When a hidden custom global owns a route option's token, neither interactive nor shell completion may re-advertise that unreachable route option; an unrelated route option remains as a positive control.")]
+	public async Task When_HiddenGlobalOwnsRouteOptionToken_Then_AllCompletionSurfacesOmitIt()
+	{
+		var sut = CoreReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<string>("force");
+			options.Parsing.GlobalOption("force").Hidden();
+		});
+		sut.Map(
+			"install {skillName}",
+			static string (string skillName, [ReplOption] bool force, [ReplOption] bool verbose) => skillName);
+
+		var interactive = await ResolveAutocompleteAsync(sut, "install bib-overalls --").ConfigureAwait(false);
+		var shell = await ResolveShellCandidatesAsync(
+			new ShellCompletionEngine(sut),
+			"app install bib-overalls --").ConfigureAwait(false);
+
+		var interactiveValues = interactive.Suggestions.Select(static suggestion => suggestion.Value).ToArray();
+		interactiveValues.Should().NotContain("--force");
+		interactiveValues.Should().Contain("--verbose");
+		shell.Should().NotContain("--force");
+		shell.Should().Contain("--verbose");
 	}
 
 	[TestMethod]
@@ -411,11 +699,13 @@ public sealed class Given_InteractiveAutocomplete_OptionCandidates
 		};
 		var schema = new Repl.Internal.Options.OptionSchema(
 			entries,
-			new Dictionary<string, Repl.Internal.Options.OptionSchemaParameter>(StringComparer.OrdinalIgnoreCase));
+			new Dictionary<string, Repl.Internal.Options.OptionSchemaParameter>(StringComparer.OrdinalIgnoreCase),
+			ReplCaseSensitivity.CaseSensitive);
 
 		var results = new List<string>();
 		Repl.Internal.Options.OptionTokenCompletionSource.CollectRouteOptionTokens(
 			schema,
+			new Dictionary<string, GlobalOptionDefinition>(StringComparer.Ordinal),
 			"--FO",
 			ReplCaseSensitivity.CaseSensitive,
 			new HashSet<string>(StringComparer.Ordinal),

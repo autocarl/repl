@@ -58,6 +58,121 @@ app.Map(
 
 Root help now includes a dedicated `Global Options:` section with built-ins plus custom options registered through `options.Parsing.AddGlobalOption<T>(...)`.
 
+### Hiding individual options
+
+Use `.WithOption(<targetName>, option => option.Hidden())` to hide one command option without hiding its command. The target is the CLR handler parameter or options-group property name, not the rendered `--option-name` token:
+
+```csharp
+app.Map(
+    "deploy",
+    ([ReplOption(Name = "internal-mode")] bool internalMode = false) => internalMode)
+   .WithOption("internalMode", option => option.Hidden());
+```
+
+The callback shape is deliberate. `CommandBuilder` and `OptionBuilder` both expose `Hidden` and `AutomationHidden`, so an API returning the option builder would let `.Option("x").Hidden()` sit in a chain reading exactly like the command-level `.Hidden()` while meaning something quite different, with nothing to signal that the subject had changed. `WithOption` keeps the subject explicit and the chain on the command.
+
+For declarative registration, set `Hidden = true` on `ReplOptionAttribute`. This works on direct parameters, options-group properties, and typed global-options properties:
+
+```csharp
+public sealed class DeploymentOptions
+{
+    [ReplOption(Hidden = true)]
+    public string? InternalToken { get; set; }
+}
+```
+
+Manually registered global options can be selected after registration:
+
+```csharp
+app.Options(options =>
+{
+    options.Parsing.AddGlobalOption<string>("internal-tenant");
+    options.Parsing.GlobalOption("internal-tenant").Hidden();
+});
+```
+
+#### Keeping a legacy alias callable but hidden
+
+Do not hide the whole option when only an old spelling is deprecated. Declare the legacy token in `HiddenAliases`; it remains accepted by CLI and REPL parsing while the canonical token stays visible:
+
+```csharp
+app.Map(
+    "deploy",
+    ([ReplOption(Name = "tenant", HiddenAliases = ["--account", "-a"])] string? tenant = null) => tenant);
+```
+
+`HiddenAliases` registers those tokens itself; they do not also need to appear in `Aliases`. If the same exact token appears in both arrays, hidden visibility wins. Tokens remain case-sensitive when the option is case-sensitive, so `--account` can be hidden without hiding a distinct `--ACCOUNT` alias.
+
+The fluent form operates on an alias already declared in `Aliases`:
+
+```csharp
+app.Map(
+    "deploy",
+    ([ReplOption(Name = "tenant", Aliases = ["--account"])] string? tenant = null) => tenant)
+   .WithOption("tenant", option => option.HiddenAlias("--account"));
+```
+
+The same contract applies to global options:
+
+```csharp
+app.Options(options =>
+{
+    options.Parsing.AddGlobalOption<string>("tenant", aliases: ["--account"]);
+    options.Parsing.GlobalOption("tenant").HiddenAlias("--account");
+});
+
+public sealed class GlobalOptions
+{
+    [ReplOption(HiddenAliases = ["--account"])]
+    public string? Tenant { get; set; }
+}
+```
+
+A hidden alias is omitted from command/root help, typo suggestions, interactive and shell completion (including value completion after manually typing it), aggregate and exact-path documentation, and MCP schemas. MCP callers use the visible canonical argument name; the hidden alias is only a backwards-compatible CLI/REPL fallback. Like every hidden surface, this is discoverability metadata rather than authorization.
+
+Hidden options are omitted from help, interactive and shell completion (including value providers), documentation export, and generated MCP schemas. They remain valid parser inputs on the command line and in the REPL, and bind normally when supplied explicitly.
+
+Over MCP the omission is stricter. The advertised tool schema and the list of accepted arguments are built from the same option list, so a `tools/call` that supplies a hidden option is **rejected** — exactly like a call to a hidden command. A hidden option is therefore reachable from a human-driven CLI or REPL session, but not from an agent.
+
+A hidden option must be omittable for the provider that builds a discovery surface, because that client otherwise has no valid invocation path. Repl checks the same fallbacks and precedence as the handler binder: a CLR default or nullable shape, synthetic `IProgress<double>`/`IProgress<ReplProgressEvent>` from an available `IReplInteractionChannel`, then direct `IServiceProvider.GetService` before explicit `ExactlyOne`/`OneOrMore` lower bounds are enforced. Direct handler parameters are validated when aggregate documentation or MCP discovery is built, not by `Map` or `.Hidden()`, because `Run` and MCP may receive an external provider only after mapping. If the active provider cannot supply the value, discovery fails with the required-hidden diagnostic rather than advertising an impossible command. Required options-group properties still fail immediately during mapping because that binding path never consults DI.
+
+A fluent `.Hidden(isHidden: false)` overrides `ReplOptionAttribute.Hidden`. For direct handler parameters this can restore visibility before provider-aware discovery. A required hidden options-group property is rejected while the command is mapped, before a fluent override can run, so fix that attribute instead.
+
+> **Hiding is not access control.** A hidden option stays a fully invocable part of the command line for anyone who knows its name — nothing about it is authenticated, authorized, or secret. Use it for deprecated switches, diagnostic escape hatches and migration aliases. Gate privileged behavior with real authorization, never with obscurity.
+
+### Hiding an option from agents only
+
+`.AutomationHidden()` is the option-level counterpart of `CommandBuilder.AutomationHidden()`: it withholds the option from programmatic surfaces while leaving it fully visible to people.
+
+```csharp
+app.Map("deploy", Deploy)
+   .WithOption("traceId", option => option.AutomationHidden());
+```
+
+The declarative form is `[ReplOption(AutomationHidden = true)]`. It is **not** supported on typed global-options properties and fails fast there, because global options never reach a programmatic surface at all — the flag would have nothing to act on. `GlobalOptionBuilder` has no `AutomationHidden` for the same reason, enforced by its type rather than by a runtime check.
+
+The two axes are independent:
+
+| Surface | `.Hidden()` | `.AutomationHidden()` |
+|---|---|---|
+| Command help | omitted | **listed** |
+| Interactive and shell completion | omitted | **offered** |
+| Aggregate `doc export` | omitted | **exported, flagged** |
+| `doc export <command>` (exact path) | **exported, flagged** | **exported, flagged** |
+| MCP tool schema and prompt arguments | omitted | omitted |
+| MCP `tools/call` | rejected | rejected |
+| CLI and REPL parsing and binding | unaffected | unaffected |
+
+Both are discovery filters, and neither is an access-control boundary.
+
+### Troubleshooting an option that will not bind
+
+Almost always a target-name mistake. `WithOption` takes the **CLR** handler parameter or options-group property name, not the rendered `--option-name` token — `WithOption("internalMode", …)`, never `WithOption("internal-mode", …)`. An unknown target throws at configuration time and the message lists the targets that do exist, so read it rather than guessing.
+
+If the option is genuinely hidden and you want to confirm what the app thinks, export the command explicitly: `doc export <command path> --json` includes hidden options with `"isHidden": true`. The aggregate export omits them, so target the command.
+
+Note there is no built-in signal for *use* of a hidden option. If the point is retiring a deprecated switch, record that in the handler yourself — otherwise nothing will tell you when it has become safe to remove.
+
 ### Accessing global options outside handlers
 
 Parsed global option values are available via `IGlobalOptionsAccessor`, registered in DI automatically. This enables access from middleware, DI service factories, and handlers:

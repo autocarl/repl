@@ -620,12 +620,13 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
-		var comparison = ResolveOptionStringComparison();
+		var globalConfiguration = app.OptionsSnapshot.Parsing.CaptureGlobalOptionConfiguration();
+		var comparison = globalConfiguration.CaseSensitivity.ToStringComparison();
 		var comparer = StringComparer.FromComparison(comparison);
 		var tokens = new List<string>();
 		var dedupe = new HashSet<string>(comparer);
-		OptionTokenCompletionSource.CollectGlobalOptionTokens(
-			app.OptionsSnapshot, currentTokenPrefix, comparison, dedupe, tokens);
+		var customGlobalOwnership = OptionTokenCompletionSource.CollectGlobalOptionTokens(
+			app.OptionsSnapshot, globalConfiguration, currentTokenPrefix, comparison, dedupe, tokens);
 
 		// Source route options from the single route this prefix resolves to (already
 		// computed for the whole pass), and only when EVERY positional segment — required or
@@ -636,9 +637,10 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			&& commandPrefix.Length == match.Route.Template.Segments.Count)
 		{
 			OptionTokenCompletionSource.CollectRouteOptionTokens(
-				match.Route,
+				match.Route.OptionSchema,
+				customGlobalOwnership,
 				currentTokenPrefix,
-				app.OptionsSnapshot.Parsing.OptionCaseSensitivity,
+				globalConfiguration.CaseSensitivity,
 				dedupe,
 				tokens);
 		}
@@ -1588,10 +1590,18 @@ internal sealed class AutocompleteEngine(CoreReplApp app)
 			return [];
 		}
 
-		var entries = match.Route.OptionSchema.ResolveToken(
-			pendingOptionToken, app.OptionsSnapshot.Parsing.OptionCaseSensitivity);
+		var caseSensitivity = app.OptionsSnapshot.Parsing.OptionCaseSensitivity;
+		var entries = match.Route.OptionSchema.ResolveToken(pendingOptionToken, caseSensitivity);
 		foreach (var entry in entries)
 		{
+			if (!match.Route.OptionSchema.IsEntryDiscoverableForTypedToken(
+					entry,
+					pendingOptionToken,
+					caseSensitivity))
+			{
+				continue;
+			}
+
 			// Same keystroke rule as the positional path: providers only run for an explicit
 			// completion request; live-hint refreshes fall through to the static enum fallback.
 			if (providersAllowed

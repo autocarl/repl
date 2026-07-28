@@ -733,9 +733,14 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			return false;
 		}
 
-		if (!match.Route.Command.Completions.TryGetValue(target, out var completion))
+		// A hidden target and an unknown one are deliberately conflated, and the wording avoids
+		// "no provider registered" because for a hidden option one usually is. Distinguishing the
+		// two, or admitting a provider exists, would let a caller probe for hidden options through
+		// this command — the exact discovery this flag exists to prevent.
+		if (match.Route.OptionSchema.IsOptionHidden(target)
+			|| !match.Route.Command.Completions.TryGetValue(target, out var completion))
 		{
-			await ReplSessionIO.Output.WriteLineAsync($"Error: no completion provider registered for '{target}'.").ConfigureAwait(false);
+			await ReplSessionIO.Output.WriteLineAsync($"Error: no completion is available for '{target}'.").ConfigureAwait(false);
 			return false;
 		}
 

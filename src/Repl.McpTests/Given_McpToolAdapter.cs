@@ -1,5 +1,9 @@
+using Microsoft.Extensions.DependencyInjection;
+using Repl;
 using Repl.Mcp;
 using Repl.Documentation;
+using Repl.Internal.Options;
+using Repl.Parameters;
 using System.Text.Json;
 
 namespace Repl.McpTests;
@@ -265,6 +269,142 @@ public sealed class Given_McpToolAdapter
 	}
 
 	[TestMethod]
+	[Description("A differently-cased MCP key remains backwards-compatible when it identifies one schema option unambiguously, including custom short-token reconstruction.")]
+	public void When_McpOptionNameUsesDifferentCaseAndHasOneMatch_Then_ConfiguredTokenIsRetained()
+	{
+		var command = new ReplDocCommand(
+			Path: "deploy",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [],
+			Options: [new ReplDocOption("tenant", "string", Required: false, Description: null, Aliases: ["-t"], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null)]);
+
+		var (tokens, _) = McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["TENANT"] = JsonSerializer.SerializeToElement("acme"),
+			});
+
+		tokens.Should().Equal("deploy", "-t", "acme");
+	}
+
+	[TestMethod]
+	[Description("For a single advertised field, submitting both its exact spelling and a unique case-insensitive fallback is rejected as a duplicate canonical field instead of silently overwriting one value.")]
+	public void When_ExactAndCaseFallbackNameTheSameMcpField_Then_RejectedAsDuplicate()
+	{
+		var command = new ReplDocCommand(
+			Path: "deploy",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [],
+			Options: [new ReplDocOption("tenant", "string", Required: false, Description: null, Aliases: ["-t"], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null)]);
+		var action = () => McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["tenant"] = JsonSerializer.SerializeToElement("south"),
+				["TENANT"] = JsonSerializer.SerializeToElement("north"),
+			});
+
+		action.Should().Throw<InvalidOperationException>()
+			.WithMessage("*TENANT*duplicates*tenant*");
+	}
+
+	[TestMethod]
+	[Description("Case-sensitive option names that differ only by casing preserve both exact MCP fields and reconstruct each distinct CLI token in one invocation.")]
+	public void When_OptionNamesDifferOnlyByCase_Then_BothExactMcpFieldsRemainDistinct()
+	{
+		var command = CreateCaseDistinctOptionsCommand();
+
+		var (tokens, _) = McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["tenant"] = JsonSerializer.SerializeToElement("south"),
+				["TENANT"] = JsonSerializer.SerializeToElement("north"),
+			});
+
+		tokens.Should().Equal("deploy", "--tenant", "south", "--TENANT", "north");
+	}
+
+	[TestMethod]
+	[Description("A non-exact MCP field casing is rejected when multiple advertised fields match it case-insensitively.")]
+	public void When_NonExactMcpFieldMatchesMultipleCaseDistinctOptions_Then_RejectedAsAmbiguous()
+	{
+		var action = () => McpToolAdapter.PrepareExecution(
+			CreateCaseDistinctOptionsCommand(),
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["Tenant"] = JsonSerializer.SerializeToElement("acme"),
+			});
+
+		action.Should().Throw<InvalidOperationException>()
+			.WithMessage("*ambiguous*tenant*TENANT*");
+	}
+
+	[TestMethod]
+	[Description("Case-distinct ordinary fields retain command provenance beside exact synthetic cursor and page-size fields instead of being reclassified as result-flow controls.")]
+	public void When_CaseDistinctOptionsMatchResultFlowNames_Then_EachFieldKeepsItsOwnSink()
+	{
+		var command = new ReplDocCommand(
+			Path: "contacts",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [],
+			Options:
+			[
+				new ReplDocOption("_replcursor", "string", Required: false, Description: null, Aliases: ["--_replcursor"], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null),
+				new ReplDocOption("_replpagesize", "string", Required: false, Description: null, Aliases: ["--_replpagesize"], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null),
+			],
+			AcceptsPagingInput: true);
+
+		var (tokens, prefills) = McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				[McpResultFlowArgumentNames.Cursor] = JsonSerializer.SerializeToElement("opaque"),
+				["_replcursor"] = JsonSerializer.SerializeToElement("ordinary-cursor"),
+				[McpResultFlowArgumentNames.PageSize] = JsonSerializer.SerializeToElement(25),
+				["_replpagesize"] = JsonSerializer.SerializeToElement("ordinary-size"),
+			});
+
+		tokens.Should().Equal(
+			ReplResultFlowOptionNames.Cursor, "opaque",
+			ReplResultFlowOptionNames.PageSize, "25",
+			"contacts", "--_replcursor", "ordinary-cursor", "--_replpagesize", "ordinary-size");
+		prefills.Should().BeEmpty();
+	}
+
+	[TestMethod]
+	[Description("A declared answer and a case-distinct ordinary option under the answer prefix keep separate prefill and CLI destinations.")]
+	public void When_CaseDistinctOptionMatchesAnswerField_Then_DeclaredProvenanceControlsDispatch()
+	{
+		var command = new ReplDocCommand(
+			Path: "wizard",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [],
+			Options: [new ReplDocOption("answer.CONFIRM", "string", Required: false, Description: null, Aliases: ["--answer.CONFIRM"], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null)],
+			Answers: [new ReplDocAnswer("confirm", "bool", Description: null)]);
+
+		var (tokens, prefills) = McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["answer.confirm"] = JsonSerializer.SerializeToElement(value: false),
+				["answer.CONFIRM"] = JsonSerializer.SerializeToElement("ordinary"),
+			});
+
+		tokens.Should().Equal("wizard", "--answer.CONFIRM", "ordinary");
+		prefills.Should().ContainSingle().Which.Should().Be(new KeyValuePair<string, string>("confirm", "false"));
+	}
+
+	[TestMethod]
 	[Description("PrepareExecution rejects token-like MCP argument values before reconstructing CLI tokens.")]
 	public void When_ArgumentValueStartsWithDashDash_Then_Rejected()
 	{
@@ -332,6 +472,210 @@ public sealed class Given_McpToolAdapter
 		action.Should().Throw<InvalidOperationException>()
 			.WithMessage("*not defined*schema*");
 	}
+
+	[TestMethod]
+	[Description("A bool option's value is embedded as a single inline '--name=value' token instead of a '--name' / 'value' pair, so it can never be split apart and re-lexed as a fresh option by the downstream parser.")]
+	public void When_BoolOptionValueIsReconstructed_Then_EmbeddedAsSingleInlineToken()
+	{
+		var command = new ReplDocCommand(
+			Path: "deploy",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [],
+			Options: [new ReplDocOption("verbose", "bool", Required: false, Description: null, Aliases: [], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null)]);
+
+		var (tokens, _) = McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["verbose"] = JsonSerializer.SerializeToElement("true"),
+			});
+
+		tokens.Should().Equal("deploy", "--verbose=true");
+	}
+
+	[TestMethod]
+	[Description("Nullable bool options use the same inline token boundary as bool options, so an MCP string value can never be re-lexed as a separate hidden CLI alias.")]
+	public void When_NullableBoolOptionValueIsReconstructed_Then_EmbeddedAsSingleInlineToken()
+	{
+		var command = new ReplDocCommand(
+			Path: "deploy",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [],
+			Options: [new ReplDocOption("verbose", "bool?", Required: false, Description: null, Aliases: [], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null)]);
+
+		var (tokens, _) = McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["verbose"] = JsonSerializer.SerializeToElement("-t=denim"),
+			});
+
+		tokens.Should().Equal("deploy", "--verbose=-t=denim");
+	}
+
+	[TestMethod]
+	[Description("PrepareExecution rejects positional route-segment values that look like a CLI option token: unlike an option, a positional segment has no separator that can escape the value, so it would be re-lexed as a fresh option once substituted into the token stream.")]
+	public void When_PositionalArgumentValueLooksLikeOptionToken_Then_Rejected()
+	{
+		var command = new ReplDocCommand(
+			Path: "contacts {id}",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [new ReplDocArgument("id", "string", Required: true, Description: null)],
+			Options: []);
+
+		var action = () => McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["id"] = JsonSerializer.SerializeToElement("-t=denim"),
+			});
+
+		action.Should().Throw<InvalidOperationException>()
+			.WithMessage("*argument value*CLI option*positional*");
+	}
+
+	[TestMethod]
+	[Description("A signed numeric literal remains a valid positional route-segment value: it starts with a dash but IsSignedNumericLiteral carves it out, matching the CLI parser's own positional-vs-option rule.")]
+	public void When_PositionalArgumentValueIsSignedNumericLiteral_Then_Accepted()
+	{
+		var command = new ReplDocCommand(
+			Path: "contacts {id}",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [new ReplDocArgument("id", "string", Required: true, Description: null)],
+			Options: []);
+
+		var (tokens, _) = McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["id"] = JsonSerializer.SerializeToElement("-42"),
+			});
+
+		tokens.Should().Equal("contacts", "-42");
+	}
+
+	[TestMethod]
+	[Description(
+		"End-to-end regression for the option-smuggling vulnerability: a tool call supplies a value " +
+		"for a visible bool option that itself looks like '-t=denim', an alias of a Hidden() option on " +
+		"the same route. Before the fix, ReconstructTokens emitted the value as its own token, which the " +
+		"bool flag declined to consume without a diagnostic (that decline is required so legitimate " +
+		"flag-chaining like '--verbose --other' keeps working) and which the parser then re-lexed as a " +
+		"fresh '-t' option, binding the hidden 'tenant' target. The inline '--verbose=-t=denim' token this " +
+		"test asserts on cannot be split apart that way, so 'tenant' must never appear as bound.")]
+	public void When_ToolCallValueLooksLikeHiddenOptionToken_Then_ItIsNotBoundAsAnOption()
+	{
+		var command = new ReplDocCommand(
+			Path: "deploy",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [],
+			Options: [new ReplDocOption("verbose", "bool", Required: false, Description: null, Aliases: [], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null)]);
+
+		var (tokens, _) = McpToolAdapter.PrepareExecution(
+			command,
+			new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+			{
+				["verbose"] = JsonSerializer.SerializeToElement("-t=denim"),
+			});
+
+		tokens.Should().Equal("deploy", "--verbose=-t=denim");
+
+		var schema = new OptionSchema(
+			[
+				new OptionSchemaEntry("--verbose", "verbose", OptionSchemaTokenKind.BoolFlag, ReplArity.ZeroOrOne),
+				new OptionSchemaEntry("-t", "tenant", OptionSchemaTokenKind.NamedOption, ReplArity.ZeroOrOne, IsHidden: true),
+			],
+			new Dictionary<string, OptionSchemaParameter>(StringComparer.OrdinalIgnoreCase)
+			{
+				["verbose"] = new OptionSchemaParameter("verbose", typeof(bool), ReplParameterMode.OptionOnly),
+				["tenant"] = new OptionSchemaParameter("tenant", typeof(string), ReplParameterMode.OptionOnly, IsHidden: true),
+			},
+			ReplCaseSensitivity.CaseSensitive);
+
+		var parseResult = InvocationOptionParser.Parse(
+			[.. tokens.Skip(1)],
+			schema,
+			new ParsingOptions());
+
+		parseResult.NamedOptions.Should().NotContainKey("tenant");
+		parseResult.NamedOptions.Should().ContainKey("verbose");
+		parseResult.NamedOptions["verbose"].Should().ContainSingle().Which.Should().Be("-t=denim");
+	}
+
+	[TestMethod]
+	[Description("An MCP string value that names a response file remains literal during the programmatic invocation, so file contents cannot inject a hidden route option.")]
+	public async Task When_StringToolValueNamesResponseFile_Then_ProgrammaticInvocationDoesNotExpandIt()
+	{
+		var responseFile = Path.Join(Path.GetTempPath(), $"repl-mcp-review-{Guid.NewGuid():N}.rsp");
+		File.WriteAllText(responseFile, "ordinaryValue --hidden secret");
+		try
+		{
+			string? observedVisible = null;
+			string? observedHidden = null;
+			var app = ReplApp.Create();
+			app.Map(
+					"deploy",
+					([ReplOption] string? visible, [ReplOption] string? hidden) =>
+					{
+						observedVisible = visible;
+						observedHidden = hidden;
+						return "ok";
+					})
+				.WithOption("hidden", static option => option.Hidden());
+			await using var services = new ServiceCollection().BuildServiceProvider();
+			var adapter = new McpToolAdapter(app.Core, new ReplMcpServerOptions(), services);
+			adapter.RegisterRoute(
+				"deploy",
+				new ReplDocCommand(
+					Path: "deploy",
+					Description: null,
+					Aliases: [],
+					IsHidden: false,
+					Arguments: [],
+					Options: [new ReplDocOption("visible", "string", Required: false, Description: null, Aliases: [], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null)]));
+
+			var result = await adapter.InvokeAsync(
+				"deploy",
+				new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+				{
+					["visible"] = JsonSerializer.SerializeToElement($"@{responseFile}"),
+				},
+				server: null,
+				progressToken: null,
+				CancellationToken.None);
+
+			result.IsError.Should().NotBeTrue();
+			observedHidden.Should().BeNull();
+			observedVisible.Should().Be($"@{responseFile}");
+		}
+		finally
+		{
+			File.Delete(responseFile);
+		}
+	}
+
+	private static ReplDocCommand CreateCaseDistinctOptionsCommand() =>
+		new(
+			Path: "deploy",
+			Description: null,
+			Aliases: [],
+			IsHidden: false,
+			Arguments: [],
+			Options:
+			[
+				new ReplDocOption("tenant", "string", Required: false, Description: null, Aliases: ["--tenant"], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null),
+				new ReplDocOption("TENANT", "string", Required: false, Description: null, Aliases: ["--TENANT"], ReverseAliases: [], ValueAliases: [], EnumValues: [], DefaultValue: null),
+			]);
 
 	private static ReplDocCommand CreatePagedCommand(string path) =>
 		new(

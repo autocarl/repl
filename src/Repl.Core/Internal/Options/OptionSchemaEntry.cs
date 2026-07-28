@@ -8,4 +8,5 @@ internal sealed record OptionSchemaEntry(
 	OptionSchemaTokenKind TokenKind,
 	ReplArity Arity,
 	ReplCaseSensitivity? CaseSensitivity = null,
-	string? InjectedValue = null);
+	string? InjectedValue = null,
+	bool IsHidden = false);

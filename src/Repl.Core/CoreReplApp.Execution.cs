@@ -68,6 +68,18 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		_options.Interaction.SetObserver(observer: ExecutionObserver);
 		try
 		{
+			if (ReplSessionIO.IsProgrammatic && !ReplSessionIO.HasCurrentProgrammaticInvocationContract)
+			{
+				_ = await RenderOutputAsync(
+						Results.Validation(
+							"The programmatic invocation adapter is incompatible with this Repl.Core version. "
+							+ "Update Repl.Mcp to the same package version."),
+						requestedFormat: null,
+						cancellationToken)
+					.ConfigureAwait(false);
+				return 1;
+			}
+
 			var globalOptions = GlobalOptionParser.Parse(args, _options.Output, _options.Parsing);
 			if (await TryHandleGlobalDiagnosticsAsync(globalOptions, cancellationToken).ConfigureAwait(false) is { } globalDiagnosticsExitCode) return globalDiagnosticsExitCode;
 
@@ -461,7 +473,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	{
 		var activeGraph = ResolveActiveRoutingGraph();
 		_options.Interaction.SetPrefilledAnswers(globalOptions.PromptAnswers);
-		var commandParsingOptions = BuildEffectiveCommandParsingOptions();
+		var commandParsingOptions = BuildEffectiveCommandParsingOptions(globalOptions.GlobalOptionConfiguration.CaseSensitivity);
 		var optionComparer = commandParsingOptions.OptionCaseSensitivity == ReplCaseSensitivity.CaseInsensitive
 			? StringComparer.OrdinalIgnoreCase
 			: StringComparer.Ordinal;
@@ -479,7 +491,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		var parsedOptions = InvocationOptionParser.Parse(
 			match.RemainingTokens,
 			match.Route.OptionSchema,
-			commandParsingOptions);
+			commandParsingOptions,
+			globalOptions.CustomGlobalTokenOwnership);
 		if (parsedOptions.HasErrors)
 		{
 			var firstError = parsedOptions.Diagnostics
@@ -1113,6 +1126,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				discoverableContexts,
 				globalOptions.RemainingTokens,
 				_options.Parsing,
+				CurrentServiceProvider,
 				_options.AmbientCommands,
 				out var customHelpOutput))
 		{
@@ -1123,7 +1137,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			discoverableRoutes,
 			discoverableContexts,
 			globalOptions.RemainingTokens,
-			_options.Parsing);
+			_options.Parsing,
+			CurrentServiceProvider);
 		return await RenderOutputAsync(machineHelp, requestedFormat, cancellationToken).ConfigureAwait(false);
 	}
 
@@ -1344,14 +1359,19 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		return merged;
 	}
 
-	private ParsingOptions BuildEffectiveCommandParsingOptions()
+	private ParsingOptions BuildEffectiveCommandParsingOptions(ReplCaseSensitivity optionCaseSensitivity)
 	{
 		var isInteractiveSession = _runtimeState.Value?.IsInteractiveSession == true;
 		return new ParsingOptions
 		{
 			AllowUnknownOptions = _options.Parsing.AllowUnknownOptions,
-			OptionCaseSensitivity = _options.Parsing.OptionCaseSensitivity,
-			AllowResponseFiles = !isInteractiveSession && _options.Parsing.AllowResponseFiles,
+			OptionCaseSensitivity = optionCaseSensitivity,
+			// Structured/programmatic callers already provide argument boundaries. Expanding an
+			// MCP-supplied @file token here would replace one allowed value with arbitrary CLI
+			// tokens from the server filesystem, bypassing the adapter's schema allow-list.
+			AllowResponseFiles = !isInteractiveSession
+				&& !ReplSessionIO.IsProgrammatic
+				&& _options.Parsing.AllowResponseFiles,
 		};
 	}
 }

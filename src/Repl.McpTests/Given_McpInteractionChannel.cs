@@ -77,6 +77,60 @@ public sealed class Given_McpInteractionChannel
 	}
 
 	[TestMethod]
+	[Description("Runtime answer lookup preserves the historical case-insensitive contract when exactly one stored prefill matches.")]
+	public async Task When_RuntimeAnswerNameDiffersOnlyByCase_Then_UniquePrefillStillResolves()
+	{
+		var channel = CreateChannel(new Dictionary<string, string>(StringComparer.Ordinal) { ["confirm"] = "false" });
+
+		var result = await channel.AskConfirmationAsync("CONFIRM", "Proceed?");
+
+		result.Should().BeFalse();
+	}
+
+	[TestMethod]
+	[Description("Case-distinct prefill names resolve exactly, while a third non-exact casing is rejected as ambiguous instead of selecting an arbitrary answer.")]
+	public async Task When_CaseDistinctPrefillsExist_Then_ExactLookupWinsAndNonExactLookupIsAmbiguous()
+	{
+		var channel = CreateChannel(new Dictionary<string, string>(StringComparer.Ordinal)
+		{
+			["confirm"] = "false",
+			["CONFIRM"] = "true",
+		});
+
+		var lower = await channel.AskConfirmationAsync("confirm", "Proceed?");
+		var upper = await channel.AskConfirmationAsync("CONFIRM", "Proceed?");
+		var ambiguous = () => channel.AskConfirmationAsync("Confirm", "Proceed?").AsTask();
+
+		lower.Should().BeFalse();
+		upper.Should().BeTrue();
+		await ambiguous.Should().ThrowAsync<McpInteractionException>()
+			.WithMessage("*ambiguous*confirm*CONFIRM*");
+	}
+
+	[TestMethod]
+	[Description("Every interaction kind uses the shared exact-first, unique case-insensitive prefill fallback when an ordinal dictionary contains one differently-cased answer name.")]
+	public async Task When_AllRuntimeAnswerKindsDifferOnlyByCase_Then_UniquePrefillsStillResolve()
+	{
+		var channel = CreateChannel(new Dictionary<string, string>(StringComparer.Ordinal)
+		{
+			["color"] = "green",
+			["name"] = "Alice",
+			["password"] = "s3cret",
+			["tags"] = "red,blue",
+		});
+
+		var choice = await channel.AskChoiceAsync("COLOR", "Pick a color", ["red", "green", "blue"]);
+		var text = await channel.AskTextAsync("NAME", "Enter name");
+		var secret = await channel.AskSecretAsync("PASSWORD", "Enter password");
+		var multiChoice = await channel.AskMultiChoiceAsync("TAGS", "Select tags", ["red", "green", "blue"]);
+
+		choice.Should().Be(1);
+		text.Should().Be("Alice");
+		secret.Should().Be("s3cret");
+		multiChoice.Should().BeEquivalentTo([0, 2]);
+	}
+
+	[TestMethod]
 	[Description("Missing prefill with explicit default returns default even in PrefillThenFail mode.")]
 	public async Task When_NoBoolPrefillInFailModeWithDefaultTrue_Then_ReturnsDefault()
 	{

@@ -1,4 +1,5 @@
 using ModelContextProtocol.Protocol;
+using Repl.Parameters;
 
 namespace Repl.McpTests;
 
@@ -89,6 +90,26 @@ public sealed class Given_McpFallbackEndToEnd
 		var prompts = await fixture.Client.ListPromptsAsync();
 
 		prompts.Should().ContainSingle(p => string.Equals(p.Name, "explain", StringComparison.Ordinal));
+	}
+
+	[TestMethod]
+	[Description("Proves the automation filter is applied once at the documentation-model boundary rather than per emitter: prompts/list builds its arguments from its own loop over command options, untouched by this change, yet it still omits an automation-hidden option.")]
+	public async Task When_PromptCommandHasAnAutomationHiddenOption_Then_PromptArgumentsOmitIt()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(
+			app => app.Map(
+					"explain {topic}",
+					(string topic, [ReplOption(Name = "verbosity")] string? verbosity = null, [ReplOption(Name = "traceId")] string? traceId = null) =>
+						$"Explain {topic} {verbosity} {traceId}")
+				.AsPrompt()
+				.WithOption("traceId", static option => option.AutomationHidden()));
+
+		var prompts = await fixture.Client.ListPromptsAsync().ConfigureAwait(false);
+
+		var prompt = prompts.Should().ContainSingle(p => string.Equals(p.Name, "explain", StringComparison.Ordinal)).Which;
+		var argumentNames = prompt.ProtocolPrompt.Arguments?.Select(static argument => argument.Name).ToArray() ?? [];
+		argumentNames.Should().Contain("verbosity");
+		argumentNames.Should().NotContain("traceId");
 	}
 
 	// ── Mixed scenarios ────────────────────────────────────────────────

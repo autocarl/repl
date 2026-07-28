@@ -1,3 +1,4 @@
+using System.Reflection;
 using AwesomeAssertions;
 
 namespace Repl.Tests;
@@ -5,6 +6,70 @@ namespace Repl.Tests;
 [TestClass]
 public sealed class Given_GlobalOptionsAccessor
 {
+	[TestMethod]
+	[Description("Repl.Defaults ships separately and depends on Repl.Core by minimum version, so an older compiled Repl.Defaults can run against a newer Repl.Core and will call the six-parameter arity it was built against. Asserting the method merely exists would pass even if it stopped registering anything, so this invokes it and checks the option really lands — visible, since that arity predates the visibility flag.")]
+	public void When_LegacyBinaryDescriptorIsInvoked_Then_TheOptionIsRegisteredAndVisible()
+	{
+		var sut = new ParsingOptions();
+		var legacy = typeof(ParsingOptions).GetMethod(
+			"AddGlobalOptionCore",
+			BindingFlags.Instance | BindingFlags.NonPublic,
+			binder: null,
+			types: [typeof(string), typeof(Type), typeof(string[]), typeof(string), typeof(string), typeof(Type)],
+			modifiers: null);
+
+		string[] aliases = ["-d"];
+
+		legacy.Should().NotBeNull("an already-compiled Repl.Defaults binds to this arity");
+		legacy!.Invoke(sut, ["denim-tint", typeof(string), aliases, null, "Visible by construction.", null]);
+
+		var registered = sut.GlobalOptions.Values.Should().ContainSingle().Which;
+		registered.Name.Should().Be("denim-tint");
+		registered.IsHidden.Should().BeFalse();
+	}
+
+	[TestMethod]
+	[Description("Global options are consumed before routing and never enter the documentation model, so they cannot reach an MCP tool schema at all. Selecting one therefore returns a builder that deliberately cannot express automation visibility — enforced by the type rather than a runtime throw, so a permanent silent no-op is unrepresentable instead of merely undocumented. There is no behaviour to assert here because the point is that none exists.")]
+	public void When_SelectingAGlobalOption_Then_TheBuilderCannotExpressAutomationVisibility()
+	{
+		var sut = new ParsingOptions();
+		sut.AddGlobalOption<string>("tenant");
+
+		var builder = sut.GlobalOption("tenant");
+
+		builder.Should().BeOfType<GlobalOptionBuilder>();
+		typeof(GlobalOptionBuilder).GetMethod("AutomationHidden").Should().BeNull();
+	}
+
+	[TestMethod]
+	[Description("Selection accepts the name either bare or as the rendered token, so an option registered as \"tenant\" is still configurable as \"--tenant\". A keyed probe alone would miss this, which is why the prefixed form is pinned separately from the common case.")]
+	public void When_SelectingAGlobalOptionByItsRenderedToken_Then_ItResolves()
+	{
+		var sut = new ParsingOptions();
+		sut.AddGlobalOption<string>("tenant");
+
+		sut.GlobalOption("--tenant").Hidden();
+
+		sut.GlobalOptions.Values.Should().ContainSingle().Which.IsHidden.Should().BeTrue();
+	}
+
+	[TestMethod]
+	[Description("Hidden global aliases use the configured parser comparer: case-sensitive mode must not hide a differently-cased registered token, while the exact spelling remains configurable.")]
+	public void When_HidingGlobalAliasInCaseSensitiveMode_Then_OnlyTheExactRegisteredSpellingMatches()
+	{
+		var sut = new ParsingOptions
+		{
+			OptionCaseSensitivity = ReplCaseSensitivity.CaseSensitive,
+		};
+		sut.AddGlobalOption<string>("tenant", aliases: ["--ACCOUNT"]);
+
+		var mismatchedCase = () => sut.GlobalOption("tenant").HiddenAlias("--account");
+
+		mismatchedCase.Should().Throw<KeyNotFoundException>();
+		sut.GlobalOption("tenant").HiddenAlias("--ACCOUNT");
+		sut.GlobalOptions.Values.Single().HiddenAliases.Should().ContainSingle().Which.Should().Be("--ACCOUNT");
+	}
+
 	[TestMethod]
 	[Description("GetValue returns parsed string value after Update.")]
 	public void When_StringOptionParsed_Then_GetValueReturnsIt()
@@ -519,6 +584,19 @@ public sealed class Given_GlobalOptionsAccessor
 
 		sut.GetValue<string>("contact").Should().Be("test@example.com");
 		parsing.GlobalOptions["contact"].ValueType.Should().Be(typeof(string));
+	}
+
+	[TestMethod]
+	[Description("Two different Names ('tenant' and '--tenant') can normalize to the identical canonical token. Left unrejected, GlobalOption(name) would resolve that token to whichever definition happens to enumerate first — an ambiguity, not a deterministic choice — so registering the second one must be rejected the same way an exact-name duplicate already is.")]
+	public void When_TwoGlobalOptionsNormalizeToTheSameCanonicalToken_Then_TheSecondRegistrationThrows()
+	{
+		var sut = new ParsingOptions();
+		sut.AddGlobalOption<string>("tenant");
+
+		var register = () => sut.AddGlobalOption<string>("--tenant");
+
+		register.Should().Throw<InvalidOperationException>()
+			.WithMessage("*tenant*--tenant*");
 	}
 
 	private sealed class TestTypedOptions

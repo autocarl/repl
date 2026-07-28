@@ -23,6 +23,116 @@ public sealed class Given_GlobalOptionsAccessor
 	}
 
 	[TestMethod]
+	[Description("Help renders one row per global option and lists that option's aliases, but GlobalOptionParser gives a colliding token to the LAST registration. A token listed as a visible option's alias can therefore bind a hidden option, so help must decide visibility per token rather than per definition — the same mismatch the completion source had.")]
+	public void When_AVisibleGlobalAliasCollidesWithALaterHiddenOption_Then_HelpDoesNotAdvertiseTheToken()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<string>("region", aliases: ["--tenant", "-r"]);
+			options.Parsing.AddGlobalOption<string>("tenant");
+			options.Parsing.GlobalOption("tenant").Hidden();
+		});
+		sut.Map("show", () => "ok");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+
+		help.ExitCode.Should().Be(0);
+		help.Text.Should().Contain("--region", "the visible option keeps its own row");
+		help.Text.Should().Contain("-r", "an alias with no collision stays listed");
+		help.Text.Should().NotContain("--tenant", "accepting this token would bind the hidden option");
+	}
+
+	[TestMethod]
+	[Description("The reverse collision: a later hidden definition claims a visible option's CANONICAL token while leaving its aliases alone. The alias is still accepted by the parser and offered by completion, so dropping the whole row would hide a reachable option. Rows are therefore built from whichever tokens the definition still owns, with the canonical one carrying no special weight.")]
+	public void When_AHiddenGlobalClaimsAVisibleCanonicalToken_Then_HelpStillListsTheSurvivingAlias()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<string>("region", aliases: ["-r"]);
+			options.Parsing.AddGlobalOption<string>("zone", aliases: ["--region"]);
+			options.Parsing.GlobalOption("zone").Hidden();
+		});
+		sut.Map("show", () => "ok");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+
+		help.ExitCode.Should().Be(0);
+		help.Text.Should().Contain("-r", "the alias nobody claimed keeps the option discoverable");
+		help.Text.Should().NotContain("--region", "that token now binds the hidden option");
+		help.Text.Should().NotContain("--zone");
+	}
+
+	[TestMethod]
+	[Description("A hidden definition registered first must not contribute a token that a later visible definition owns. Otherwise root help renders the token twice and leaks the hidden definition's description under the duplicate row.")]
+	public void When_AVisibleGlobalClaimsAHiddenAlias_Then_HelpRendersOnlyTheVisibleOwner()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption<string>(
+				"legacy",
+				aliases: ["--tenant"],
+				defaultValue: null,
+				description: "Hidden legacy tenant.");
+			options.Parsing.AddGlobalOption<string>(
+				"tenant",
+				aliases: null,
+				defaultValue: null,
+				description: "Visible tenant.");
+			options.Parsing.GlobalOption("legacy").Hidden();
+		});
+		sut.Map("show", () => "ok");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+		var tenantRows = help.Text
+			.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+			.Where(static line => line.Contains("--tenant", StringComparison.Ordinal))
+			.ToArray();
+
+		help.ExitCode.Should().Be(0);
+		tenantRows.Should().ContainSingle();
+		tenantRows[0].Should().Contain("Visible tenant.");
+		help.Text.Should().NotContain("Hidden legacy tenant.");
+	}
+
+	[TestMethod]
+	[Description("A manually registered hidden global option is omitted from help — token, alias, description and default alike — while staying bindable through the accessor. A visible sibling whose own token contains the hidden one's alias is registered on purpose: asserting the bare substring \"-t\" would pass only for as long as no other rendered token happened to contain it, so the assertions target the rendered option row instead.")]
+	public void When_ManualGlobalOptionIsHidden_Then_HelpOmitsItsRowAndExplicitInvocationStillBinds()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.AddGlobalOption(
+				"tenant",
+				aliases: ["-t"],
+				defaultValue: "internal-default",
+				description: "Internal tenant selector.");
+			options.Parsing.AddGlobalOption<string>(
+				"denim-tint",
+				aliases: ["-d"],
+				defaultValue: null,
+				description: "Visible control.");
+			options.Parsing.GlobalOption("tenant").Hidden();
+		});
+		sut.Map("show", (IGlobalOptionsAccessor globals) => globals.GetValue<string>("tenant") ?? "none");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+		var invocation = ConsoleCaptureHelper.Capture(() =>
+			sut.Run(["show", "--tenant", "acme", "--no-logo"]));
+
+		help.ExitCode.Should().Be(0);
+		help.Text.Should().NotContain("--tenant");
+		help.Text.Should().NotContain("--tenant, -t");
+		help.Text.Should().NotContain("Internal tenant selector.");
+		help.Text.Should().NotContain("internal-default");
+		help.Text.Should().Contain("--denim-tint, -d", "the visible sibling proves the whole option table was not simply empty");
+		invocation.ExitCode.Should().Be(0, invocation.Text);
+		invocation.Text.Should().Contain("acme");
+	}
+
+	[TestMethod]
 	[Description("Global option is accessible in middleware via DI.")]
 	public void When_GlobalOptionProvided_Then_MiddlewareCanReadIt()
 	{
@@ -129,6 +239,22 @@ public sealed class Given_GlobalOptionsAccessor
 	}
 
 	[TestMethod]
+	[Description("Creating documentation must inspect configured services without freezing the shared provider. A typed global-options extension registered afterward must still be visible to the provider that Run reuses.")]
+	public void When_DocumentationPrecedesTypedGlobalRegistration_Then_RunUsesTheLateServiceRegistration()
+	{
+		var sut = ReplApp.Create();
+		_ = sut.CreateDocumentationModel();
+		sut.UseGlobalOptions<TestGlobalOptions>();
+		sut.Map("show", (TestGlobalOptions options) => options.Tenant ?? "none");
+
+		var output = ConsoleCaptureHelper.Capture(() =>
+			sut.Run(["show", "--tenant", "acme", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0, output.Text);
+		output.Text.Should().Contain("acme");
+	}
+
+	[TestMethod]
 	[Description("UseGlobalOptions<T> registers typed class accessible via DI.")]
 	public void When_UsingTypedGlobalOptions_Then_ClassIsPopulatedFromParsedValues()
 	{
@@ -141,6 +267,101 @@ public sealed class Given_GlobalOptionsAccessor
 
 		output.ExitCode.Should().Be(0);
 		output.Text.Should().Contain("acme:9090");
+	}
+
+	[TestMethod]
+	[Description("ReplOption.Hidden on a typed global-options property hides discovery while preserving typed injection and binding.")]
+	public void When_TypedGlobalOptionPropertyIsHidden_Then_HelpOmitsItAndExplicitInvocationStillBinds()
+	{
+		var sut = ReplApp.Create();
+		sut.UseGlobalOptions<HiddenGlobalOptions>();
+		sut.Map("show", (HiddenGlobalOptions options) => $"{options.Region}:{options.InternalToken}");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+		var invocation = ConsoleCaptureHelper.Capture(() => sut.Run(
+			["show", "--region", "east", "--internal-token", "secret", "--no-logo"]));
+
+		help.ExitCode.Should().Be(0);
+		help.Text.Should().Contain("--region");
+		help.Text.Should().NotContain("--internal-token");
+		invocation.ExitCode.Should().Be(0, invocation.Text);
+		invocation.Text.Should().Contain("east:secret");
+	}
+
+	[TestMethod]
+	[Description("ReplOption.HiddenAliases on a typed global property preserves legacy parsing while root help keeps the canonical token and omits the old spelling.")]
+	public void When_TypedGlobalOptionHasHiddenAlias_Then_HelpOmitsOnlyTheAliasAndBindingRetainsIt()
+	{
+		var sut = ReplApp.Create();
+		sut.UseGlobalOptions<LegacyGlobalOptions>();
+		sut.Map("show", static string (LegacyGlobalOptions options) => options.Tenant ?? "none");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+		var invocation = ConsoleCaptureHelper.Capture(() => sut.Run(["--account", "acme", "show", "--no-logo"]));
+
+		help.Text.Should().Contain("--tenant");
+		help.Text.Should().NotContain("--account");
+		invocation.ExitCode.Should().Be(0, invocation.Text);
+		invocation.Text.Should().Contain("acme");
+	}
+
+	[TestMethod]
+	[Description("In case-sensitive mode, hiding one global alias spelling leaves a differently-cased alias visible and both spellings remain parsable.")]
+	public void When_GlobalAliasesDifferOnlyByCase_Then_HidingOnePreservesTheOther()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseSensitive;
+			options.Parsing.AddGlobalOption<string>("tenant", aliases: ["--account", "--ACCOUNT"]);
+			options.Parsing.GlobalOption("tenant").HiddenAlias("--account");
+		});
+		sut.Map("show", static string () => "ok");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+		var hiddenInvocation = ConsoleCaptureHelper.Capture(() => sut.Run(["--account", "acme", "show", "--no-logo"]));
+		var visibleInvocation = ConsoleCaptureHelper.Capture(() => sut.Run(["--ACCOUNT", "acme", "show", "--no-logo"]));
+
+		help.Text.Should().Contain("--ACCOUNT");
+		help.Text.Should().NotContain("--account");
+		hiddenInvocation.ExitCode.Should().Be(0, hiddenInvocation.Text);
+		visibleInvocation.ExitCode.Should().Be(0, visibleInvocation.Text);
+	}
+
+	[TestMethod]
+	[Description("HiddenAlias prefers an exact registered token before the active case-insensitive fallback, so changing comparison modes cannot hide the wrong case-distinct alias when case sensitivity is restored.")]
+	public void When_CaseModeChangesBeforeHidingAnExactGlobalAlias_Then_TheExactAliasIsRetained()
+	{
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseSensitive;
+			options.Parsing.AddGlobalOption<string>("tenant", aliases: ["--account", "--ACCOUNT"]);
+			options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive;
+			options.Parsing.GlobalOption("tenant").HiddenAlias("--ACCOUNT");
+			options.Parsing.OptionCaseSensitivity = ReplCaseSensitivity.CaseSensitive;
+		});
+		sut.Map("show", static string () => "ok");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+
+		help.Text.Should().Contain("--account");
+		help.Text.Should().NotContain("--ACCOUNT");
+	}
+
+	[TestMethod]
+	[Description("A fluent Hidden(false) override re-exposes a typed global option hidden by attribute.")]
+	public void When_TypedGlobalOptionHiddenAttributeIsOverriddenWithFalse_Then_RootHelpListsIt()
+	{
+		var sut = ReplApp.Create()
+			.UseGlobalOptions<HiddenGlobalOptions>()
+			.Options(options => options.Parsing.GlobalOption("internal-token").Hidden(isHidden: false));
+		sut.Map("show", (HiddenGlobalOptions globals) => globals.InternalToken ?? "none");
+
+		var help = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+
+		help.ExitCode.Should().Be(0);
+		help.Text.Should().Contain("--internal-token");
 	}
 
 	[TestMethod]
@@ -483,6 +704,20 @@ public sealed class Given_GlobalOptionsAccessor
 	private sealed class ClrDefaultGlobals
 	{
 		public int Retries { get; set; }
+	}
+
+	private sealed class LegacyGlobalOptions
+	{
+		[ReplOption(HiddenAliases = ["--account"])]
+		public string? Tenant { get; set; }
+	}
+
+	private sealed class HiddenGlobalOptions
+	{
+		public string? Region { get; set; }
+
+		[ReplOption(Hidden = true)]
+		public string? InternalToken { get; set; }
 	}
 
 	private interface IInterfaceGlobalOptions

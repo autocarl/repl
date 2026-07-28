@@ -144,6 +144,7 @@ Use these annotations to help agents make safer decisions:
 | `.OpenWorld()` | Talks to external systems; expect latency and failures. |
 | `.LongRunning()` | May take time; use call-now / poll-later patterns. |
 | `.AutomationHidden()` | Do not expose this command to MCP automation. |
+| `.WithOption(name, o => o.AutomationHidden())` | Keep this one option out of the tool schema; the command stays visible. |
 
 Unannotated tools force agents to assume the worst. Annotate every command that will be visible through MCP.
 

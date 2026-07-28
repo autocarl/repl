@@ -1,4 +1,5 @@
 using AwesomeAssertions;
+using Repl.Internal.Options;
 
 namespace Repl.Tests;
 
@@ -260,4 +261,34 @@ public sealed class Given_InvocationOptionParser
 			File.Delete(responseFile);
 		}
 	}
+
+	[TestMethod]
+	[Description("Unknown-option suggestions use the invocation's captured global case mode, so a concurrent live mode change cannot reveal an alias hidden in that snapshot.")]
+	public void When_LiveCaseModeMovesAfterCapture_Then_SuggestionUsesCapturedMode()
+	{
+		var liveMode = ReplCaseSensitivity.CaseInsensitive;
+		var schema = new OptionSchema(
+			[
+				new OptionSchemaEntry("--ACCOUNT", "mode", OptionSchemaTokenKind.ValueAlias, ReplArity.ExactlyOne, InjectedValue: "upper"),
+				new OptionSchemaEntry("--account", "mode", OptionSchemaTokenKind.ValueAlias, ReplArity.ExactlyOne, InjectedValue: "upper", IsHidden: true),
+				new OptionSchemaEntry("--mode", "mode", OptionSchemaTokenKind.NamedOption, ReplArity.ZeroOrOne),
+			],
+			new Dictionary<string, OptionSchemaParameter>(StringComparer.OrdinalIgnoreCase)
+			{
+				["mode"] = new OptionSchemaParameter("mode", typeof(string), ReplParameterMode.OptionOnly),
+			},
+			() => liveMode);
+		var captured = new ParsingOptions
+		{
+			AllowUnknownOptions = false,
+			OptionCaseSensitivity = ReplCaseSensitivity.CaseInsensitive,
+		};
+		liveMode = ReplCaseSensitivity.CaseSensitive;
+
+		var parsed = InvocationOptionParser.Parse(["--ACCOUNX"], schema, captured);
+
+		parsed.Diagnostics.Should().ContainSingle();
+		parsed.Diagnostics[0].Suggestion.Should().BeNull();
+	}
+
 }

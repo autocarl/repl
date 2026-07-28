@@ -2,7 +2,9 @@ using System.IO.Pipelines;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using Repl.Interaction;
 using Repl.Mcp;
+using Repl.Parameters;
 
 namespace Repl.McpTests;
 
@@ -22,6 +24,22 @@ public sealed class Given_McpServerOptionsBuilder
 		options.ToolCollection.Should().NotBeNull();
 		options.ToolCollection.Should().Contain(tool => string.Equals(tool.ProtocolTool.Name, "greet", StringComparison.Ordinal));
 		options.ToolCollection.Should().Contain(tool => string.Equals(tool.ProtocolTool.Name, "ping", StringComparison.Ordinal));
+	}
+
+	[TestMethod]
+	[Description("Core MCP dispatch guarantees a per-call interaction channel even when no base provider is supplied. Static discovery must retain a tool whose AutomationHidden required progress parameter is therefore synthesizable.")]
+	public void When_CoreMcpOptionsHaveNoBaseProvider_Then_RequiredHiddenProgressToolIsRetained()
+	{
+		var app = CoreReplApp.Create();
+		app.Map(
+			"sync",
+			([ReplOption(Name = "progress", Arity = ReplArity.ExactlyOne, AutomationHidden = true)] IProgress<ReplProgressEvent> progress) =>
+				progress is not null ? "progress-ready" : "missing");
+
+		var options = app.BuildMcpServerOptions();
+
+		options.ToolCollection.Should().Contain(tool =>
+			string.Equals(tool.ProtocolTool.Name, "sync", StringComparison.Ordinal));
 	}
 
 	[TestMethod]

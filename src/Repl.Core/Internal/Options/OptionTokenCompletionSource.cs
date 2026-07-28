@@ -40,8 +40,10 @@ internal static class OptionTokenCompletionSource
 	/// static framework options, output-format aliases, <c>--output:&lt;format&gt;</c>
 	/// selectors, and custom global options with their aliases.
 	/// </summary>
-	internal static void CollectGlobalOptionTokens(
+	/// <returns>The custom global token ownership used to filter lower-precedence route candidates.</returns>
+	internal static IReadOnlyDictionary<string, GlobalOptionDefinition> CollectGlobalOptionTokens(
 		ReplOptions options,
+		ParsingOptions.GlobalOptionConfigurationSnapshot configuration,
 		string currentTokenPrefix,
 		StringComparison comparison,
 		HashSet<string> dedupe,
@@ -72,39 +74,65 @@ internal static class OptionTokenCompletionSource
 			TryAddComposed("--output:", format, currentTokenPrefix, StringComparison.OrdinalIgnoreCase, dedupe, results);
 		}
 
-		foreach (var custom in options.Parsing.GlobalOptions.Values)
+		// Visibility is decided per TOKEN, not per definition: GlobalOptionParser gives a colliding
+		// token to the LAST registration, so a token owned by a visible definition here may in fact
+		// bind a hidden one. Build that authoritative ownership map once for this completion pass.
+		var ownership = configuration.Ownership;
+		foreach (var custom in configuration.Definitions.Values)
 		{
-			TryAdd(custom.CanonicalToken, currentTokenPrefix, comparison, dedupe, results);
+			TryAddGlobalToken(custom.CanonicalToken, custom, configuration, currentTokenPrefix, comparison, dedupe, results);
 
 			foreach (var alias in custom.Aliases)
 			{
-				TryAdd(alias, currentTokenPrefix, comparison, dedupe, results);
+				TryAddGlobalToken(alias, custom, configuration, currentTokenPrefix, comparison, dedupe, results);
 			}
 		}
+
+		return ownership;
 	}
 
-	/// <summary>Collects the route's declared option tokens matching the prefix.</summary>
-	internal static void CollectRouteOptionTokens(
-		RouteDefinition route,
+	private static void TryAddGlobalToken(
+		string token,
+		GlobalOptionDefinition expectedOwner,
+		ParsingOptions.GlobalOptionConfigurationSnapshot configuration,
 		string currentTokenPrefix,
-		ReplCaseSensitivity globalCaseSensitivity,
+		StringComparison comparison,
 		HashSet<string> dedupe,
-		List<string> results) =>
-		CollectRouteOptionTokens(route.OptionSchema, currentTokenPrefix, globalCaseSensitivity, dedupe, results);
+		List<string> results)
+	{
+		if (!GlobalOptionParser.IsGlobalTokenDiscoverable(token, expectedOwner, configuration))
+		{
+			return;
+		}
 
+		TryAdd(token, currentTokenPrefix, comparison, dedupe, results);
+	}
+
+	/// <summary>Collects the route's discoverable option tokens matching the prefix.</summary>
 	// Filters against the schema entries — not the flattened KnownTokens — so each option's
 	// own case sensitivity is honored: an entry declared case-insensitive is offered for a
 	// differently-cased prefix even under a case-sensitive global default (and vice versa),
-	// matching exactly what the invocation parser accepts.
+	// matching exactly what the invocation parser accepts. Hidden options are excluded by
+	// DiscoverableEntries rather than by a caller-supplied predicate: a predicate parameter
+	// was the very drift vector this single source exists to prevent.
 	internal static void CollectRouteOptionTokens(
 		OptionSchema schema,
+		IReadOnlyDictionary<string, GlobalOptionDefinition> customGlobalOwnership,
 		string currentTokenPrefix,
 		ReplCaseSensitivity globalCaseSensitivity,
 		HashSet<string> dedupe,
 		List<string> results)
 	{
-		foreach (var entry in schema.Entries)
+		foreach (var entry in schema.ResolveDiscoverableEntries(globalCaseSensitivity))
 		{
+			// GlobalOptionParser consumes custom globals before route parsing. Suppress every
+			// route token owned by that projection — including hidden globals that contributed no
+			// candidate to dedupe — so completion never advertises a route binding execution cannot reach.
+			if (customGlobalOwnership.ContainsKey(entry.Token))
+			{
+				continue;
+			}
+
 			var comparison = (entry.CaseSensitivity ?? globalCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive
 				? StringComparison.OrdinalIgnoreCase
 				: StringComparison.Ordinal;

@@ -66,7 +66,9 @@ internal static class ReplSessionIO
 	private static readonly AsyncLocal<TextReader?> s_input = new();
 	private static readonly AsyncLocal<IReplKeyReader?> s_keyReader = new();
 	private static readonly AsyncLocal<bool> s_isHostedSession = new();
+	private const int CurrentProgrammaticInvocationContractVersion = 1;
 	private static readonly AsyncLocal<bool> s_isProgrammatic = new();
+	private static readonly AsyncLocal<int> s_programmaticInvocationContractVersion = new();
 	private static readonly AsyncLocal<bool> s_isProtocolPassthrough = new();
 	private static readonly AsyncLocal<string?> s_sessionId = new();
 	private static readonly ConcurrentDictionary<string, SessionMetadata> s_sessions = new(StringComparer.Ordinal);
@@ -113,6 +115,9 @@ internal static class ReplSessionIO
 		get => s_isProgrammatic.Value;
 		set => s_isProgrammatic.Value = value;
 	}
+
+	internal static bool HasCurrentProgrammaticInvocationContract =>
+		s_programmaticInvocationContractVersion.Value == CurrentProgrammaticInvocationContractVersion;
 
 	internal static bool IsProtocolPassthrough
 	{
@@ -276,6 +281,7 @@ internal static class ReplSessionIO
 		var previousKeyReader = s_keyReader.Value;
 		var previousIsHostedSession = s_isHostedSession.Value;
 		var previousIsProgrammatic = s_isProgrammatic.Value;
+		var previousProgrammaticInvocationContractVersion = s_programmaticInvocationContractVersion.Value;
 		var previousSessionId = s_sessionId.Value;
 
 		var resolvedSessionId = string.IsNullOrWhiteSpace(sessionId)
@@ -289,6 +295,9 @@ internal static class ReplSessionIO
 		s_commandOutput.Value = commandOutput ?? output;
 		s_input.Value = input;
 		s_isHostedSession.Value = isHostedSession;
+		// A transport session must negotiate its own argument-validation contract. Never inherit a
+		// marker from an outer async context into a newly hosted programmatic session.
+		s_programmaticInvocationContractVersion.Value = 0;
 		s_sessionId.Value = resolvedSessionId;
 
 		if (ansiMode == AnsiMode.Always)
@@ -312,6 +321,7 @@ internal static class ReplSessionIO
 			previousKeyReader,
 			previousIsHostedSession,
 			previousIsProgrammatic,
+			previousProgrammaticInvocationContractVersion,
 			previousSessionId,
 			removeSessionOnDispose: string.IsNullOrWhiteSpace(sessionId),
 			sessionIdToRemove: resolvedSessionId);
@@ -341,6 +351,13 @@ internal static class ReplSessionIO
 			static (id, localUpdater) => NormalizeSession(id, localUpdater(CreateMetadata(id))),
 			static (id, session, localUpdater) => NormalizeSession(id, localUpdater(session)),
 			updater);
+	}
+
+	internal static IDisposable PushProgrammaticInvocationContract(int adapterContractVersion)
+	{
+		var previous = s_programmaticInvocationContractVersion.Value;
+		s_programmaticInvocationContractVersion.Value = adapterContractVersion;
+		return new ProgrammaticInvocationContractScope(previous);
 	}
 
 	internal static IDisposable PushProtocolPassthrough(bool isProtocolPassthrough = true)
@@ -395,6 +412,7 @@ internal static class ReplSessionIO
 		IReplKeyReader? previousKeyReader,
 		bool previousIsHostedSession,
 		bool previousIsProgrammatic,
+		int previousProgrammaticInvocationContractVersion,
 		string? previousSessionId,
 		bool removeSessionOnDispose,
 		string sessionIdToRemove) : IDisposable
@@ -408,12 +426,29 @@ internal static class ReplSessionIO
 			s_keyReader.Value = previousKeyReader;
 			s_isHostedSession.Value = previousIsHostedSession;
 			s_isProgrammatic.Value = previousIsProgrammatic;
+			s_programmaticInvocationContractVersion.Value = previousProgrammaticInvocationContractVersion;
 			s_sessionId.Value = previousSessionId;
 
 			if (removeSessionOnDispose)
 			{
 				RemoveSession(sessionIdToRemove);
 			}
+		}
+	}
+
+	private sealed class ProgrammaticInvocationContractScope(int previousVersion) : IDisposable
+	{
+		private bool _disposed;
+
+		public void Dispose()
+		{
+			if (_disposed)
+			{
+				return;
+			}
+
+			s_programmaticInvocationContractVersion.Value = previousVersion;
+			_disposed = true;
 		}
 	}
 

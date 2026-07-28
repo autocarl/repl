@@ -173,11 +173,13 @@ public sealed class OutputOptions
 		IReadOnlyList<ContextDefinition> contexts,
 		IReadOnlyList<string> scopeTokens,
 		ParsingOptions parsingOptions,
+		IServiceProvider serviceProvider,
 		AmbientCommandOptions ambientOptions,
 		out object? output)
 	{
 		if (_helpOutputFactories.TryGetValue(format, out var factory))
 		{
+			using var scope = HelpTextBuilder.PushServiceProvider(serviceProvider);
 			output = factory(routes, contexts, scopeTokens, parsingOptions, ambientOptions);
 			return true;
 		}

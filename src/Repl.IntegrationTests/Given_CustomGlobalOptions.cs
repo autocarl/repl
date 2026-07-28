@@ -51,6 +51,36 @@ public sealed class Given_CustomGlobalOptions
 	}
 
 	[TestMethod]
+	[Description("Hidden(false) re-exposes a manually registered global option after it was hidden.")]
+	public void When_HiddenGlobalOptionIsShownAgain_Then_RootHelpListsIt()
+	{
+		var sut = ReplApp.Create()
+			.Options(options =>
+			{
+				options.Parsing.AddGlobalOption<string>("tenant");
+				options.Parsing.GlobalOption("tenant").Hidden().Hidden(isHidden: false);
+			});
+		sut.Map("ping", () => "ok");
+
+		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--no-logo"]));
+
+		output.ExitCode.Should().Be(0);
+		output.Text.Should().Contain("--tenant");
+	}
+
+	[TestMethod]
+	[Description("Selecting an unregistered global option fails clearly instead of silently creating ineffective metadata.")]
+	public void When_SelectingUnknownGlobalOption_Then_ConfigurationThrows()
+	{
+		var parsing = new ParsingOptions();
+
+		var act = () => parsing.GlobalOption("missing");
+
+		act.Should().Throw<KeyNotFoundException>()
+			.WithMessage("*missing*registered*");
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies typed global option descriptions are rendered in root help without adding default-value display.")]
 	public void When_RequestingRootHelpForTypedGlobalOptions_Then_DescriptionsAreListed()
 	{

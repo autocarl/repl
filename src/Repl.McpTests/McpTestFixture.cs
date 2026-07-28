@@ -62,7 +62,7 @@ internal sealed class McpTestFixture : IAsyncDisposable
 		var options = new ReplMcpServerOptions();
 		configureOptions?.Invoke(options);
 
-		var serviceProvider = configureServices is not null ? app.Services : EmptyServiceProvider.Instance;
+		var serviceProvider = app.Services;
 		var handler = new McpServerHandler(app.Core, options, serviceProvider);
 
 		var clientToServer = new Pipe();
@@ -84,9 +84,47 @@ internal sealed class McpTestFixture : IAsyncDisposable
 		var clientTransport = new StreamClientTransport(
 			clientToServer.Writer.AsStream(),
 			serverToClient.Reader.AsStream());
-		var client = await McpClient.CreateAsync(clientTransport, clientOptions).ConfigureAwait(false);
 
-		return new McpTestFixture(app, client, serverTask, cts, clientToServer, serverToClient);
+		try
+		{
+			// Race the handshake against the server. Awaiting only the client means a server that
+			// fails while starting is observable solely as an initialize timeout carrying the wrong
+			// exception — which is what once pushed production code into throwing synchronously
+			// just to stay testable.
+			var clientTask = McpClient.CreateAsync(clientTransport, clientOptions);
+			if (ReferenceEquals(await Task.WhenAny(serverTask, clientTask).ConfigureAwait(false), serverTask))
+			{
+				// Rethrows a start failure; a clean early exit means the handshake never completes.
+				await serverTask.ConfigureAwait(false);
+
+				throw new InvalidOperationException(
+					"The MCP server stopped before the client completed its handshake.");
+			}
+
+			var client = await clientTask.ConfigureAwait(false);
+
+			return new McpTestFixture(app, client, serverTask, cts, clientToServer, serverToClient);
+		}
+		catch
+		{
+			await AbandonAsync(cts, clientToServer, serverToClient).ConfigureAwait(false);
+			throw;
+		}
+	}
+
+	/// <summary>
+	/// Releases what <see cref="CreateAsync(Action{ReplApp}, Action{ReplMcpServerOptions}, McpClientOptions, Action{IServiceCollection})"/>
+	/// allocated when construction fails before the fixture takes ownership.
+	/// </summary>
+	private static async Task AbandonAsync(
+		CancellationTokenSource cts,
+		Pipe clientToServer,
+		Pipe serverToClient)
+	{
+		await cts.CancelAsync().ConfigureAwait(false);
+		await clientToServer.Writer.CompleteAsync().ConfigureAwait(false);
+		await serverToClient.Writer.CompleteAsync().ConfigureAwait(false);
+		cts.Dispose();
 	}
 
 	public async ValueTask DisposeAsync()
@@ -113,11 +151,6 @@ internal sealed class McpTestFixture : IAsyncDisposable
 		_cts.Dispose();
 	}
 
-	private sealed class EmptyServiceProvider : IServiceProvider
-	{
-		public static readonly EmptyServiceProvider Instance = new();
-		public object? GetService(Type serviceType) => null;
-	}
 
 	internal sealed class PipeIoContext(Stream inputStream, Stream outputStream) : IReplIoContext
 	{

@@ -37,6 +37,12 @@ public sealed class Given_OptionAttributeOverrides
 		public int Retries { get; set; } = 42;
 	}
 
+	public sealed class AutomationHiddenGlobals
+	{
+		[ReplOption(Name = "internal-tenant", AutomationHidden = true)]
+		public string? InternalTenant { get; set; }
+	}
+
 	public sealed class ValueAliasOverrideGlobals
 	{
 		[ReplValueAlias("--prod", "production", CaseSensitivity = ReplCaseSensitivity.CaseInsensitive)]
@@ -354,6 +360,16 @@ public sealed class Given_OptionAttributeOverrides
 		var act = () => ReplApp.Create().UseGlobalOptions<OverrideArityGlobals>();
 
 		act.Should().Throw<NotSupportedException>().WithMessage("*Arity*");
+	}
+
+	[TestMethod]
+	[Description("Global options are consumed before routing and never enter the documentation model, so AutomationHidden on one could never do anything. The fluent path prevents this by type — GlobalOptionBuilder has no such method — but an attribute cannot be type-split, so this branch must fail fast rather than silently discard the flag. Hidden, by contrast, is supported here and must keep working.")]
+	public void When_GlobalOptionsPropertyDeclaresAutomationHidden_Then_RegistrationFailsFast()
+	{
+		var act = () => ReplApp.Create().UseGlobalOptions<AutomationHiddenGlobals>();
+
+		act.Should().Throw<NotSupportedException>()
+			.WithMessage("*AutomationHiddenGlobals.InternalTenant*AutomationHidden*never exposed to programmatic surfaces*");
 	}
 
 	[TestMethod]

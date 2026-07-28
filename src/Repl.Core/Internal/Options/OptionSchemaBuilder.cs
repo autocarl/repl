@@ -10,7 +10,8 @@ internal static class OptionSchemaBuilder
 		RouteTemplate template,
 		CommandBuilder command,
 		ParsingOptions parsingOptions,
-		ImplicitServiceParameterRegistry implicitServiceParameters)
+		ImplicitServiceParameterRegistry implicitServiceParameters,
+		Func<ReplCaseSensitivity>? resolveGlobalCaseSensitivity = null)
 	{
 		ArgumentNullException.ThrowIfNull(template);
 		ArgumentNullException.ThrowIfNull(command);
@@ -39,12 +40,13 @@ internal static class OptionSchemaBuilder
 					parameter.ParameterType,
 					entries,
 					parameters,
-					groupPositionalPropertyNames);
+					groupPositionalPropertyNames,
+					parsingOptions);
 			}
 #pragma warning restore IL2072
 			else
 			{
-				AppendParameterSchemaEntries(parameter, entries, parameters);
+				AppendParameterSchemaEntries(parameter, entries, parameters, parsingOptions);
 				if (IsExplicitPositionalParameter(parameter))
 				{
 					regularPositionalParameterNames.Add(parameter.Name!);
@@ -53,8 +55,11 @@ internal static class OptionSchemaBuilder
 		}
 
 		ValidatePositionalBindingCompatibility(regularPositionalParameterNames, groupPositionalPropertyNames);
-		ValidateTokenCollisions(entries, parsingOptions, template);
-		return new OptionSchema(entries, parameters);
+		ValidateTokenCollisions(entries, parsingOptions.OptionCaseSensitivity, template);
+		return new OptionSchema(
+			entries,
+			parameters,
+			resolveGlobalCaseSensitivity ?? (() => parsingOptions.OptionCaseSensitivity));
 	}
 
 	private static bool ShouldSkipSchemaParameter(
@@ -105,7 +110,8 @@ internal static class OptionSchemaBuilder
 	private static void AppendParameterSchemaEntries(
 		ParameterInfo parameter,
 		List<OptionSchemaEntry> entries,
-		Dictionary<string, OptionSchemaParameter> parameters)
+		Dictionary<string, OptionSchemaParameter> parameters,
+		ParsingOptions parsingOptions)
 	{
 		var optionAttribute = parameter.GetCustomAttribute<ReplOptionAttribute>(inherit: true);
 		var mode = ResolveParameterMode(parameter);
@@ -120,7 +126,11 @@ internal static class OptionSchemaBuilder
 			parameter.ParameterType,
 			mode,
 			CaseSensitivity: optionAttribute?.CaseSensitivityOverride,
-			ExplicitArity: optionAttribute?.ArityOverride);
+			ExplicitArity: optionAttribute?.ArityOverride,
+			IsHidden: optionAttribute?.Hidden ?? false,
+			IsAutomationHidden: optionAttribute?.AutomationHidden ?? false,
+			CanBeOmitted: CanParameterBeOmitted(parameter),
+			SupportsServiceFallback: true);
 		if (mode == ReplParameterMode.ArgumentOnly)
 		{
 			return;
@@ -135,7 +145,8 @@ internal static class OptionSchemaBuilder
 			tokenKind,
 			arity,
 			CaseSensitivity: optionAttribute?.CaseSensitivityOverride));
-		AppendOptionAliases(parameter, tokenKind, arity, optionAttribute, entries);
+		AppendOptionAliases(parameter, tokenKind, arity, optionAttribute, parsingOptions, entries);
+		AppendHiddenOptionAliases(parameter, tokenKind, arity, optionAttribute, entries);
 		AppendReverseAliases(parameter, optionAttribute, entries);
 		AppendValueAliases(parameter, optionAttribute, entries);
 		AppendEnumAliases(parameter, optionAttribute, entries);
@@ -159,10 +170,18 @@ internal static class OptionSchemaBuilder
 		OptionSchemaTokenKind tokenKind,
 		ReplArity arity,
 		ReplOptionAttribute? optionAttribute,
+		ParsingOptions parsingOptions,
 		List<OptionSchemaEntry> entries)
 	{
 		foreach (var alias in optionAttribute?.Aliases ?? [])
 		{
+			// Preserve case-distinct aliases in the parse schema so inherited visibility can be
+			// reevaluated if the global case mode changes after mapping.
+			if ((optionAttribute?.HiddenAliases ?? []).Contains(alias, StringComparer.Ordinal))
+			{
+				continue;
+			}
+
 			ValidateOptionToken(alias, parameter.Name!);
 			entries.Add(new OptionSchemaEntry(
 				alias,
@@ -170,6 +189,26 @@ internal static class OptionSchemaBuilder
 				tokenKind,
 				arity,
 				CaseSensitivity: optionAttribute?.CaseSensitivityOverride));
+		}
+	}
+
+	private static void AppendHiddenOptionAliases(
+		ParameterInfo parameter,
+		OptionSchemaTokenKind tokenKind,
+		ReplArity arity,
+		ReplOptionAttribute? optionAttribute,
+		List<OptionSchemaEntry> entries)
+	{
+		foreach (var alias in optionAttribute?.HiddenAliases ?? [])
+		{
+			ValidateOptionToken(alias, parameter.Name!);
+			entries.Add(new OptionSchemaEntry(
+				alias,
+				parameter.Name!,
+				tokenKind,
+				arity,
+				CaseSensitivity: optionAttribute?.CaseSensitivityOverride,
+				IsHidden: true));
 		}
 	}
 
@@ -350,7 +389,8 @@ internal static class OptionSchemaBuilder
 		Type groupType,
 		List<OptionSchemaEntry> entries,
 		Dictionary<string, OptionSchemaParameter> parameters,
-		List<string> positionalPropertyNames)
+		List<string> positionalPropertyNames,
+		ParsingOptions parsingOptions)
 	{
 		ValidateOptionsGroupType(groupType);
 
@@ -367,7 +407,7 @@ internal static class OptionSchemaBuilder
 					$"Nested options groups are not supported. Property '{property.Name}' on '{groupType.Name}' is itself an options group.");
 			}
 
-			AppendPropertySchemaEntries(property, entries, parameters, positionalPropertyNames);
+			AppendPropertySchemaEntries(property, entries, parameters, positionalPropertyNames, parsingOptions);
 		}
 	}
 
@@ -392,11 +432,21 @@ internal static class OptionSchemaBuilder
 		}
 	}
 
+	// Mirrors the requiredness rule the documentation model reports: a value type with no default and
+	// no nullable wrapper has nothing to bind from when the option is absent, so the binder rejects
+	// it. Options-group properties always carry the default instance's value and so are never
+	// mandatory by shape — only an explicit arity can make them so.
+	private static bool CanParameterBeOmitted(ParameterInfo parameter) =>
+		parameter.HasDefaultValue
+		|| !parameter.ParameterType.IsValueType
+		|| Nullable.GetUnderlyingType(parameter.ParameterType) is not null;
+
 	private static void AppendPropertySchemaEntries(
 		PropertyInfo property,
 		List<OptionSchemaEntry> entries,
 		Dictionary<string, OptionSchemaParameter> parameters,
-		List<string> positionalPropertyNames)
+		List<string> positionalPropertyNames,
+		ParsingOptions parsingOptions)
 	{
 		var optionAttribute = property.GetCustomAttribute<ReplOptionAttribute>(inherit: true);
 		var argumentAttribute = property.GetCustomAttribute<ReplArgumentAttribute>(inherit: true);
@@ -414,7 +464,9 @@ internal static class OptionSchemaBuilder
 			property.PropertyType,
 			mode,
 			CaseSensitivity: optionAttribute?.CaseSensitivityOverride,
-			ExplicitArity: optionAttribute?.ArityOverride);
+			ExplicitArity: optionAttribute?.ArityOverride,
+			IsHidden: optionAttribute?.Hidden ?? false,
+			IsAutomationHidden: optionAttribute?.AutomationHidden ?? false);
 		if (mode != ReplParameterMode.OptionOnly)
 		{
 			positionalPropertyNames.Add(property.Name);
@@ -433,7 +485,8 @@ internal static class OptionSchemaBuilder
 			tokenKind,
 			arity,
 			CaseSensitivity: optionAttribute?.CaseSensitivityOverride));
-		AppendPropertyOptionAliases(property.Name, tokenKind, arity, optionAttribute, entries);
+		AppendPropertyOptionAliases(property.Name, tokenKind, arity, optionAttribute, parsingOptions, entries);
+		AppendPropertyHiddenOptionAliases(property.Name, tokenKind, arity, optionAttribute, entries);
 		AppendPropertyReverseAliases(property.Name, optionAttribute, entries);
 		AppendPropertyValueAliases(property, optionAttribute, entries);
 		AppendPropertyEnumAliases(property, optionAttribute, entries);
@@ -464,10 +517,18 @@ internal static class OptionSchemaBuilder
 		OptionSchemaTokenKind tokenKind,
 		ReplArity arity,
 		ReplOptionAttribute? optionAttribute,
+		ParsingOptions parsingOptions,
 		List<OptionSchemaEntry> entries)
 	{
 		foreach (var alias in optionAttribute?.Aliases ?? [])
 		{
+			// Preserve case-distinct aliases in the parse schema so inherited visibility can be
+			// reevaluated if the global case mode changes after mapping.
+			if ((optionAttribute?.HiddenAliases ?? []).Contains(alias, StringComparer.Ordinal))
+			{
+				continue;
+			}
+
 			ValidateOptionToken(alias, propertyName);
 			entries.Add(new OptionSchemaEntry(
 				alias,
@@ -475,6 +536,26 @@ internal static class OptionSchemaBuilder
 				tokenKind,
 				arity,
 				CaseSensitivity: optionAttribute?.CaseSensitivityOverride));
+		}
+	}
+
+	private static void AppendPropertyHiddenOptionAliases(
+		string propertyName,
+		OptionSchemaTokenKind tokenKind,
+		ReplArity arity,
+		ReplOptionAttribute? optionAttribute,
+		List<OptionSchemaEntry> entries)
+	{
+		foreach (var alias in optionAttribute?.HiddenAliases ?? [])
+		{
+			ValidateOptionToken(alias, propertyName);
+			entries.Add(new OptionSchemaEntry(
+				alias,
+				propertyName,
+				tokenKind,
+				arity,
+				CaseSensitivity: optionAttribute?.CaseSensitivityOverride,
+				IsHidden: true));
 		}
 	}
 
@@ -549,9 +630,9 @@ internal static class OptionSchemaBuilder
 		}
 	}
 
-	private static void ValidateTokenCollisions(
+	internal static void ValidateTokenCollisions(
 		IReadOnlyList<OptionSchemaEntry> entries,
-		ParsingOptions parsingOptions,
+		ReplCaseSensitivity globalCaseSensitivity,
 		RouteTemplate template)
 	{
 		// Collisions are decided per PAIR under each entry's effective case sensitivity, not
@@ -575,8 +656,8 @@ internal static class OptionSchemaBuilder
 			{
 				var ordinalEqual = string.Equals(existing.Token, entry.Token, StringComparison.Ordinal);
 				var bothInsensitive =
-					(existing.CaseSensitivity ?? parsingOptions.OptionCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive
-					&& (entry.CaseSensitivity ?? parsingOptions.OptionCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive;
+					(existing.CaseSensitivity ?? globalCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive
+					&& (entry.CaseSensitivity ?? globalCaseSensitivity) == ReplCaseSensitivity.CaseInsensitive;
 				if (!ordinalEqual && !bothInsensitive)
 				{
 					continue;

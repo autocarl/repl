@@ -4,6 +4,7 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Repl.Mcp;
+using Repl.Parameters;
 
 namespace Repl.McpTests;
 
@@ -53,16 +54,103 @@ public sealed class Given_McpDebounce
 		var tools = SyncWait(fixture.Client.ListToolsAsync().AsTask());
 		tools.Should().ContainSingle(t => string.Equals(t.Name, "initial", StringComparison.Ordinal));
 
-		// Add a command filter that will throw during the next rebuild.
+		// Add a route that only a successful refresh can reveal, then make the first rebuild fail.
+		fixture.App.Map("added-after", () => "new");
 		fixture.Options.CommandFilter = _ => throw new InvalidOperationException("Simulated rebuild failure");
 		fixture.App.Core.InvalidateRouting();
 
 		// Advance time to trigger the rebuild — should not crash.
 		fakeTime.Advance(TimeSpan.FromMilliseconds(150));
 
-		// Server should still respond — existing tools remain.
-		var toolsAfter = SyncWait(fixture.Client.ListToolsAsync().AsTask());
-		toolsAfter.Should().NotBeEmpty("server should continue with stale routes after rebuild failure");
+		// Server should still respond with the previous snapshot while the failure is active.
+		var staleTools = SyncWait(fixture.Client.ListToolsAsync().AsTask());
+		staleTools.Should().ContainSingle(tool => string.Equals(tool.Name, "initial", StringComparison.Ordinal));
+
+		// Clearing a transient failure must let the same invalidated version retry without another mutation.
+		fixture.Options.CommandFilter = null;
+		var recoveredTools = SyncWait(fixture.Client.ListToolsAsync().AsTask());
+		recoveredTools.Should().Contain(tool => string.Equals(tool.Name, "added-after", StringComparison.Ordinal));
+	}
+
+	[TestMethod]
+	[Description("Pausing immediately before invalidation publication leaves readers on the complete old version/watermark pair; releasing publication exposes the complete new pair atomically.")]
+	public void When_VisibilityRetractionPublicationIsPaused_Then_ReaderObservesOnlyCompleteStates()
+	{
+		var initial = new McpServerHandler.SnapshotVersionState(
+			Version: 7,
+			LastVisibilityRetractionVersion: 3);
+		var holder = new SnapshotStateHolder(initial);
+		using var publicationReady = new ManualResetEventSlim(initialState: false);
+		using var releasePublication = new ManualResetEventSlim(initialState: false);
+
+		var publication = Task.Run(() => McpServerHandler.PublishSnapshotInvalidation(
+			ref holder.State,
+			isVisibilityRetraction: true,
+			beforePublish: candidate =>
+			{
+				candidate.Version.Should().Be(8);
+				candidate.LastVisibilityRetractionVersion.Should().Be(8);
+				publicationReady.Set();
+				releasePublication.Wait(TimeSpan.FromSeconds(10)).Should().BeTrue();
+			}));
+
+		publicationReady.Wait(TimeSpan.FromSeconds(10)).Should().BeTrue();
+		Volatile.Read(ref holder.State).Should().BeSameAs(initial);
+
+		releasePublication.Set();
+		SyncWait(publication);
+		var published = Volatile.Read(ref holder.State);
+		published.Version.Should().Be(8);
+		published.LastVisibilityRetractionVersion.Should().Be(8);
+	}
+
+	[TestMethod]
+	[Description("If an option is hidden while a successful MCP snapshot projection is in flight, that request retries against the newer visibility version instead of returning the stale schema it already constructed.")]
+	public void When_VisibilityRetractionOccursDuringSuccessfulBuild_Then_InFlightRequestRetries()
+	{
+		var fakeTime = new FakeTimeProvider();
+		using var fixture = CreateServerFixture(fakeTime);
+		var initial = SyncWait(fixture.Client.ListToolsAsync().AsTask()).Single();
+		initial.JsonSchema.GetProperty("properties").TryGetProperty("tenant", out _).Should().BeTrue();
+
+		using var projectionEntered = new ManualResetEventSlim(initialState: false);
+		using var releaseProjection = new ManualResetEventSlim(initialState: false);
+		fixture.Options.CommandFilter = _ =>
+		{
+			projectionEntered.Set();
+			return releaseProjection.Wait(TimeSpan.FromSeconds(10));
+		};
+		fixture.App.Core.InvalidateRouting();
+
+		var refresh = fixture.Client.ListToolsAsync().AsTask();
+		projectionEntered.Wait(TimeSpan.FromSeconds(10)).Should().BeTrue("the test must interleave the visibility change with snapshot projection");
+		fixture.InitialCommand.WithOption("tenant", static option => option.Hidden());
+		releaseProjection.Set();
+
+		var rebuilt = SyncWait(refresh).Single();
+		rebuilt.JsonSchema.GetProperty("properties").TryGetProperty("tenant", out _).Should().BeFalse();
+	}
+
+	[TestMethod]
+	[Description("A visibility retraction fails closed while snapshot projection is broken, rather than serving the previous MCP schema that still exposes the hidden option; a later successful rebuild clears the fail-closed state.")]
+	public void When_VisibilityRetractionRefreshFails_Then_StaleSnapshotIsNotServed()
+	{
+		var fakeTime = new FakeTimeProvider();
+		using var fixture = CreateServerFixture(fakeTime);
+
+		var initial = SyncWait(fixture.Client.ListToolsAsync().AsTask()).Single();
+		initial.JsonSchema.GetProperty("properties").TryGetProperty("tenant", out _).Should().BeTrue();
+
+		fixture.Options.CommandFilter = _ => throw new InvalidOperationException("Simulated rebuild failure");
+		fixture.InitialCommand.WithOption("tenant", static option => option.Hidden());
+		fakeTime.Advance(TimeSpan.FromMilliseconds(150));
+
+		Action staleRead = () => _ = SyncWait(fixture.Client.ListToolsAsync().AsTask());
+		staleRead.Should().Throw<Exception>("a stale schema would still advertise and accept the explicitly hidden option");
+
+		fixture.Options.CommandFilter = null;
+		var recovered = SyncWait(fixture.Client.ListToolsAsync().AsTask()).Single();
+		recovered.JsonSchema.GetProperty("properties").TryGetProperty("tenant", out _).Should().BeFalse();
 	}
 
 	// ── Sync-over-async helper ──────────────────────────────────────────
@@ -88,7 +176,9 @@ public sealed class Given_McpDebounce
 	{
 		var app = ReplApp.Create();
 		app.UseMcpServer();
-		app.Map("initial", () => "ok");
+		var initialCommand = app.Map(
+			"initial",
+			static string ([ReplOption] string? tenant = null) => tenant ?? "ok");
 
 		var clientToServer = new Pipe();
 		var serverToClient = new Pipe();
@@ -109,15 +199,16 @@ public sealed class Given_McpDebounce
 				clientToServer.Writer.AsStream(),
 				serverToClient.Reader.AsStream())));
 
-		return new ServerFixture(app, options, client, cts, clientToServer, serverToClient, serverTask);
+		return new ServerFixture(app, options, initialCommand, client, cts, clientToServer, serverToClient, serverTask);
 	}
 
 	private sealed class ServerFixture(
-		ReplApp app, ReplMcpServerOptions options, McpClient client,
+		ReplApp app, ReplMcpServerOptions options, CommandBuilder initialCommand, McpClient client,
 		CancellationTokenSource cts, Pipe c2s, Pipe s2c, Task serverTask) : IDisposable
 	{
 		public ReplApp App => app;
 		public ReplMcpServerOptions Options => options;
+		public CommandBuilder InitialCommand => initialCommand;
 		public McpClient Client => client;
 
 #pragma warning disable VSTHRD002
@@ -148,4 +239,9 @@ public sealed class Given_McpDebounce
 		public bool IsHostedSession => false;
 		public string? SessionId => null;
 	}
+	private sealed class SnapshotStateHolder(McpServerHandler.SnapshotVersionState state)
+	{
+		public McpServerHandler.SnapshotVersionState State = state;
+	}
+
 }
