@@ -151,6 +151,44 @@ public sealed class Given_McpIntegration
 	}
 
 	[TestMethod]
+	[Description("Locks the default SDK 2.0 negotiation path to MCP 2026-07-28.")]
+	public async Task When_ClientUsesDefaults_Then_Protocol20260728IsNegotiated()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(
+			app => app.Map("ping", () => "pong"),
+			configureOptions: null);
+
+		fixture.Client.NegotiatedProtocolVersion.Should().Be("2026-07-28");
+	}
+
+	[TestMethod]
+	[Description("Checks the mandatory MCP 2026-07-28 cache hints on tools/list.")]
+	public async Task When_ListingTools_Then_RequiredCacheHintsArePresent()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(
+			app => app.Map("ping", () => "pong"),
+			configureOptions: null);
+
+		var result = await fixture.Client.ListToolsAsync(new ListToolsRequestParams());
+
+		result.TimeToLive.Should().Be(TimeSpan.Zero, "MCP 2026-07-28 list results should use the SDK's conservative no-cache default");
+		result.CacheScope.Should().Be(CacheScope.Private, "MCP 2026-07-28 list results should not be shared by default");
+	}
+
+	[TestMethod]
+	[Description("Checks the required MCP 2026-07-28 result discriminator on ordinary tool results.")]
+	public async Task When_CallingTool_Then_CompleteResultTypeIsPresent()
+	{
+		await using var fixture = await McpTestFixture.CreateAsync(
+			app => app.Map("ping", () => "pong"),
+			configureOptions: null);
+
+		var result = await fixture.Client.CallToolAsync("ping");
+
+		result.ResultType.Should().Be("complete");
+	}
+
+	[TestMethod]
 	[Description("Locks the SDK-2.0 tools/list wire shape for .LongRunning() commands: annotations survive serialization, and no task/execution augmentation is emitted — Repl deliberately does not advertise MCP task support until the Tasks runtime is implemented end-to-end (issue #51).")]
 	public void When_SerializingLongRunningTool_Then_NoTaskAugmentationIsEmitted()
 	{
