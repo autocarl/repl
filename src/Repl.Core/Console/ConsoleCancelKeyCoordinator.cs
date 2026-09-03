@@ -1,0 +1,141 @@
+namespace Repl;
+
+/// <summary>
+/// Arbitrates Ctrl+C ownership for the process through one lazily installed, process-lifetime
+/// <see cref="Console.CancelKeyPress"/> subscription. Interactive handlers take priority over
+/// standalone handlers. Registration and removal are atomic with respect to selection snapshots.
+/// If ownership changes before selection is validated, the coordinator reselects once; after
+/// validation, the selected callbacks own that in-flight occurrence even if their registrations
+/// are concurrently removed. No consumer callback runs while the coordinator gate is held.
+/// </summary>
+internal static class ConsoleCancelKeyCoordinator
+{
+	private static readonly Lock Gate = new();
+	private static readonly Dictionary<long, Func<ConsoleCancelKeyHandlingResult>> InteractiveHandlers = [];
+	private static readonly Dictionary<long, Func<ConsoleCancelKeyHandlingResult>> StandaloneHandlers = [];
+	private static long s_nextRegistrationId;
+	private static long s_registrationVersion;
+	private static bool s_isSubscribed;
+
+	internal static IDisposable RegisterInteractive(Func<ConsoleCancelKeyHandlingResult> handler) =>
+		Register(handler, isInteractive: true);
+
+	internal static IDisposable RegisterStandalone(Func<ConsoleCancelKeyHandlingResult> handler) =>
+		Register(handler, isInteractive: false);
+
+	internal static ConsoleCancelKeyHandlingResult HandleCancelKeyForTesting(
+		Action? afterInitialSelection = null) =>
+		Dispatch(afterInitialSelection);
+
+	private static Registration Register(
+		Func<ConsoleCancelKeyHandlingResult> handler,
+		bool isInteractive)
+	{
+		ArgumentNullException.ThrowIfNull(handler);
+		lock (Gate)
+		{
+			EnsureSubscribed();
+			var registrationId = ++s_nextRegistrationId;
+			var handlers = isInteractive ? InteractiveHandlers : StandaloneHandlers;
+			handlers.Add(registrationId, handler);
+			s_registrationVersion++;
+			return new Registration(registrationId, isInteractive);
+		}
+	}
+
+	private static void EnsureSubscribed()
+	{
+		if (s_isSubscribed)
+		{
+			return;
+		}
+
+		Console.CancelKeyPress += OnCancelKeyPress;
+		s_isSubscribed = true;
+	}
+
+	private static void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
+	{
+		if (e.SpecialKey == ConsoleSpecialKey.ControlC
+			&& Dispatch() == ConsoleCancelKeyHandlingResult.SuppressProcessTermination)
+		{
+			e.Cancel = true;
+		}
+	}
+
+	private static ConsoleCancelKeyHandlingResult Dispatch(Action? afterInitialSelection = null)
+	{
+		DispatchSelection selection;
+		lock (Gate)
+		{
+			selection = CaptureSelection();
+		}
+
+		afterInitialSelection?.Invoke();
+
+		lock (Gate)
+		{
+			if (selection.Version != s_registrationVersion)
+			{
+				selection = CaptureSelection();
+			}
+		}
+
+		return Invoke(selection.Handlers);
+	}
+
+	private static DispatchSelection CaptureSelection()
+	{
+		var handlers = InteractiveHandlers.Count > 0
+			? InteractiveHandlers.Values
+			: StandaloneHandlers.Values;
+		return new DispatchSelection(s_registrationVersion, [.. handlers]);
+	}
+
+	private static ConsoleCancelKeyHandlingResult Invoke(
+		IReadOnlyList<Func<ConsoleCancelKeyHandlingResult>> handlers)
+	{
+		var result = ConsoleCancelKeyHandlingResult.NotHandled;
+		foreach (var handler in handlers)
+		{
+			var current = handler();
+			if (current == ConsoleCancelKeyHandlingResult.SuppressProcessTermination)
+			{
+				result = current;
+			}
+			else if (current == ConsoleCancelKeyHandlingResult.AllowProcessTermination
+				&& result == ConsoleCancelKeyHandlingResult.NotHandled)
+			{
+				result = current;
+			}
+		}
+
+		return result;
+	}
+
+	private readonly record struct DispatchSelection(
+		long Version,
+		IReadOnlyList<Func<ConsoleCancelKeyHandlingResult>> Handlers);
+
+	private sealed class Registration(long registrationId, bool isInteractive) : IDisposable
+	{
+		private int _disposed;
+
+		public void Dispose()
+		{
+			if (Interlocked.Exchange(ref _disposed, 1) != 0)
+			{
+				return;
+			}
+
+			lock (Gate)
+			{
+				var handlers = isInteractive ? InteractiveHandlers : StandaloneHandlers;
+				if (handlers.Remove(registrationId))
+				{
+					s_registrationVersion++;
+				}
+			}
+		}
+	}
+}

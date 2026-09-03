@@ -155,6 +155,73 @@ public sealed class Given_HandlerBinding
 	}
 
 	[TestMethod]
+	[Description("Unrelated per-run settings preserve the embedded profile's caller-owned signal default.")]
+	public async Task When_UsingEmbeddedConsoleProfileWithUnrelatedRunOptions_Then_HandlerReceivesCallerTokenDirectly()
+	{
+		var sut = ReplApp.Create().UseEmbeddedConsoleProfile();
+		CancellationToken captured = default;
+		using var cancellationTokenSource = new CancellationTokenSource();
+
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			captured = ct;
+			return "ok";
+		});
+
+		var exitCode = await sut.RunAsync(
+			["work"],
+			new ReplRunOptions { AnsiSupport = AnsiMode.Never },
+			cancellationTokenSource.Token).ConfigureAwait(false);
+
+		exitCode.Should().Be(0);
+		captured.Should().Be(cancellationTokenSource.Token);
+	}
+
+	[TestMethod]
+	[Description("An embedded console can explicitly opt into automatic process-signal ownership for one run.")]
+	public async Task When_EmbeddedConsoleExplicitlySelectsAutomatic_Then_HandlerReceivesLinkedToken()
+	{
+		var sut = ReplApp.Create().UseEmbeddedConsoleProfile();
+		CancellationToken captured = default;
+		using var cancellationTokenSource = new CancellationTokenSource();
+
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			captured = ct;
+			return "ok";
+		});
+
+		var exitCode = await sut.RunAsync(
+			["work"],
+			new ReplRunOptions { ProcessSignalHandling = ProcessSignalHandlingMode.Automatic },
+			cancellationTokenSource.Token).ConfigureAwait(false);
+
+		exitCode.Should().Be(0);
+		captured.Should().NotBe(cancellationTokenSource.Token);
+		captured.CanBeCanceled.Should().BeTrue();
+	}
+
+	[TestMethod]
+	[Description("The linked execution token used by automatic process-signal handling is disposed when its run completes.")]
+	public async Task When_AutomaticRunCompletes_Then_HandlerTokenMustNotBeRetained()
+	{
+		var sut = ReplApp.Create();
+		CancellationToken captured = default;
+
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			captured = ct;
+			return "ok";
+		});
+
+		var exitCode = await sut.RunAsync(["work", "--no-logo"]).ConfigureAwait(false);
+		var accessDisposedWaitHandle = () => _ = captured.WaitHandle;
+
+		exitCode.Should().Be(0);
+		accessDisposedWaitHandle.Should().Throw<ObjectDisposedException>();
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies automatic signal handling preserves caller-requested cancellation through the linked execution token.")]
 	public async Task When_ProcessSignalHandlingIsAutomatic_Then_HandlerObservesCallerCancellation()
 	{

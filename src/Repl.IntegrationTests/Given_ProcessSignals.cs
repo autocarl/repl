@@ -4,72 +4,51 @@ using AwesomeAssertions;
 namespace Repl.IntegrationTests;
 
 [TestClass]
+[OSCondition(ConditionMode.Exclude, OperatingSystems.Windows)]
 public sealed class Given_ProcessSignals
 {
+	private const int SigInt = 2;
+	private const int SigTerm = 15;
+	private const int SigIntExitCode = 130;
+	private const int SigTermExitCode = 143;
+	private const int CleanupDelayMilliseconds = 30_000;
+	private const string CleanupCompletedMarker = "CLEANUP-COMPLETED";
 	private static readonly TimeSpan ProcessTimeout = TimeSpan.FromSeconds(15);
+	private static readonly TimeSpan ForcedTerminationMaximum = TimeSpan.FromSeconds(10);
 
 	[TestMethod]
-	[DataRow(2, 130, DisplayName = "SIGINT cancels cooperatively and exits 130")]
-	[DataRow(15, 143, DisplayName = "SIGTERM cancels cooperatively and exits 143")]
+	[DataRow(SigInt, SigIntExitCode, "SIGINT", false, DisplayName = "RunAsync: SIGINT cancels cooperatively and exits 130")]
+	[DataRow(SigTerm, SigTermExitCode, "SIGTERM", false, DisplayName = "RunAsync: SIGTERM cancels cooperatively and exits 143")]
+	[DataRow(SigInt, SigIntExitCode, "SIGINT", true, DisplayName = "Run: SIGINT cancels cooperatively and exits 130")]
+	[DataRow(SigTerm, SigTermExitCode, "SIGTERM", true, DisplayName = "Run: SIGTERM cancels cooperatively and exits 143")]
 	[Description("A standalone one-shot run converts process signals into cooperative cancellation before exiting.")]
 	public async Task When_StandaloneRunReceivesSignal_Then_FinallyRunsAndConventionalExitCodeIsReturned(
 		int signal,
-		int expectedExitCode)
+		int expectedExitCode,
+		string expectedSignalName,
+		bool useSynchronousRun)
 	{
-		if (OperatingSystem.IsWindows())
-		{
-			Assert.Inconclusive("POSIX signal delivery is exercised on Unix runners.");
-		}
-
-		var marker = Path.Combine(Path.GetTempPath(), $"repl-signal-{Guid.NewGuid():N}.txt");
-		using var process = ShellCompletionTestHostRunner.Start(
-			"process-signal",
-			["wait", marker, "--no-logo"]);
-		try
-		{
-			await WaitForMarkerAsync(process, marker, "READY").ConfigureAwait(false);
-
-			await SendSignalAsync(process, signal).ConfigureAwait(false);
-			await process.WaitForExitAsync().WaitAsync(ProcessTimeout).ConfigureAwait(false);
-
-			process.ExitCode.Should().Be(expectedExitCode);
-			(await File.ReadAllLinesAsync(marker).ConfigureAwait(false)).Should().Equal("READY", "FINALLY");
-		}
-		finally
-		{
-			await TerminateIfRunningAsync(process).ConfigureAwait(false);
-			File.Delete(marker);
-		}
-	}
-
-	[TestMethod]
-	[Description("A second SIGTERM during cooperative cleanup falls through to the operating system.")]
-	public async Task When_SecondSigTermArrivesDuringCleanup_Then_OperatingSystemTerminatesProcess()
-	{
-		if (OperatingSystem.IsWindows())
-		{
-			Assert.Inconclusive("POSIX signal delivery is exercised on Unix runners.");
-		}
-
 		var marker = Path.Combine(Path.GetTempPath(), $"repl-signal-{Guid.NewGuid():N}.txt");
 		using var process = ShellCompletionTestHostRunner.Start(
 			"process-signal",
 			["wait", marker, "--no-logo"],
+			out var readOutput,
 			new Dictionary<string, string?>(StringComparer.Ordinal)
 			{
-				["REPL_TEST_SIGNAL_CLEANUP_DELAY_MS"] = "30000",
+				["REPL_TEST_USE_SYNC_RUN"] = useSynchronousRun.ToString(
+					System.Globalization.CultureInfo.InvariantCulture),
 			});
 		try
 		{
-			await WaitForMarkerAsync(process, marker, "READY").ConfigureAwait(false);
-			await SendSignalAsync(process, signal: 15).ConfigureAwait(false);
-			await WaitForMarkerAsync(process, marker, "FINALLY").ConfigureAwait(false);
+			await WaitForMarkerAsync(process, marker, "READY", readOutput).ConfigureAwait(false);
 
-			await SendSignalAsync(process, signal: 15).ConfigureAwait(false);
-			await process.WaitForExitAsync().WaitAsync(ProcessTimeout).ConfigureAwait(false);
+			await SendSignalAsync(process, signal).ConfigureAwait(false);
+			await WaitForExitAsync(process, readOutput).ConfigureAwait(false);
 
-			process.ExitCode.Should().Be(143);
+			process.ExitCode.Should().Be(expectedExitCode);
 			(await File.ReadAllLinesAsync(marker).ConfigureAwait(false)).Should().Equal("READY", "FINALLY");
+			readOutput().Should().Contain(
+				$"Received {expectedSignalName}; cancelling active standalone runs.");
 		}
 		finally
 		{
@@ -78,7 +57,107 @@ public sealed class Given_ProcessSignals
 		}
 	}
 
-	private static async Task WaitForMarkerAsync(Process process, string path, string marker)
+	[TestMethod]
+	[Description("ProcessSignalHandlingMode.None leaves SIGTERM and cleanup ownership with the process host.")]
+	public async Task When_ProcessSignalHandlingIsNone_Then_SigTermUsesOperatingSystemDefault()
+	{
+		var marker = Path.Combine(Path.GetTempPath(), $"repl-signal-{Guid.NewGuid():N}.txt");
+		using var process = ShellCompletionTestHostRunner.Start(
+			"process-signal",
+			["wait", marker, "--no-logo"],
+			out var readOutput,
+			new Dictionary<string, string?>(StringComparer.Ordinal)
+			{
+				["REPL_TEST_SIGNAL_HANDLING"] = nameof(ProcessSignalHandlingMode.None),
+			});
+		try
+		{
+			await WaitForMarkerAsync(process, marker, "READY", readOutput).ConfigureAwait(false);
+
+			await SendSignalAsync(process, SigTerm).ConfigureAwait(false);
+			await WaitForExitAsync(process, readOutput).ConfigureAwait(false);
+
+			process.ExitCode.Should().Be(SigTermExitCode);
+			(await File.ReadAllLinesAsync(marker).ConfigureAwait(false)).Should().Equal("READY");
+			readOutput().Should().NotContain("Received SIGTERM");
+		}
+		finally
+		{
+			await TerminateIfRunningAsync(process).ConfigureAwait(false);
+			File.Delete(marker);
+		}
+	}
+
+	[TestMethod]
+	[Description("A handler's explicit non-zero exit code remains authoritative after cooperative signal cancellation.")]
+	public async Task When_HandlerReturnsExplicitFailureAfterSignal_Then_HandlerExitCodeIsPreserved()
+	{
+		var marker = Path.Combine(Path.GetTempPath(), $"repl-signal-{Guid.NewGuid():N}.txt");
+		using var process = ShellCompletionTestHostRunner.Start(
+			"process-signal-exit-code",
+			["wait", marker, "--no-logo"],
+			out var readOutput);
+		try
+		{
+			await WaitForMarkerAsync(process, marker, "READY", readOutput).ConfigureAwait(false);
+
+			await SendSignalAsync(process, SigTerm).ConfigureAwait(false);
+			await WaitForExitAsync(process, readOutput).ConfigureAwait(false);
+
+			process.ExitCode.Should().Be(7);
+			(await File.ReadAllLinesAsync(marker).ConfigureAwait(false))
+				.Should().Equal("READY", "HANDLER-RETURNED");
+		}
+		finally
+		{
+			await TerminateIfRunningAsync(process).ConfigureAwait(false);
+			File.Delete(marker);
+		}
+	}
+
+	[TestMethod]
+	[Description("A second SIGTERM during cooperative cleanup promptly falls through to the operating system.")]
+	public async Task When_SecondSigTermArrivesDuringCleanup_Then_OperatingSystemTerminatesProcess()
+	{
+		var marker = Path.Combine(Path.GetTempPath(), $"repl-signal-{Guid.NewGuid():N}.txt");
+		using var process = ShellCompletionTestHostRunner.Start(
+			"process-signal",
+			["wait", marker, "--no-logo"],
+			out var readOutput,
+			new Dictionary<string, string?>(StringComparer.Ordinal)
+			{
+				["REPL_TEST_SIGNAL_CLEANUP_DELAY_MS"] = CleanupDelayMilliseconds.ToString(
+					System.Globalization.CultureInfo.InvariantCulture),
+			});
+		try
+		{
+			await WaitForMarkerAsync(process, marker, "READY", readOutput).ConfigureAwait(false);
+			await SendSignalAsync(process, SigTerm).ConfigureAwait(false);
+			await WaitForMarkerAsync(process, marker, "FINALLY", readOutput).ConfigureAwait(false);
+
+			var forcedTermination = Stopwatch.StartNew();
+			await SendSignalAsync(process, SigTerm).ConfigureAwait(false);
+			await WaitForExitAsync(process, readOutput).ConfigureAwait(false);
+			forcedTermination.Stop();
+
+			process.ExitCode.Should().Be(SigTermExitCode);
+			forcedTermination.Elapsed.Should().BeLessThan(ForcedTerminationMaximum);
+			var markers = await File.ReadAllLinesAsync(marker).ConfigureAwait(false);
+			markers.Should().Equal("READY", "FINALLY");
+			markers.Should().NotContain(CleanupCompletedMarker);
+		}
+		finally
+		{
+			await TerminateIfRunningAsync(process).ConfigureAwait(false);
+			File.Delete(marker);
+		}
+	}
+
+	private static async Task WaitForMarkerAsync(
+		Process process,
+		string path,
+		string marker,
+		Func<string> readOutput)
 	{
 		var deadline = DateTime.UtcNow + ProcessTimeout;
 		while (DateTime.UtcNow < deadline)
@@ -92,13 +171,32 @@ public sealed class Given_ProcessSignals
 			if (process.HasExited)
 			{
 				throw new InvalidOperationException(
-					$"Signal test host exited with code {process.ExitCode} before writing {marker}.");
+					$"Signal test host exited with code {process.ExitCode} before writing {marker}."
+					+ $"{Environment.NewLine}Captured output:{Environment.NewLine}{readOutput()}");
 			}
 
 			await Task.Delay(TimeSpan.FromMilliseconds(25)).ConfigureAwait(false);
 		}
 
-		throw new TimeoutException($"Signal test host did not write {marker} within {ProcessTimeout}.");
+		throw new TimeoutException(
+			$"Signal test host did not write {marker} within {ProcessTimeout}."
+			+ $"{Environment.NewLine}Captured output:{Environment.NewLine}{readOutput()}");
+	}
+
+	private static async Task WaitForExitAsync(Process process, Func<string> readOutput)
+	{
+		try
+		{
+			await process.WaitForExitAsync().WaitAsync(ProcessTimeout).ConfigureAwait(false);
+			process.WaitForExit();
+		}
+		catch (TimeoutException ex)
+		{
+			throw new TimeoutException(
+				$"Signal test host did not exit within {ProcessTimeout}."
+				+ $"{Environment.NewLine}Captured output:{Environment.NewLine}{readOutput()}",
+				ex);
+		}
 	}
 
 	private static async Task SendSignalAsync(Process target, int signal)

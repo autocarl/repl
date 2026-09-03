@@ -1,118 +1,117 @@
-using System.Runtime.InteropServices;
-
 namespace Repl;
 
+/// <summary>
+/// Represents one disposable lease in <see cref="ProcessSignalCoordinator"/>'s process-wide
+/// ownership epoch. A first claimed signal records its conventional exit code and reserves a
+/// cancellation-delivery task before callbacks start outside the coordinator gate. Disposal
+/// withdraws the active lease, drains that task, and only then disposes the linked token source.
+/// </summary>
 internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 {
-	private const int SigIntExitCode = 130;
-	private const int SigTermExitCode = 143;
-
-	private readonly CancellationTokenSource _signalCancellation = new();
 	private readonly CancellationTokenSource _linkedCancellation;
-	private readonly PosixSignalRegistration? _sigTermRegistration;
 	private readonly Lock _gate = new();
 	private Task _cancellationTask = Task.CompletedTask;
-	private int _exitCode;
+	private int? _exitCode;
 	private bool _disposed;
+	private int _disposeStarted;
 
 	public ProcessSignalCancellationScope(CancellationToken cancellationToken)
 	{
 		_linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
 			cancellationToken,
-			_signalCancellation.Token);
+			CancellationToken.None);
 
-		var cancelKeyRegistered = false;
 		try
 		{
-			Console.CancelKeyPress += HandleCancelKey;
-			cancelKeyRegistered = true;
-			if (!OperatingSystem.IsWindows())
-			{
-				_sigTermRegistration = PosixSignalRegistration.Create(
-					PosixSignal.SIGTERM,
-					HandleSigTerm);
-			}
+			ProcessSignalCoordinator.Register(this);
 		}
 		catch
 		{
-			if (cancelKeyRegistered)
-			{
-				Console.CancelKeyPress -= HandleCancelKey;
-			}
-
 			_linkedCancellation.Dispose();
-			_signalCancellation.Dispose();
 			throw;
 		}
 	}
 
 	public CancellationToken Token => _linkedCancellation.Token;
 
-	public int ExitCode => Volatile.Read(ref _exitCode);
-
-	public async ValueTask DisposeAsync()
+	public int? ExitCode
 	{
-		Task cancellationTask;
-		lock (_gate)
+		get
 		{
-			if (_disposed)
+			lock (_gate)
 			{
-				return;
+				return _exitCode;
 			}
-
-			_disposed = true;
-			cancellationTask = _cancellationTask;
-		}
-
-		Console.CancelKeyPress -= HandleCancelKey;
-		_sigTermRegistration?.Dispose();
-		try
-		{
-#pragma warning disable VSTHRD003 // The OS signal callback starts this task; disposal must observe its completion.
-			await cancellationTask.ConfigureAwait(false);
-#pragma warning restore VSTHRD003
-		}
-		finally
-		{
-			_linkedCancellation.Dispose();
-			_signalCancellation.Dispose();
 		}
 	}
 
-	internal void HandleCancelKey(object? sender, ConsoleCancelEventArgs context)
+	public int ResolveExitCode(int runExitCode)
 	{
-		_ = sender;
-		if (context.SpecialKey != ConsoleSpecialKey.ControlC
-			|| CancelKeyHandler.HasActiveConsoleHandler)
+		var signalExitCode = ExitCode;
+		return runExitCode != 0 || signalExitCode is null ? runExitCode : signalExitCode.Value;
+	}
+
+	public async ValueTask DisposeAsync()
+	{
+		if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
 		{
 			return;
 		}
 
-		lock (_gate)
+		try
 		{
-			if (_disposed || _exitCode != 0 || CancelKeyHandler.HasActiveConsoleHandler)
-			{
-				return;
-			}
-
-			_exitCode = SigIntExitCode;
-			context.Cancel = true;
-			_cancellationTask = _signalCancellation.CancelAsync();
+			await ProcessSignalCoordinator.UnregisterAsync(this).ConfigureAwait(false);
+		}
+#pragma warning disable CA1031 // Consumer callbacks are arbitrary; they must not replace the established signal exit code.
+		catch (Exception) when (ExitCode is not null)
+		{
+			// The cancellation task was awaited and observed before the linked source is disposed.
+		}
+#pragma warning restore CA1031
+		finally
+		{
+			_linkedCancellation.Dispose();
 		}
 	}
 
-	private void HandleSigTerm(PosixSignalContext context)
+	internal Action? PrepareSignalCancellation(int exitCode)
 	{
 		lock (_gate)
 		{
-			if (_disposed || _exitCode != 0)
+			if (_disposed || _exitCode is not null)
 			{
-				return;
+				return null;
 			}
 
-			_exitCode = SigTermExitCode;
-			context.Cancel = true;
-			_cancellationTask = _signalCancellation.CancelAsync();
+			_exitCode = exitCode;
+			var cancellationTaskSource = new TaskCompletionSource<Task>(
+				TaskCreationOptions.RunContinuationsAsynchronously);
+			_cancellationTask = cancellationTaskSource.Task.Unwrap();
+			return () =>
+			{
+				Task cancellationTask;
+				try
+				{
+					cancellationTask = _linkedCancellation.CancelAsync();
+				}
+				catch (Exception ex)
+				{
+					cancellationTask = Task.FromException(ex);
+				}
+
+				cancellationTaskSource.TrySetResult(cancellationTask);
+			};
+		}
+	}
+
+	internal Task MarkDisposedAndGetCancellationTaskAsync()
+	{
+		lock (_gate)
+		{
+			_disposed = true;
+#pragma warning disable VSTHRD003 // The coordinator needs the reserved cancellation task so disposal can drain it.
+			return _cancellationTask;
+#pragma warning restore VSTHRD003
 		}
 	}
 }

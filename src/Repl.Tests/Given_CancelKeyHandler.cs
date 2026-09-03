@@ -1,5 +1,4 @@
 using AwesomeAssertions;
-using System.Reflection;
 
 namespace Repl.Tests;
 
@@ -54,21 +53,10 @@ public sealed class Given_CancelKeyHandler
 			using var cts = new CancellationTokenSource();
 			handler.SetCommandCts(cts);
 
-			var method = typeof(CancelKeyHandler).GetMethod(
-				"OnCancelKeyPress",
-				BindingFlags.Instance | BindingFlags.NonPublic);
-			method.Should().NotBeNull();
-			var args = (ConsoleCancelEventArgs?)Activator.CreateInstance(
-				typeof(ConsoleCancelEventArgs),
-				BindingFlags.Instance | BindingFlags.NonPublic,
-				binder: null,
-				args: [ConsoleSpecialKey.ControlC],
-				culture: null);
-			args.Should().NotBeNull();
-			method!.Invoke(handler, [null, args]);
+			var result = handler.HandleCancelKeyForTesting();
 
 			cts.IsCancellationRequested.Should().BeTrue();
-			args!.Cancel.Should().BeTrue();
+			result.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
 			sessionError.ToString().Should().Contain("Press Ctrl+C again to exit.");
 			consoleError.ToString().Should().BeEmpty();
 		}

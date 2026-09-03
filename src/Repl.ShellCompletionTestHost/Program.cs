@@ -16,7 +16,18 @@ internal static class Program
 			app.UseDefaultInteractive();
 		}
 
-		return await app.RunAsync(args).ConfigureAwait(false);
+		ReplRunOptions? runOptions = null;
+		if (TryReadEnum<ProcessSignalHandlingMode>("REPL_TEST_SIGNAL_HANDLING", out var signalHandling))
+		{
+			runOptions = new ReplRunOptions { ProcessSignalHandling = signalHandling };
+		}
+
+		if (TryReadBoolean("REPL_TEST_USE_SYNC_RUN", out var useSynchronousRun) && useSynchronousRun)
+		{
+			return app.Run(args, runOptions);
+		}
+
+		return await app.RunAsync(args, runOptions).ConfigureAwait(false);
 	}
 
 	private static void ConfigureScenario(ReplApp app, string? scenario)
@@ -34,9 +45,12 @@ internal static class Program
 			case "process-signal":
 				ConfigureProcessSignalScenario(app);
 				return;
+			case "process-signal-exit-code":
+				ConfigureProcessSignalExitCodeScenario(app);
+				return;
 			default:
 				throw new InvalidOperationException(
-					$"Unknown REPL test scenario '{scenario}'. Supported values: completion, setup, process-signal.");
+					$"Unknown REPL test scenario '{scenario}'. Supported values: completion, setup, process-signal, process-signal-exit-code.");
 		}
 	}
 
@@ -60,8 +74,33 @@ internal static class Program
 					&& cleanupDelayMs > 0)
 				{
 					await Task.Delay(TimeSpan.FromMilliseconds(cleanupDelayMs), CancellationToken.None).ConfigureAwait(false);
+					await File.AppendAllTextAsync(
+						marker,
+						"CLEANUP-COMPLETED\n",
+						CancellationToken.None).ConfigureAwait(false);
 				}
 			}
+		});
+	}
+
+	private static void ConfigureProcessSignalExitCodeScenario(ReplApp app)
+	{
+		app.Map("wait {marker}", async (string marker, CancellationToken cancellationToken) =>
+		{
+			await File.WriteAllTextAsync(marker, "READY\n", CancellationToken.None).ConfigureAwait(false);
+			try
+			{
+				await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+			{
+				await File.AppendAllTextAsync(
+					marker,
+					"HANDLER-RETURNED\n",
+					CancellationToken.None).ConfigureAwait(false);
+			}
+
+			return Results.Exit(7);
 		});
 	}
 

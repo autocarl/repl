@@ -225,41 +225,58 @@ public sealed class ReplApp : IReplApp
 	/// <summary>
 	/// Runs using internally configured services and owns process signals according to <see cref="ReplRunOptions"/>.
 	/// </summary>
+	/// <param name="args">Command-line arguments.</param>
+	/// <param name="options">Per-run options. A null signal-handling value inherits the active profile.</param>
+	/// <param name="cancellationToken">Caller-owned cancellation token. In automatic signal mode, handlers receive a linked token that is valid only for this run and must not be retained after their work completes.</param>
 	public async ValueTask<int> RunAsync(
 		string[] args,
 		ReplRunOptions? options = null,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(args);
-		var runOptions = options ?? new ReplRunOptions { ProcessSignalHandling = _defaultProcessSignalHandling };
-		if (runOptions.ProcessSignalHandling == ProcessSignalHandlingMode.None)
+		var runOptions = options ?? new ReplRunOptions();
+		var processSignalHandling = options?.ProcessSignalHandling ?? _defaultProcessSignalHandling;
+		if (processSignalHandling == ProcessSignalHandlingMode.None)
 		{
 			var provider = EnsureSharedProvider();
 			return await RunAsync(args, provider, runOptions, cancellationToken).ConfigureAwait(false);
 		}
 
 		var signals = new ProcessSignalCancellationScope(cancellationToken);
-		await using var configuredSignals = signals.ConfigureAwait(false);
+		var runExitCode = 0;
+		OperationCanceledException? cancellationException = null;
 		try
 		{
 			var provider = EnsureSharedProvider();
-			var exitCode = await RunAsync(args, provider, runOptions, signals.Token).ConfigureAwait(false);
-			return signals.ExitCode == 0 ? exitCode : signals.ExitCode;
+			runExitCode = await RunAsync(args, provider, runOptions, signals.Token).ConfigureAwait(false);
 		}
-		catch (OperationCanceledException) when (signals.ExitCode != 0)
+		catch (OperationCanceledException ex)
 		{
-			return signals.ExitCode;
+			cancellationException = ex;
 		}
+		finally
+		{
+			await signals.DisposeAsync().ConfigureAwait(false);
+		}
+
+		if (cancellationException is not null && signals.ExitCode is null)
+		{
+			System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cancellationException).Throw();
+		}
+
+		return signals.ResolveExitCode(runExitCode);
 	}
 
 	/// <summary>
 	/// Runs using internally configured services and owns process signals according to <see cref="ReplRunOptions"/>.
 	/// </summary>
+	/// <param name="args">Command-line arguments.</param>
+	/// <param name="cancellationToken">Caller-owned cancellation token. Handlers receive a linked, run-scoped token and must not retain it after their work completes.</param>
 	public ValueTask<int> RunAsync(string[] args, CancellationToken cancellationToken) =>
 		RunAsync(args, options: null, cancellationToken);
 
 	/// <summary>
-	/// Runs using an externally managed service provider.
+	/// Runs using an externally managed service provider; standalone signal bridging and cancellation remain caller-owned. Interactive mode retains its own Ctrl+C policy.
 	/// </summary>
 	public int Run(string[] args, IServiceProvider services, ReplRunOptions? options = null)
 	{
@@ -271,7 +288,7 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs using an externally managed host.
+	/// Runs using an externally managed host; standalone signal bridging and cancellation remain caller-owned. Interactive mode retains its own Ctrl+C policy.
 	/// </summary>
 	public int Run(string[] args, IHost host, ReplRunOptions? options = null)
 	{
@@ -283,8 +300,12 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs using an externally managed service provider.
+	/// Runs using an externally managed service provider; standalone signal bridging and cancellation remain caller-owned. Interactive mode retains its own Ctrl+C policy.
 	/// </summary>
+	/// <param name="args">Command-line arguments.</param>
+	/// <param name="services">Caller-owned service provider.</param>
+	/// <param name="options">Per-run options. <see cref="ReplRunOptions.ProcessSignalHandling"/> is not applied by this overload.</param>
+	/// <param name="cancellationToken">Caller-owned cancellation token. This overload does not install a standalone process-signal bridge or create a signal-linked token.</param>
 	public async ValueTask<int> RunAsync(
 		string[] args,
 		IServiceProvider services,
@@ -458,8 +479,12 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs using an externally managed host.
+	/// Runs using an externally managed host; standalone signal bridging and cancellation remain caller-owned. Interactive mode retains its own Ctrl+C policy.
 	/// </summary>
+	/// <param name="args">Command-line arguments.</param>
+	/// <param name="host">Caller-owned application host.</param>
+	/// <param name="options">Per-run options. <see cref="ReplRunOptions.ProcessSignalHandling"/> is not applied by this overload.</param>
+	/// <param name="cancellationToken">Caller-owned cancellation token. This overload does not install a standalone process-signal bridge or create a signal-linked token.</param>
 	public ValueTask<int> RunAsync(
 		string[] args,
 		IHost host,
@@ -472,7 +497,7 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs against an externally managed input/output host.
+	/// Runs against an externally managed input/output host; standalone signal bridging and cancellation remain caller-owned. Interactive mode retains its own Ctrl+C policy.
 	/// </summary>
 	public int Run(string[] args, IReplHost host, ReplRunOptions? options = null)
 	{
@@ -484,8 +509,12 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs against an externally managed input/output host.
+	/// Runs against an externally managed input/output host; standalone signal bridging and cancellation remain caller-owned. Interactive mode retains its own Ctrl+C policy.
 	/// </summary>
+	/// <param name="args">Command-line arguments.</param>
+	/// <param name="host">Caller-owned input/output host.</param>
+	/// <param name="options">Per-run options. <see cref="ReplRunOptions.ProcessSignalHandling"/> is not applied by this overload.</param>
+	/// <param name="cancellationToken">Caller-owned cancellation token. This overload does not install a standalone process-signal bridge or create a signal-linked token.</param>
 	public async ValueTask<int> RunAsync(
 		string[] args,
 		IReplHost host,
@@ -506,7 +535,7 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs against an externally managed input/output host with an external service provider.
+	/// Runs against an externally managed input/output host with an external service provider; standalone signal bridging and cancellation remain caller-owned. Interactive mode retains its own Ctrl+C policy.
 	/// </summary>
 	public int Run(string[] args, IReplHost host, IServiceProvider services, ReplRunOptions? options = null)
 	{
@@ -519,8 +548,13 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs against an externally managed input/output host with an external service provider.
+	/// Runs against an externally managed input/output host with an external service provider; standalone signal bridging and cancellation remain caller-owned. Interactive mode retains its own Ctrl+C policy.
 	/// </summary>
+	/// <param name="args">Command-line arguments.</param>
+	/// <param name="host">Caller-owned input/output host.</param>
+	/// <param name="services">Caller-owned service provider.</param>
+	/// <param name="options">Per-run options. <see cref="ReplRunOptions.ProcessSignalHandling"/> is not applied by this overload.</param>
+	/// <param name="cancellationToken">Caller-owned cancellation token. This overload does not install a standalone process-signal bridge or create a signal-linked token.</param>
 	public async ValueTask<int> RunAsync(
 		string[] args,
 		IReplHost host,

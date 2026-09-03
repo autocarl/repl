@@ -6,12 +6,12 @@ namespace Repl.Tests;
 public sealed class Given_RunOptions
 {
 	[TestMethod]
-	[Description("Regression guard: verifies standalone Unix runs handle SIGTERM unless the caller opts out.")]
-	public void When_CreatingRunOptions_Then_ProcessSignalHandlingDefaultsToAutomatic()
+	[Description("Regression guard: verifies run options preserve the active profile's process-signal default unless explicitly overridden.")]
+	public void When_CreatingRunOptions_Then_ProcessSignalHandlingDefaultsToProfileDefault()
 	{
 		var options = new ReplRunOptions();
 
-		options.ProcessSignalHandling.Should().Be(ProcessSignalHandlingMode.Automatic);
+		options.ProcessSignalHandling.Should().BeNull();
 	}
 
 	[TestMethod]

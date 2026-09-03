@@ -18,10 +18,9 @@ internal static class ShellCompletionTestHostRunner
 		ArgumentNullException.ThrowIfNull(args);
 
 		using var process = CreateProcess(scenario, args, environment);
-		var stdout = new StringBuilder();
-		var stderr = new StringBuilder();
-		process.OutputDataReceived += (_, eventArgs) => AppendLine(eventArgs.Data, stdout);
-		process.ErrorDataReceived += (_, eventArgs) => AppendLine(eventArgs.Data, stderr);
+		var output = new ProcessOutputCapture();
+		process.OutputDataReceived += (_, eventArgs) => output.AppendOutput(eventArgs.Data);
+		process.ErrorDataReceived += (_, eventArgs) => output.AppendError(eventArgs.Data);
 
 		if (!process.Start())
 		{
@@ -36,23 +35,31 @@ internal static class ShellCompletionTestHostRunner
 		}
 
 		process.StandardInput.Close();
-		EnsureExitedWithinTimeout(process);
+		EnsureExitedWithinTimeout(process, output.Read);
 		process.WaitForExit();
 
-		return (process.ExitCode, MergeOutput(stdout.ToString(), stderr.ToString()));
+		return (process.ExitCode, output.Read());
 	}
 
 	public static Process Start(
 		string scenario,
 		IReadOnlyList<string> args,
+		out Func<string> readOutput,
 		IReadOnlyDictionary<string, string?>? environment = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(scenario);
 		ArgumentNullException.ThrowIfNull(args);
 
 		var process = CreateProcess(scenario, args, environment);
+		var output = new ProcessOutputCapture();
+		readOutput = output.Read;
+		process.OutputDataReceived += (_, eventArgs) => output.AppendOutput(eventArgs.Data);
+		process.ErrorDataReceived += (_, eventArgs) => output.AppendError(eventArgs.Data);
 		if (process.Start())
 		{
+			process.BeginOutputReadLine();
+			process.BeginErrorReadLine();
+			process.StandardInput.Close();
 			return process;
 		}
 
@@ -90,21 +97,6 @@ internal static class ShellCompletionTestHostRunner
 		return new Process { StartInfo = startInfo };
 	}
 
-	private static void AppendLine(string? line, StringBuilder builder)
-	{
-		if (line is null)
-		{
-			return;
-		}
-
-		if (builder.Length > 0)
-		{
-			builder.AppendLine();
-		}
-
-		builder.Append(line);
-	}
-
 	private static string MergeOutput(string output, string error) =>
 		string.IsNullOrWhiteSpace(error)
 			? output
@@ -112,7 +104,7 @@ internal static class ShellCompletionTestHostRunner
 				? error
 				: $"{output}{Environment.NewLine}{error}";
 
-	private static void EnsureExitedWithinTimeout(Process process)
+	private static void EnsureExitedWithinTimeout(Process process, Func<string> readOutput)
 	{
 		if (process.WaitForExit((int)DefaultTimeout.TotalMilliseconds))
 		{
@@ -129,7 +121,8 @@ internal static class ShellCompletionTestHostRunner
 		}
 
 		throw new TimeoutException(
-			$"Shell completion test host timed out after {DefaultTimeout.TotalSeconds.ToString(CultureInfo.InvariantCulture)}s.");
+			$"Shell completion test host timed out after {DefaultTimeout.TotalSeconds.ToString(CultureInfo.InvariantCulture)}s."
+			+ $"{Environment.NewLine}Captured output:{Environment.NewLine}{readOutput()}");
 	}
 
 	private static string ResolveHostExecutablePath()
@@ -189,4 +182,41 @@ internal static class ShellCompletionTestHostRunner
 			? "Release"
 			: "Debug";
 	}
+	private sealed class ProcessOutputCapture
+	{
+		private readonly Lock _gate = new();
+		private readonly StringBuilder _output = new();
+		private readonly StringBuilder _error = new();
+
+		public void AppendOutput(string? line) => AppendLine(line, _output);
+
+		public void AppendError(string? line) => AppendLine(line, _error);
+
+		public string Read()
+		{
+			lock (_gate)
+			{
+				return MergeOutput(_output.ToString(), _error.ToString());
+			}
+		}
+
+		private void AppendLine(string? line, StringBuilder builder)
+		{
+			if (line is null)
+			{
+				return;
+			}
+
+			lock (_gate)
+			{
+				if (builder.Length > 0)
+				{
+					builder.AppendLine();
+				}
+
+				builder.Append(line);
+			}
+		}
+	}
+
 }
