@@ -84,26 +84,26 @@ public sealed class Given_ReplRuntime
 
 	[TestMethod]
 	[Description("Regression guard: verifies running exit command when disabled in one-shot mode so that user gets explicit failure.")]
-	public void When_RunningExitCommandInNonInteractiveModeAndExitDisabled_Then_ExitCodeIsOneWithError()
+	public void When_RunningExitCommandInNonInteractiveModeAndExitDisabled_Then_UsageExitCodeWithError()
 	{
 		var sut = ReplApp.Create();
 		sut.Options(options => options.AmbientCommands.ExitCommandEnabled = false);
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["exit", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Error: exit command is disabled.");
 	}
 
 	[TestMethod]
 	[Description("Regression guard: verifies using '..' in one-shot mode so that interactive-only ambient command fails explicitly.")]
-	public void When_RunningUpAmbientCommandInNonInteractiveMode_Then_ExitCodeIsOneWithModeError()
+	public void When_RunningUpAmbientCommandInNonInteractiveMode_Then_UsageExitCodeWithModeError()
 	{
 		var sut = ReplApp.Create();
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["..", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Error: '..' is available only in interactive mode.");
 	}
 

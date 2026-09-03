@@ -89,14 +89,20 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 			{
 				exitCode = await _app.RunAsync(args, host, _services, _runOptions, token).ConfigureAwait(false);
 			}
-			catch (OperationCanceledException) when (timeout is not null && timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+			catch (OperationCanceledException) when (IsCommandTimeout(timeout, cancellationToken))
 			{
-				throw new TimeoutException(
-					$"Command '{commandText}' exceeded timeout of {_options.CommandTimeout.TotalMilliseconds:0} ms.");
+				throw CreateTimeoutException(commandText);
 			}
 			finally
 			{
 				_app.Core.ExecutionObserver = null;
+			}
+
+			// An app that maps ReplOptions.ExitCodes.Cancelled returns a code instead of throwing; the
+			// timeout must still surface as a diagnostic rather than as an ordinary exit code.
+			if (IsCommandTimeout(timeout, cancellationToken))
+			{
+				throw CreateTimeoutException(commandText);
 			}
 
 			var outputText = output.ToString();
@@ -235,6 +241,14 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 		timeline.Add(new ResultProducedEvent(result));
 		return timeline;
 	}
+
+	// The timeout fired (and not the caller's own token) — whether the run threw or, with a mapped
+	// ExitCodes.Cancelled, returned an exit code.
+	private static bool IsCommandTimeout(CancellationTokenSource? timeout, CancellationToken cancellationToken) =>
+		timeout is not null && timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
+
+	private TimeoutException CreateTimeoutException(string commandText) =>
+		new($"Command '{commandText}' exceeded timeout of {_options.CommandTimeout.TotalMilliseconds:0} ms.");
 
 	private CancellationTokenSource? CreateTimeoutSource(CancellationToken cancellationToken)
 	{

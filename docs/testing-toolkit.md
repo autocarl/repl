@@ -33,7 +33,7 @@ var execution = await session.RunCommandAsync("hello --no-logo");
 ```csharp
 var execution = await session.RunCommandAsync("contact show --json --no-logo");
 
-var exitCode = execution.ExitCode;       // numeric process-style status
+var exitCode = execution.ExitCode;       // process-style status, follows ReplOptions.ExitCodes
 var text = execution.OutputText;         // rendered output text
 var duration = execution.Duration;       // elapsed command time
 ```

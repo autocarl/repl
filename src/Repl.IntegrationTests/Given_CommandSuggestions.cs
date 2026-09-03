@@ -27,7 +27,7 @@ public sealed class Given_CommandSuggestions
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["contact", "l"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Ambiguous command prefix 'l'.");
 		output.Text.Should().Contain("list");
 		output.Text.Should().Contain("load");
@@ -42,7 +42,7 @@ public sealed class Given_CommandSuggestions
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["helo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unknown command 'helo'.");
 		output.Text.Should().Contain("Did you mean 'hello'?");
 	}
@@ -57,7 +57,7 @@ public sealed class Given_CommandSuggestions
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["helpm"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unknown command 'helpm'.");
 		output.Text.Should().NotContain("helpme");
 	}
@@ -72,7 +72,7 @@ public sealed class Given_CommandSuggestions
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["help"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unknown command 'help'.");
 		output.Text.Should().NotContain("secret");
 	}

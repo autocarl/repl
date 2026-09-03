@@ -46,8 +46,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("An unknown command resolves to a route-resolution failure and reports exit code 1 in the command-end mark.")]
-	public void When_UnknownCommandIsEntered_Then_CommandEndReportsExitCodeOne()
+	[Description("An unknown command resolves to a route-resolution failure and reports the usage exit code (2) in the command-end mark.")]
+	public void When_UnknownCommandIsEntered_Then_CommandEndReportsUsageExitCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var sut = CreateMarkedApp();
@@ -56,12 +56,12 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 
 		var raw = RunInteractiveSession(harness, sut, "zorglub\rexit\r");
 
-		raw.Should().Contain("]133;D;1");
+		raw.Should().Contain("]133;D;2");
 	}
 
 	[TestMethod]
-	[Description("An ambiguous command prefix renders its error inside the normal lifecycle and reports exit code 1 in the command-end mark, like any other failed input.")]
-	public void When_AmbiguousPrefixIsCommitted_Then_CommandEndReportsExitCodeOne()
+	[Description("An ambiguous command prefix renders its error inside the normal lifecycle and reports the usage exit code (2) in the command-end mark, like any other failed input.")]
+	public void When_AmbiguousPrefixIsCommitted_Then_CommandEndReportsUsageExitCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var sut = CreateMarkedApp();
@@ -72,7 +72,54 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "ga\rexit\r");
 
 		raw.Should().Contain("Ambiguous command prefix");
-		raw.Should().Contain("]133;D;1");
+		raw.Should().Contain("]133;D;2");
+	}
+
+	[TestMethod]
+	[Description("The command-end mark follows the configured exit-code table, so an application that remaps usage errors sees its own code in the terminal decoration.")]
+	public void When_UsageErrorIsRemapped_Then_CommandEndMarkFollowsTable()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.UsageError = 64);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "zorglub\rexit\r");
+
+		raw.Should().Contain("]133;D;64");
+	}
+
+	[TestMethod]
+	[Description("The command-end mark goes through ExitCodes.Resolver, so an application-wide exit-code convention is visible in the terminal decoration too.")]
+	public void When_ResolverIsConfigured_Then_CommandEndMarkUsesItsReturnValue()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Resolver = outcome =>
+			outcome.Kind == ReplExecutionOutcomeKind.HandlerError ? 70 : outcome.ExitCode);
+		sut.Map("fail", () => Results.Error("boom", "failed"));
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "fail\rexit\r");
+
+		raw.Should().Contain("]133;D;70");
+	}
+
+	[TestMethod]
+	[Description("A configured ExitCodes.Cancelled replaces the conventional 130 in the command-end mark of a cancelled interactive command.")]
+	public void When_CancelledIsConfigured_Then_CancelledCommandEndMarkUsesConfiguredCode()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Cancelled = 7);
+		sut.Map("boom", string () => throw new OperationCanceledException());
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "boom\rexit\r");
+
+		raw.Should().Contain("Cancelled.");
+		raw.Should().Contain("]133;D;7");
 	}
 
 	[TestMethod]
@@ -301,8 +348,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("A failed completion ambient command (complete without --target) reports exit code 1 in the command-end mark instead of decorating the failure as success.")]
-	public void When_CompleteAmbientCommandFails_Then_CommandEndReportsExitCodeOne()
+	[Description("A failed completion ambient command (complete without --target) reports the usage exit code (2) in the command-end mark instead of decorating the failure as success.")]
+	public void When_CompleteAmbientCommandFails_Then_CommandEndReportsUsageExitCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var sut = CreateMarkedApp();
@@ -312,12 +359,12 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "complete\rexit\r");
 
 		raw.Should().Contain("Error: complete requires --target");
-		raw.Should().Contain("]133;D;1");
+		raw.Should().Contain("]133;D;2");
 	}
 
 	[TestMethod]
-	[Description("An ambient help invocation that fails to render (unknown output format) reports exit code 1 in the command-end mark, matching the non-ambient --help path.")]
-	public void When_HelpAmbientCommandFailsToRender_Then_CommandEndReportsExitCodeOne()
+	[Description("An ambient help invocation that fails to render (unknown output format) reports the usage exit code (2) in the command-end mark, matching the non-ambient --help path.")]
+	public void When_HelpAmbientCommandFailsToRender_Then_CommandEndReportsUsageExitCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var sut = CreateMarkedApp();
@@ -326,7 +373,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 
 		var raw = RunInteractiveSession(harness, sut, "help --output:bogus\rexit\r");
 
-		raw.Should().Contain("]133;D;1");
+		raw.Should().Contain("]133;D;2");
 	}
 
 	[TestMethod]

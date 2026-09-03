@@ -44,7 +44,7 @@ public sealed partial class Given_ProtocolPassthrough
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["mcp", "l"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Test banner");
 		output.Text.Should().Contain("Ambiguous command prefix 'l'.");
 	}
@@ -328,7 +328,7 @@ public sealed partial class Given_ProtocolPassthrough
 		var output = ConsoleCaptureHelper.CaptureStdOutAndErr(
 			() => sut.Run(["mcp", "start", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.StdOut.Should().BeNullOrWhiteSpace();
 		output.StdErr.Should().Contain("Validation: context gate failed");
 	}

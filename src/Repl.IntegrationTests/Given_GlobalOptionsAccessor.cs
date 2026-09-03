@@ -441,7 +441,7 @@ public sealed class Given_GlobalOptionsAccessor
 		var output = ConsoleCaptureHelper.Capture(
 			() => sut.Run(["show", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("UseGlobalOptions");
 		output.Text.Should().Contain(nameof(MissingServiceGlobalOptions));
 	}

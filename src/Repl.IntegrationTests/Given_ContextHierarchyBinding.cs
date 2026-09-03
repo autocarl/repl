@@ -102,7 +102,7 @@ public sealed class Given_ContextHierarchyBinding
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["contact", "42", "show", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unable to resolve parameter 'source' from services with key 'beta'.");
 	}
 
@@ -121,7 +121,7 @@ public sealed class Given_ContextHierarchyBinding
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["contact", "42", "show", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unable to resolve parameter 'source' from services.");
 	}
 
@@ -209,7 +209,7 @@ public sealed class Given_ContextHierarchyBinding
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["contact", "42", "show", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("[FromContext(All = true)] requires a collection parameter type.");
 	}
 

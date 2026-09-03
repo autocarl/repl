@@ -525,7 +525,7 @@ public sealed class Given_ShellCompletionSetup
 
 		var exitCode = sut.Run(["completion", "status", "--no-logo"], host);
 
-		exitCode.Should().Be(1);
+		exitCode.Should().Be(2);
 		outputWriter.ToString().Should().Contain("Unknown command");
 	}
 

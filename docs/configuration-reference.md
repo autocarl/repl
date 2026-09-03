@@ -133,6 +133,24 @@ Accessed via `ReplOptions.Capabilities`.
 
 - `SupportsAnsi` (`bool`, default: `true`) — Declare whether the terminal supports ANSI escape sequences.
 
+## ExitCodeOptions
+
+Accessed via `ReplOptions.ExitCodes`. Maps each `ReplExecutionOutcomeKind` to the process exit code
+of a top-level run; nested MCP sub-invocations always use the defaults and skip the resolver.
+
+- `Success` (`int`, default: `0`) — Success-like handler result or clean interactive exit.
+- `Help` (`int`, default: `0`) — `--help`, a bare invocation that prints help, scoped-context help.
+- `UsageError` (`int`, default: `2`) — Unknown command, ambiguous prefix, invalid option, context validation failure, unknown output format.
+- `BindingError` (`int`, default: `2`) — A handler argument could not be bound: token conversion failed or was missing, or a binder-resolved value (context value, `[FromServices]` dependency, typed global options service) was unavailable.
+- `HandlerError` (`int`, default: `1`) — Handler returned an error-like `IReplResult`.
+- `HandlerException` (`int`, default: `1`) — Handler or middleware threw.
+- `Cancelled` (`int?`, default: `null`) — Caller-token cancellation. `null` rethrows the `OperationCanceledException`; a value (typically `130`) is returned instead.
+- `FrameworkError` (`int`, default: `1`) — Incompatible programmatic adapter or unsupported hosting capability.
+- `Resolver` (`Func<ReplExecutionOutcome, int>?`, default: `null`) — Final interception hook. Receives the outcome with its table-mapped `ExitCode`; its return value is the process exit code. Also sees `HandlerExitCode` outcomes (explicit `Results.Exit`), which bypass the table.
+
+`ReplExecutionOutcomeKind.Interrupted` is reserved for process-signal bridges (SIGINT/SIGTERM) and has
+no table entry; the core pipeline never produces it.
+
 ## AmbientCommandOptions
 
 Accessed via `ReplOptions.AmbientCommands`.

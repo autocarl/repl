@@ -32,7 +32,6 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		_ = _commands.Count;
 		_ = _middleware.Count;
 		_ = _options;
-		cancellationToken.ThrowIfCancellationRequested();
 		return ExecuteCoreAsync(args, _services, cancellationToken: cancellationToken);
 	}
 
@@ -68,23 +67,15 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		_options.Interaction.SetObserver(observer: ExecutionObserver);
 		try
 		{
-			if (ReplSessionIO.IsProgrammatic && !ReplSessionIO.HasCurrentProgrammaticInvocationContract)
-			{
-				_ = await RenderOutputAsync(
-						Results.Validation(
-							"The programmatic invocation adapter is incompatible with this Repl.Core version. "
-							+ "Update Repl.Mcp to the same package version."),
-						requestedFormat: null,
-						cancellationToken)
-					.ConfigureAwait(false);
-				return 1;
-			}
-
-			var globalOptions = GlobalOptionParser.Parse(args, _options.Output, _options.Parsing);
-			if (await TryHandleGlobalDiagnosticsAsync(globalOptions, cancellationToken).ConfigureAwait(false) is { } globalDiagnosticsExitCode) return globalDiagnosticsExitCode;
-
-			return await ExecuteParsedCoreAsync(globalOptions, serviceProvider, isSubInvocation, cancellationToken)
+			// Inside the try so a token cancelled before the run follows the same Cancelled policy.
+			cancellationToken.ThrowIfCancellationRequested();
+			var outcome = await ExecuteCoreOutcomeAsync(args, serviceProvider, isSubInvocation, cancellationToken)
 				.ConfigureAwait(false);
+			return ResolveExitCode(outcome, isSubInvocation);
+		}
+		catch (OperationCanceledException ex) when (!isSubInvocation && _options.ExitCodes.Cancelled is not null)
+		{
+			return ResolveExitCode(ExecutionOutcome.Cancelled(ex), isSubInvocation: false);
 		}
 		finally
 		{
@@ -92,7 +83,51 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 	}
 
-	private async ValueTask<int> ExecuteParsedCoreAsync(
+	private async ValueTask<ExecutionOutcome> ExecuteCoreOutcomeAsync(
+		IReadOnlyList<string> args,
+		IServiceProvider serviceProvider,
+		bool isSubInvocation,
+		CancellationToken cancellationToken)
+	{
+		if (ReplSessionIO.IsProgrammatic && !ReplSessionIO.HasCurrentProgrammaticInvocationContract)
+		{
+			var contractFailure = Results.Validation(
+				"The programmatic invocation adapter is incompatible with this Repl.Core version. "
+				+ "Update Repl.Mcp to the same package version.");
+			_ = await RenderOutputAsync(contractFailure, requestedFormat: null, cancellationToken)
+				.ConfigureAwait(false);
+			return ExecutionOutcome.Framework(contractFailure);
+		}
+
+		var globalOptions = GlobalOptionParser.Parse(args, _options.Output, _options.Parsing);
+		if (await TryHandleGlobalDiagnosticsAsync(globalOptions, cancellationToken).ConfigureAwait(false) is { } globalDiagnostics)
+		{
+			return globalDiagnostics;
+		}
+
+		return await ExecuteParsedCoreAsync(globalOptions, serviceProvider, isSubInvocation, cancellationToken)
+			.ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// Applies the exit-code policy exactly once per run. Sub-invocations (nested MCP tool calls) keep the
+	/// built-in defaults and skip <see cref="ExitCodeOptions.Resolver"/>: the policy describes the process
+	/// exit, and nested callers only test for non-zero.
+	/// </summary>
+	internal int ResolveExitCode(ExecutionOutcome outcome, bool isSubInvocation)
+	{
+		if (isSubInvocation)
+		{
+			return ExitCodeOptions.MapDefault(outcome.Kind, outcome.ExplicitExitCode);
+		}
+
+		var exitCode = _options.ExitCodes.Map(outcome.Kind, outcome.ExplicitExitCode);
+		return _options.ExitCodes.Resolver is { } resolver
+			? resolver(new ReplExecutionOutcome(outcome.Kind, exitCode, outcome.Result, outcome.Exception))
+			: exitCode;
+	}
+
+	private async ValueTask<ExecutionOutcome> ExecuteParsedCoreAsync(
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
 		bool isSubInvocation,
@@ -106,14 +141,14 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			using var runtimeStateScope = PushRuntimeState(serviceProvider, isInteractiveSession: false);
 			var prefixResolution = ResolveUniquePrefixes(globalOptions.RemainingTokens);
 			var resolvedGlobalOptions = globalOptions with { RemainingTokens = prefixResolution.Tokens };
-			var ambiguousExitCode = await TryHandleAmbiguousPrefixAsync(
+			var ambiguousOutcome = await TryHandleAmbiguousPrefixAsync(
 						prefixResolution,
 						globalOptions,
 						resolvedGlobalOptions,
 						serviceProvider,
 						cancellationToken)
 					.ConfigureAwait(false);
-			if (ambiguousExitCode is not null) return ambiguousExitCode.Value;
+			if (ambiguousOutcome is not null) return ambiguousOutcome.Value;
 
 			var preResolvedRouteResolution = TryPreResolveRouteForBanner(resolvedGlobalOptions);
 			if (!ShouldSuppressGlobalBanner(resolvedGlobalOptions, preResolvedRouteResolution?.Match))
@@ -121,12 +156,12 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				await TryRenderBannerAsync(resolvedGlobalOptions, serviceProvider, cancellationToken).ConfigureAwait(false);
 			}
 
-			var preExecutionExitCode = await TryHandlePreExecutionAsync(
+			var preExecutionOutcome = await TryHandlePreExecutionAsync(
 						resolvedGlobalOptions,
 						serviceProvider,
 						cancellationToken)
 					.ConfigureAwait(false);
-			if (preExecutionExitCode is not null) return preExecutionExitCode.Value;
+			if (preExecutionOutcome is not null) return preExecutionOutcome.Value;
 
 			var resolution = preResolvedRouteResolution
 				?? ResolveWithDiagnostics(resolvedGlobalOptions.RemainingTokens);
@@ -150,7 +185,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				.ConfigureAwait(false);
 	}
 
-	private async ValueTask<int?> TryHandleAmbiguousPrefixAsync(
+	private async ValueTask<ExecutionOutcome?> TryHandleAmbiguousPrefixAsync(
 		PrefixResolutionResult prefixResolution,
 		GlobalInvocationOptions globalOptions,
 		GlobalInvocationOptions resolvedGlobalOptions,
@@ -170,7 +205,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		var ambiguous = CreateAmbiguousPrefixResult(prefixResolution);
 		_ = await RenderOutputAsync(ambiguous, globalOptions.OutputFormat, cancellationToken)
 			.ConfigureAwait(false);
-		return 1;
+		return ExecutionOutcome.Usage(ambiguous);
 	}
 
 	private static bool ShouldSuppressGlobalBanner(
@@ -195,7 +230,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		return ResolveWithDiagnostics(globalOptions.RemainingTokens);
 	}
 
-	private async ValueTask<int?> TryHandlePreExecutionAsync(
+	private async ValueTask<ExecutionOutcome?> TryHandlePreExecutionAsync(
 		GlobalInvocationOptions options,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -210,7 +245,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		if (options.HelpRequested)
 		{
 			var rendered = await RenderHelpAsync(options, cancellationToken).ConfigureAwait(false);
-			return rendered ? 0 : 1;
+			return rendered ? ExecutionOutcome.Help : ExecutionOutcome.Usage();
 		}
 
 		if (options.RemainingTokens.Count == 0)
@@ -223,7 +258,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			.ConfigureAwait(false);
 	}
 
-	private async ValueTask<int> ExecuteMatchedCommandAndMaybeEnterInteractiveAsync(
+	private async ValueTask<ExecutionOutcome> ExecuteMatchedCommandAndMaybeEnterInteractiveAsync(
 		RouteMatch match,
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
@@ -235,7 +270,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				.ConfigureAwait(false);
 		}
 
-		var (exitCode, enterInteractive) = await ExecuteMatchedCommandAsync(
+		var (outcome, enterInteractive) = await ExecuteMatchedCommandAsync(
 				match,
 				globalOptions,
 				serviceProvider,
@@ -243,7 +278,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				cancellationToken)
 			.ConfigureAwait(false);
 
-		if (enterInteractive || (exitCode == 0 && ShouldEnterInteractive(globalOptions, allowAuto: false)))
+		if (enterInteractive || (outcome.IsSuccessLike && ShouldEnterInteractive(globalOptions, allowAuto: false)))
 		{
 			var matchedPathLength = globalOptions.RemainingTokens.Count - match.RemainingTokens.Count;
 			var matchedPathTokens = globalOptions.RemainingTokens.Take(matchedPathLength).ToArray();
@@ -251,7 +286,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			return await RunInteractiveSessionAsync(interactiveScope, serviceProvider, cancellationToken).ConfigureAwait(false);
 		}
 
-		return exitCode;
+		return outcome;
 	}
 
 	/// <summary>
@@ -261,7 +296,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	/// outside hosted sessions — stdout/stderr isolation (framework output on stderr, the
 	/// handler payload alone on stdout).
 	/// </summary>
-	internal async ValueTask<int> ExecuteProtocolPassthroughCommandAsync(
+	internal async ValueTask<ExecutionOutcome> ExecuteProtocolPassthroughCommandAsync(
 		RouteMatch match,
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
@@ -269,28 +304,26 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	{
 		if (ReplSessionIO.IsHostedSession && !match.Route.Command.SupportsHostedProtocolPassthrough)
 		{
-			_ = await RenderOutputAsync(
-					Results.Error(
-						"protocol_passthrough_hosted_not_supported",
-						$"Command '{match.Route.Template.Template}' is protocol passthrough and requires a handler parameter of type IReplIoContext in hosted sessions."),
-					globalOptions.OutputFormat,
-					cancellationToken)
+			var refusal = Results.Error(
+				"protocol_passthrough_hosted_not_supported",
+				$"Command '{match.Route.Template.Template}' is protocol passthrough and requires a handler parameter of type IReplIoContext in hosted sessions.");
+			_ = await RenderOutputAsync(refusal, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return 1;
+			return ExecutionOutcome.Framework(refusal);
 		}
 
 		using var protocolPassthroughScope = ReplSessionIO.PushProtocolPassthrough();
 
 		if (ReplSessionIO.IsSessionActive)
 		{
-			var (exitCode, _) = await ExecuteMatchedCommandAsync(
+			var (sessionOutcome, _) = await ExecuteMatchedCommandAsync(
 					match,
 					globalOptions,
 					serviceProvider,
 					scopeTokens: null,
 					cancellationToken)
 				.ConfigureAwait(false);
-			return exitCode;
+			return sessionOutcome;
 		}
 
 		using var protocolScope = ReplSessionIO.SetSession(
@@ -300,17 +333,17 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			commandOutput: Console.Out,
 			error: Console.Error,
 			isHostedSession: false);
-		var (code, _) = await ExecuteMatchedCommandAsync(
+		var (outcome, _) = await ExecuteMatchedCommandAsync(
 				match,
 				globalOptions,
 				serviceProvider,
 				scopeTokens: null,
 				cancellationToken)
 			.ConfigureAwait(false);
-		return code;
+		return outcome;
 	}
 
-	private async ValueTask<int> HandleEmptyInvocationAsync(
+	private async ValueTask<ExecutionOutcome> HandleEmptyInvocationAsync(
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -322,10 +355,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 		var helpText = BuildHumanHelp([]);
 		await ReplSessionIO.Output.WriteLineAsync(helpText).ConfigureAwait(false);
-		return 0;
+		return ExecutionOutcome.Help;
 	}
 
-	private async ValueTask<int?> TryHandleCompletionCommandAsync(
+	private async ValueTask<ExecutionOutcome?> TryHandleCompletionCommandAsync(
 		GlobalInvocationOptions options,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -342,10 +375,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				serviceProvider: serviceProvider,
 				cancellationToken: cancellationToken)
 			.ConfigureAwait(false);
-		return completed ? 0 : 1;
+		return completed ? ExecutionOutcome.Success : ExecutionOutcome.Usage();
 	}
 
-	private async ValueTask<int?> TryHandleAmbientInNonInteractiveAsync(
+	private async ValueTask<ExecutionOutcome?> TryHandleAmbientInNonInteractiveAsync(
 		GlobalInvocationOptions options,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -373,9 +406,9 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 		return ambientOutcome switch
 		{
-			AmbientCommandOutcome.Exit => 0,
-			AmbientCommandOutcome.Handled => 0,
-			AmbientCommandOutcome.HandledError => 1,
+			AmbientCommandOutcome.Exit => ExecutionOutcome.Success,
+			AmbientCommandOutcome.Handled => ExecutionOutcome.Success,
+			AmbientCommandOutcome.HandledError => ExecutionOutcome.Usage(),
 			_ => null,
 		};
 	}
@@ -417,7 +450,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		_bannerRendered.Value = true;
 	}
 
-	private async ValueTask<int> TryHandleContextDeeplinkAsync(
+	private async ValueTask<ExecutionOutcome> TryHandleContextDeeplinkAsync(
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken,
@@ -434,7 +467,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				missingArgumentsFailure);
 			_ = await RenderOutputAsync(failure, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return 1;
+			return ExecutionOutcome.Usage(failure);
 		}
 
 		var contextValidation = await ValidateContextAsync(contextMatch, serviceProvider, cancellationToken)
@@ -446,14 +479,14 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 					globalOptions.OutputFormat,
 					cancellationToken)
 				.ConfigureAwait(false);
-			return 1;
+			return ExecutionOutcome.Usage(contextValidation.Failure);
 		}
 
 		if (!ShouldEnterInteractive(globalOptions, allowAuto: true))
 		{
 			var helpText = BuildHumanHelp(globalOptions.RemainingTokens);
 			await ReplSessionIO.Output.WriteLineAsync(helpText).ConfigureAwait(false);
-			return 0;
+			return ExecutionOutcome.Help;
 		}
 
 		return await RunInteractiveSessionAsync(globalOptions.RemainingTokens.ToArray(), serviceProvider, cancellationToken)
@@ -464,7 +497,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		"Maintainability",
 		"MA0051:Method is too long",
 		Justification = "Execution path intentionally keeps validation, binding, middleware and rendering in one place.")]
-	internal async ValueTask<(int ExitCode, bool EnterInteractive)> ExecuteMatchedCommandAsync(
+	internal async ValueTask<(ExecutionOutcome Outcome, bool EnterInteractive)> ExecuteMatchedCommandAsync(
 		RouteMatch match,
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
@@ -480,12 +513,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		var knownOptionNames = new HashSet<string>(match.Route.OptionSchema.Parameters.Keys, optionComparer);
 		if (TryFindGlobalCommandOptionCollision(globalOptions, knownOptionNames, out var collidingOption))
 		{
-			_ = await RenderOutputAsync(
-					Results.Validation($"Ambiguous option '{collidingOption}'. It is defined as both global and command option."),
-					globalOptions.OutputFormat,
-					cancellationToken)
+			var collision = Results.Validation($"Ambiguous option '{collidingOption}'. It is defined as both global and command option.");
+			_ = await RenderOutputAsync(collision, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return (1, false);
+			return (ExecutionOutcome.Usage(collision), false);
 		}
 
 		var parsedOptions = InvocationOptionParser.Parse(
@@ -497,12 +528,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		{
 			var firstError = parsedOptions.Diagnostics
 				.First(diagnostic => diagnostic.Severity == ParseDiagnosticSeverity.Error);
-			_ = await RenderOutputAsync(
-					Results.Validation(firstError.Message),
-					globalOptions.OutputFormat,
-					cancellationToken)
+			var optionFailure = Results.Validation(firstError.Message);
+			_ = await RenderOutputAsync(optionFailure, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return (1, false);
+			return (ExecutionOutcome.Usage(optionFailure), false);
 		}
 		var matchedPathLength = globalOptions.RemainingTokens.Count - match.RemainingTokens.Count;
 		var matchedPathTokens = globalOptions.RemainingTokens.Take(matchedPathLength).ToArray();
@@ -515,9 +544,14 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			activeGraph.Contexts,
 			serviceProvider,
 			cancellationToken);
+		// Binding and the handler share one try so progress cleanup and rendering stay uniform; the flag
+		// tells a binder exception (InvalidOperationException, conversion FormatException, …) apart from
+		// anything thrown after binding — the handler, middleware, user validators, banners, transformers.
+		var bound = false;
 		try
 		{
 			var arguments = HandlerArgumentBinder.Bind(match.Route.Command.Handler, bindingContext);
+			bound = true;
 			var contextFailure = await ValidateContextsForMatchAsync(
 					match,
 					matchedPathTokens,
@@ -529,7 +563,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			{
 				_ = await RenderOutputAsync(contextFailure, globalOptions.OutputFormat, cancellationToken)
 					.ConfigureAwait(false);
-				return (1, false);
+				return (ExecutionOutcome.Usage(contextFailure), false);
 			}
 
 			await TryRenderCommandBannerAsync(match.Route.Command, globalOptions.OutputFormat, serviceProvider, cancellationToken)
@@ -561,7 +595,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 							.ConfigureAwait(false);
 					}
 
-					return (0, true);
+					return (ExecutionOutcome.Success, true);
 				}
 
 				var normalizedResult = ApplyNavigationResult(result, scopeTokens);
@@ -573,7 +607,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 						scopeTokens is not null,
 						globalOptions.ResultFlow)
 					.ConfigureAwait(false);
-				return (rendered ? ComputeExitCode(normalizedResult) : 1, false);
+				// RenderOutputAsync returns false only for an unknown requested output format: a usage mistake.
+				return (rendered ? ClassifyResult(normalizedResult) : ExecutionOutcome.Usage(normalizedResult), false);
 		}
 		catch (OperationCanceledException)
 		{
@@ -585,20 +620,18 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
 			_ = await RenderOutputAsync(Results.Validation(ex.Message), globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return (1, false);
+			return (bound ? ExecutionOutcome.Thrown(ex) : ExecutionOutcome.Binding(ex), false);
 		}
 		catch (Exception ex)
 		{
 			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
-			var errorMessage = ex is TargetInvocationException { InnerException: not null } tie
-				? tie.InnerException?.Message ?? ex.Message
-				: ex.Message;
+			var unwrapped = ex is TargetInvocationException { InnerException: { } inner } ? inner : ex;
 			_ = await RenderOutputAsync(
-					Results.Error("execution_error", errorMessage),
+					Results.Error("execution_error", unwrapped.Message),
 					globalOptions.OutputFormat,
 					cancellationToken)
 				.ConfigureAwait(false);
-			return (1, false);
+			return (bound ? ExecutionOutcome.Thrown(unwrapped) : ExecutionOutcome.Binding(unwrapped), false);
 		}
 	}
 
@@ -627,14 +660,14 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 	}
 
-	private async ValueTask<(int ExitCode, bool EnterInteractive)> RenderTupleResultAsync(
+	private async ValueTask<(ExecutionOutcome Outcome, bool EnterInteractive)> RenderTupleResultAsync(
 		ITuple tuple,
 		List<string>? scopeTokens,
 		GlobalInvocationOptions globalOptions,
 		CancellationToken cancellationToken)
 	{
 		var isInteractive = scopeTokens is not null;
-		var exitCode = 0;
+		var outcome = ExecutionOutcome.Success;
 		var enterInteractive = false;
 
 		for (var i = 0; i < tuple.Length; i++)
@@ -673,42 +706,38 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 			if (!rendered)
 			{
-				return (1, false);
+				return (ExecutionOutcome.Usage(normalized), false);
 			}
 
 			if (isLast)
 			{
-				exitCode = ComputeExitCode(normalized);
+				outcome = ClassifyResult(normalized);
 			}
 		}
 
-		return (exitCode, enterInteractive);
+		return (outcome, enterInteractive);
 	}
 
-	private static int ComputeExitCode(object? result)
+	/// <summary>
+	/// Classifies a rendered handler result. Anything that is not an <see cref="IReplResult"/> — including a
+	/// bare <see cref="int"/> — is data and therefore a success; only <see cref="IExitResult"/> carries a code.
+	/// </summary>
+	private static ExecutionOutcome ClassifyResult(object? result)
 	{
 		if (result is IExitResult exitResult)
 		{
-			return exitResult.ExitCode;
+			return ExecutionOutcome.Exit(exitResult);
 		}
 
 		if (result is not IReplResult replResult)
 		{
-			return 0;
+			return result is null ? ExecutionOutcome.Success : new ExecutionOutcome(ReplExecutionOutcomeKind.Success, result);
 		}
 
 		var kind = replResult.Kind.ToLowerInvariant();
-		if (kind is "text" or "success")
-		{
-			return 0;
-		}
-
-		if (kind is "error" or "validation" or "not_found")
-		{
-			return 1;
-		}
-
-		return 1;
+		return kind is "text" or "success"
+			? new ExecutionOutcome(ReplExecutionOutcomeKind.Success, replResult)
+			: ExecutionOutcome.Handler(replResult);
 	}
 
 	internal async ValueTask<bool> RenderOutputAsync(
@@ -863,7 +892,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 	}
 
-	private async ValueTask<int?> TryHandleGlobalDiagnosticsAsync(
+	private async ValueTask<ExecutionOutcome?> TryHandleGlobalDiagnosticsAsync(
 		GlobalInvocationOptions globalOptions,
 		CancellationToken cancellationToken)
 	{
@@ -874,12 +903,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 		var firstError = globalOptions.Diagnostics
 			.First(diagnostic => diagnostic.Severity == ParseDiagnosticSeverity.Error);
-		_ = await RenderOutputAsync(
-				Results.Validation(firstError.Message),
-				globalOptions.OutputFormat,
-				cancellationToken)
+		var globalFailure = Results.Validation(firstError.Message);
+		_ = await RenderOutputAsync(globalFailure, globalOptions.OutputFormat, cancellationToken)
 			.ConfigureAwait(false);
-		return 1;
+		return ExecutionOutcome.Usage(globalFailure);
 	}
 
 	private static ValueTask<string> TransformPagerPageAsync(
@@ -1148,7 +1175,6 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
-		object? result = null;
 		var context = new ReplExecutionContext(serviceProvider, cancellationToken);
 		var index = -1;
 
@@ -1157,7 +1183,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			index++;
 			if (index == _middleware.Count)
 			{
-				result = await CommandInvoker
+				// Stored on the context so middleware can observe or replace it after awaiting next().
+				context.Result = await CommandInvoker
 					.InvokeAsync(handler, arguments)
 					.ConfigureAwait(false);
 				return;
@@ -1168,7 +1195,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 
 		await NextAsync().ConfigureAwait(false);
-		return result;
+		return context.Result;
 	}
 
 	private static object? ApplyNavigationResult(object? result, List<string>? scopeTokens)

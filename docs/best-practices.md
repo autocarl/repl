@@ -247,6 +247,34 @@ app.Map("delete {id:int}", handler)
     .WithAnswer("confirm", "bool", "Confirm the deletion");
 ```
 
+## Make exit codes scriptable
+
+A headless tool — one command per process, spawned by CI or by a parent program — is judged by its
+exit code. Repl classifies every run into a `ReplExecutionOutcomeKind` and maps it through
+`ReplOptions.ExitCodes`, so the contract is configured once instead of being re-implemented in every
+handler:
+
+```csharp
+app.Options(options =>
+{
+    options.ExitCodes.Help = 3;         // a bare invocation printed help and did no work
+    options.ExitCodes.UsageError = 64;  // EX_USAGE: the caller typed it wrong
+    options.ExitCodes.Cancelled = 130;  // return 128+SIGINT instead of throwing
+});
+```
+
+- Keep usage errors (`2` by default) distinct from handler failures (`1`) so a pipeline can tell
+  "the invocation was wrong" from "the tool broke".
+- Map `Help` to a non-zero code when a bare invocation must not pass a CI step that forgot its
+  arguments.
+- Use `Results.Exit(code)` for codes a specific command owns; use `ExitCodes.Resolver` to apply an
+  organisation-wide convention to every final outcome — it also sees the `Result` object and the
+  `Exception`, so it can map on an error code rather than on a message.
+- A handler's `int` return value is **data**, rendered like any other value; it never becomes the
+  exit code.
+- Set `ExitCodes.Cancelled` when the caller owns a `CancellationToken` and wants an integer rather
+  than an `OperationCanceledException` escaping `RunAsync`.
+
 ## Write deterministic tests
 
 Use `ReplTestHost` for integration tests with typed results:

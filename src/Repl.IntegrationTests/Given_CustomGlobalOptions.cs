@@ -30,7 +30,7 @@ public sealed class Given_CustomGlobalOptions
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["ping", "--tenant", "acme", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Ambiguous option '--tenant'");
 	}
 

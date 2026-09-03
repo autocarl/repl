@@ -51,7 +51,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		};
 	}
 
-	internal async ValueTask<int> RunInteractiveSessionAsync(
+	internal async ValueTask RunInteractiveSessionAsync(
 		IReadOnlyList<string> initialScopeTokens,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -83,7 +83,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				lastHistoryEntry = updatedHistory;
 				if (exit)
 				{
-					return 0;
+					return;
 				}
 			}
 			catch
@@ -206,7 +206,10 @@ internal sealed class InteractiveSession(CoreReplApp app)
 					isInteractiveSession: true,
 					cancellationToken)
 				.ConfigureAwait(false);
-			return (ambientOutcome, ambientOutcome == AmbientCommandOutcome.HandledError ? 1 : 0);
+			var ambientExecution = ambientOutcome == AmbientCommandOutcome.HandledError
+				? ExecutionOutcome.Usage()
+				: ExecutionOutcome.Success;
+			return (ambientOutcome, app.ResolveExitCode(ambientExecution, isSubInvocation: false));
 		}
 
 		if (resolution.Kind == CommittedKind.Ambiguous)
@@ -216,7 +219,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			var ambiguous = RoutingEngine.CreateAmbiguousPrefixResult(resolution.Prefix);
 			_ = await app.RenderOutputAsync(ambiguous, resolution.Options.OutputFormat, cancellationToken, isInteractive: true)
 				.ConfigureAwait(false);
-			return (AmbientCommandOutcome.Handled, 1);
+			return (AmbientCommandOutcome.Handled, app.ResolveExitCode(ExecutionOutcome.Usage(ambiguous), isSubInvocation: false));
 		}
 
 		// Help or Routed: both flow through the command-cancellation scope so Ctrl-C and
@@ -240,15 +243,16 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			return await ExecuteInteractiveInputAsync(resolution, cycle, commandCts.Token)
 				.ConfigureAwait(false);
 		}
-		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+		catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
 		{
 			await ReplSessionIO.Output.WriteLineAsync("Cancelled.").ConfigureAwait(false);
 			// 128 + SIGINT(2): the shell convention for an interrupted command, so
 			// shell-integration marks decorate it as interrupted rather than failed. An
 			// outer-token cancellation (host shutdown) is NOT matched here — it propagates
 			// to ExecuteCommittedInputAsync's OCE catch, which closes the cycle with an
-			// aborted D (no exit code) rather than a failure.
-			return 130;
+			// aborted D (no exit code) rather than a failure. The exit-code table and resolver
+			// apply like for any other outcome; ExitCodes.Cancelled overrides the convention.
+			return app.ResolveExitCode(ExecutionOutcome.Cancelled(ex, conventionalExitCode: 130), isSubInvocation: false);
 		}
 		finally
 		{
@@ -469,7 +473,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		if (globalOptions.HelpRequested)
 		{
 			var rendered = await app.RenderHelpAsync(globalOptions, cancellationToken).ConfigureAwait(false);
-			return rendered ? 0 : 1;
+			return app.ResolveExitCode(rendered ? ExecutionOutcome.Help : ExecutionOutcome.Usage(), isSubInvocation: false);
 		}
 
 		// Reuse the single routing-graph snapshot and route resolution captured in
@@ -485,12 +489,13 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				// Same execution contract as the CLI one-shot path — hosted-capability guard,
 				// protocol-passthrough scope, and stream isolation — so a handler probing
 				// IsProtocolPassthrough observes the same value in both modes.
-				return await app.ExecuteProtocolPassthroughCommandAsync(match, globalOptions, cycle.ServiceProvider, cancellationToken)
+				var passthroughOutcome = await app.ExecuteProtocolPassthroughCommandAsync(match, globalOptions, cycle.ServiceProvider, cancellationToken)
 					.ConfigureAwait(false);
+				return app.ResolveExitCode(passthroughOutcome, isSubInvocation: false);
 			}
 
-			var (exitCode, _) = await app.ExecuteMatchedCommandAsync(match, globalOptions, cycle.ServiceProvider, cycle.ScopeTokens, cancellationToken).ConfigureAwait(false);
-			return exitCode;
+			var (outcome, _) = await app.ExecuteMatchedCommandAsync(match, globalOptions, cycle.ServiceProvider, cycle.ScopeTokens, cancellationToken).ConfigureAwait(false);
+			return app.ResolveExitCode(outcome, isSubInvocation: false);
 		}
 
 		return await HandleUnmatchedInteractiveInputAsync(activeGraph, resolution, globalOptions, cycle, cancellationToken)
@@ -522,7 +527,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 						cancellationToken,
 						isInteractive: true)
 					.ConfigureAwait(false);
-				return 1;
+				return app.ResolveExitCode(ExecutionOutcome.Usage(contextValidation.Failure), isSubInvocation: false);
 			}
 
 			cycle.ScopeTokens.Clear();
@@ -533,7 +538,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				await app.InvokeBannerAsync(contextBanner, serviceProvider, cancellationToken).ConfigureAwait(false);
 			}
 
-			return 0;
+			return app.ResolveExitCode(ExecutionOutcome.Success, isSubInvocation: false);
 		}
 
 		var failure = app.CreateRouteResolutionFailureResult(
@@ -546,7 +551,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				cancellationToken,
 				isInteractive: true)
 			.ConfigureAwait(false);
-		return 1;
+		return app.ResolveExitCode(ExecutionOutcome.Usage(failure), isSubInvocation: false);
 	}
 
 	internal async ValueTask<AmbientCommandOutcome> TryHandleAmbientCommandAsync(

@@ -1031,7 +1031,7 @@ public sealed class Given_HelpDiscovery
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--output:toml"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Error: unknown output format 'toml'.");
 	}
 

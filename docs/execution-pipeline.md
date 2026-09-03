@@ -181,20 +181,29 @@ handler invocation and produce an error result.
 via `app.Use()`, then invokes the pipeline. The final stage calls
 `CommandInvoker.InvokeAsync()` which executes the handler delegate.
 
-The invoker supports multiple return types:
+The invoker supports synchronous, `Task`, `Task<T>`, `ValueTask`, and `ValueTask<T>` handlers:
 
 ```csharp
-// Synchronous
-int Run() => 0;
+// Synchronous, returns data
+int Count() => items.Length;
 
-// Async
-async Task<int> RunAsync() => 0;
-async ValueTask<int> RunAsync() => 0;
+// Async, returns data
+async Task<Contact[]> ListAsync() => await store.ListAsync();
+async ValueTask<string> DescribeAsync() => "ready";
 
 // Void (implicit success)
 void Run() { }
 async Task RunAsync() { }
 ```
+
+> **A handler's return value is always rendered as data — including `int`.** It never becomes the
+> process exit code: `int Count() => 3` prints `3` and exits `0`. To set an explicit exit code,
+> return `Results.Exit(code)` (or any `IExitResult`).
+
+Once the handler has run, its return value is exposed as `ReplExecutionContext.Result`, so a
+middleware registered with `app.Use(...)` can inspect or replace it after awaiting `next()`. A
+middleware that short-circuits (never calls `next()`) may set `context.Result` to supply the result
+that is rendered and classified in the handler's place.
 
 ### 10. Result Processing
 
@@ -219,13 +228,48 @@ The matching `IOutputTransformer` formats the result and writes it to stdout.
 
 ### 12. Exit Code
 
-The final exit code is derived from the result:
+Every run that reaches the core pipeline ends in exactly one `ReplExecutionOutcomeKind`, decided
+once after every pipeline layer has run. (The one path outside the pipeline is a hosted-service
+start/stop failure in `ReplApp.RunAsync` with `HostedServiceLifecycle` enabled, which still returns
+`1` directly.) The kind is mapped to an integer by `ReplOptions.ExitCodes`
+(`ExitCodeOptions`), then handed to the optional `ExitCodes.Resolver` hook whose return value is
+final:
 
-| Result | Exit Code |
-|---|---|
-| Success (or void) | `0` |
-| Failure | `1` |
-| `IExitResult` | `IExitResult.ExitCode` |
+| Kind | Produced by | Default code |
+|---|---|---|
+| `Success` | success-like handler result (`text`/`success`, plain data, `void`), ambient commands (`exit`, `..`) that did their job, clean interactive exit | `0` |
+| `Help` | `--help`, bare invocation that prints help, scoped-context help | `0` |
+| `UsageError` | unknown command, ambiguous prefix, invalid global or command option, context validation failure, unknown `--output` format | `2` |
+| `BindingError` | a handler argument could not be bound: token conversion failed or was missing, or a binder-resolved value (context value, `[FromServices]` dependency, typed global options service) was unavailable | `2` |
+| `HandlerError` | handler returned `Results.Error` / `Validation` / `NotFound` / `Cancelled` | `1` |
+| `HandlerExitCode` | handler returned an `IExitResult` — its code is used verbatim, the table is bypassed | `IExitResult.ExitCode` |
+| `HandlerException` | the handler or a middleware threw | `1` |
+| `Cancelled` | the run ended with an `OperationCanceledException` — the caller's `CancellationToken`, a cancelled prompt, or a handler that threw it | unmapped: the exception propagates; set `ExitCodes.Cancelled` (e.g. `130`) to return a code instead |
+| `Interrupted` | reserved for process-signal bridges (SIGINT/SIGTERM); the core pipeline never produces it | — |
+| `FrameworkError` | incompatible programmatic adapter, unsupported hosting capability | `1` |
+
+```csharp
+app.Options(options =>
+{
+    options.ExitCodes.UsageError = 64;          // EX_USAGE for scripts that follow sysexits
+    options.ExitCodes.Help = 3;                 // a bare invocation must not look like success in CI
+    options.ExitCodes.Cancelled = 130;          // return 128+SIGINT instead of throwing
+    options.ExitCodes.Resolver = outcome =>     // final say, sees the structured outcome
+        outcome.Kind == ReplExecutionOutcomeKind.HandlerException ? 70 : outcome.ExitCode;
+});
+```
+
+The resolver receives a `ReplExecutionOutcome` (`Kind`, table-mapped `ExitCode`, the final `Result`
+object when one exists, and the `Exception` that ended the run when applicable). It runs once per
+one-shot run and is not invoked when `Kind` is `Cancelled` and `ExitCodes.Cancelled` is unset — the
+exception is rethrown instead. In an interactive session it is invoked once per committed command
+(to compute the shell-integration mark code, where a Ctrl+C cancellation carries the conventional
+`130` unless `ExitCodes.Cancelled` overrides it) and once more when the session exits.
+
+Nested sub-invocations (MCP tool calls executed through the Repl pipeline) always use the built-in
+defaults and skip the resolver: the policy describes the *process* exit, and nested callers only test
+for non-zero. The interactive loop applies the same table and resolver when it reports a command's
+exit code in shell-integration marks, so the terminal decoration and the CLI agree.
 
 ## Error Handling
 
@@ -238,8 +282,9 @@ Errors at each stage produce targeted diagnostics:
 - **Binding errors** — renders a message identifying the missing or invalid parameter.
 - **Handler exceptions** — caught and unwrapped from `TargetInvocationException`,
   then rendered as an error to stderr.
-- **Cancellation** — `OperationCanceledException` is either propagated to the caller
-  or rendered as a cancellation message, depending on context.
+- **Cancellation** — in one-shot mode `OperationCanceledException` propagates to the caller
+  unless `ReplOptions.ExitCodes.Cancelled` is set, in which case the run returns that code with
+  `ReplExecutionOutcomeKind.Cancelled`; the interactive loop renders a cancellation message instead.
 
 ## Interactive Session Loop
 

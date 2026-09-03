@@ -15,6 +15,7 @@ public sealed class ReplOptions
 		Output = new OutputOptions();
 		Binding = new BindingOptions();
 		Capabilities = new CapabilityOptions();
+		ExitCodes = new ExitCodeOptions();
 		AmbientCommands = new AmbientCommandOptions();
 		Interaction = new InteractionOptions();
 		ShellCompletion = new ShellCompletionOptions();
@@ -44,6 +45,11 @@ public sealed class ReplOptions
 	/// Gets host capability options.
 	/// </summary>
 	public CapabilityOptions Capabilities { get; }
+
+	/// <summary>
+	/// Gets exit-code policy options: per-outcome codes and the final interception hook.
+	/// </summary>
+	public ExitCodeOptions ExitCodes { get; }
 
 	/// <summary>
 	/// Gets ambient command options.

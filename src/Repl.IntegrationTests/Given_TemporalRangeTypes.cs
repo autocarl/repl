@@ -104,7 +104,7 @@ public sealed class Given_TemporalRangeTypes
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["report", "--period", "not-a-range", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("not a valid date range literal");
 	}
 
@@ -118,7 +118,7 @@ public sealed class Given_TemporalRangeTypes
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["report", "--period", "2024-01-15@8h", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("whole days");
 	}
 }

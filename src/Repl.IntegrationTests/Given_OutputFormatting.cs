@@ -353,7 +353,7 @@ public sealed partial class Given_OutputFormatting
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["contact", "show", "--output:toml"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Error: unknown output format 'toml'.");
 	}
 
