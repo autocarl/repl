@@ -1,9 +1,11 @@
 using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Repl.Tests;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class Given_HandlerBinding
 {
 	[TestMethod]
@@ -202,11 +204,37 @@ public sealed class Given_HandlerBinding
 	}
 
 	[TestMethod]
-	[Description("The linked execution token used by automatic process-signal handling is disposed when its run completes.")]
-	public async Task When_AutomaticRunCompletes_Then_HandlerTokenMustNotBeRetained()
+	[Description("An app without a process-owning profile preserves the caller-owned signal and token contract.")]
+	public async Task When_NoProfileSelectsSignalOwnership_Then_HandlerReceivesCallerTokenDirectly()
 	{
 		var sut = ReplApp.Create();
 		CancellationToken captured = default;
+		using var cancellationTokenSource = new CancellationTokenSource();
+
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			captured = ct;
+			return "ok";
+		});
+
+		var exitCode = await sut.RunAsync(["work", "--no-logo"], cancellationTokenSource.Token)
+			.ConfigureAwait(false);
+
+		exitCode.Should().Be(0);
+		captured.Should().Be(cancellationTokenSource.Token);
+	}
+
+	[TestMethod]
+	[Description("The linked execution token used by automatic process-signal handling is disposed when its run completes.")]
+	public async Task When_AutomaticRunCompletes_Then_HandlerTokenMustNotBeRetained()
+	{
+		var sut = ReplApp.Create().UseCliProfile();
+		CancellationToken captured = default;
+		using var diagnostics = new StringWriter();
+		using var session = ReplSessionIO.SetSession(
+			TextWriter.Null,
+			TextReader.Null,
+			error: diagnostics);
 
 		sut.Map("work", (CancellationToken ct) =>
 		{
@@ -219,13 +247,14 @@ public sealed class Given_HandlerBinding
 
 		exitCode.Should().Be(0);
 		accessDisposedWaitHandle.Should().Throw<ObjectDisposedException>();
+		diagnostics.ToString().Should().NotContain("Ignoring ReplRunOptions.ProcessSignalHandling");
 	}
 
 	[TestMethod]
 	[Description("Regression guard: verifies automatic signal handling preserves caller-requested cancellation through the linked execution token.")]
 	public async Task When_ProcessSignalHandlingIsAutomatic_Then_HandlerObservesCallerCancellation()
 	{
-		var sut = ReplApp.Create();
+		var sut = ReplApp.Create().UseCliProfile();
 		using var cancellationTokenSource = new CancellationTokenSource();
 		var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		var observedCancellation = false;
@@ -253,6 +282,56 @@ public sealed class Given_HandlerBinding
 #pragma warning restore VSTHRD003
 		await act.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
 		observedCancellation.Should().BeTrue();
+	}
+
+	[TestMethod]
+	[DataRow("service-provider", DisplayName = "IServiceProvider overload")]
+	[DataRow("host", DisplayName = "IHost overload")]
+	[DataRow("repl-host", DisplayName = "IReplHost overload")]
+	[DataRow("repl-host-and-services", DisplayName = "IReplHost and IServiceProvider overload")]
+	[Description("External-owner overloads diagnose an ignored Automatic request and pass the caller token through unchanged.")]
+	public async Task When_ExternalOwnerReceivesExplicitAutomatic_Then_DiagnosticIsWrittenAndCallerTokenIsPreserved(
+		string overload)
+	{
+		var sut = ReplApp.Create();
+		CancellationToken captured = default;
+		using var cancellationTokenSource = new CancellationTokenSource();
+		using var diagnostics = new StringWriter();
+		using var replHost = new InMemoryHost(TextReader.Null, diagnostics);
+		using var host = new TestHost(sut.Services);
+		using var session = ReplSessionIO.SetSession(
+			TextWriter.Null,
+			TextReader.Null,
+			error: diagnostics);
+		var options = new ReplRunOptions
+		{
+			ProcessSignalHandling = ProcessSignalHandlingMode.Automatic,
+		};
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			captured = ct;
+			return "ok";
+		});
+
+		var run = overload switch
+		{
+			"service-provider" => sut.RunAsync(
+				["work", "--no-logo"], sut.Services, options, cancellationTokenSource.Token),
+			"host" => sut.RunAsync(
+				["work", "--no-logo"], host, options, cancellationTokenSource.Token),
+			"repl-host" => sut.RunAsync(
+				["work", "--no-logo"], replHost, options, cancellationTokenSource.Token),
+			"repl-host-and-services" => sut.RunAsync(
+				["work", "--no-logo"], replHost, sut.Services, options, cancellationTokenSource.Token),
+			_ => throw new InvalidOperationException($"Unknown external-owner overload '{overload}'."),
+		};
+		var exitCode = await run.ConfigureAwait(false);
+
+		exitCode.Should().Be(0);
+		captured.Should().Be(cancellationTokenSource.Token);
+		diagnostics.ToString()
+			.Split("Ignoring ReplRunOptions.ProcessSignalHandling=Automatic", StringSplitOptions.None)
+			.Should().HaveCount(2);
 	}
 
 	[TestMethod]
@@ -323,6 +402,21 @@ public sealed class Given_HandlerBinding
 	private sealed class TestCounter(int value) : ITestCounter
 	{
 		public int Value { get; } = value;
+	}
+
+	private sealed class InMemoryHost(TextReader input, TextWriter output) : IReplHost, IDisposable
+	{
+		public TextReader Input { get; } = input;
+		public TextWriter Output { get; } = output;
+		public void Dispose() { }
+	}
+
+	private sealed class TestHost(IServiceProvider services) : IHost
+	{
+		public IServiceProvider Services { get; } = services;
+		public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+		public Task StopAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+		public void Dispose() { }
 	}
 }
 

@@ -144,15 +144,15 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
 
 ### Added — standalone process signals
 
-- `ReplRunOptions.ProcessSignalHandling` and `ProcessSignalHandlingMode` let internally configured standalone `Run`/`RunAsync` calls opt into or out of cooperative process-signal handling. The nullable option inherits the active profile default: CLI and default-interactive profiles use `Automatic`, while `UseEmbeddedConsoleProfile()` uses `None`.
-- In automatic mode, the first Ctrl+C/SIGINT cancels all overlapping standalone runs in one process-wide ownership epoch and resolves a successful or cancelled run to exit code `130`. On Unix, SIGTERM behaves the same way with exit code `143`. A subsequent signal uses the operating-system default, and stderr diagnostics identify both steps. Explicit non-zero handler exit codes remain authoritative.
+- `ReplRunOptions.ProcessSignalHandling` and `ProcessSignalHandlingMode` let internally configured standalone `Run`/`RunAsync` calls opt into or out of cooperative process-signal handling. The nullable option inherits the active profile default: CLI and default-interactive profiles use `Automatic`; an unprofiled `ReplApp.Create()` and `UseEmbeddedConsoleProfile()` use `None`, preserving caller-owned shutdown unless a process-owning profile is selected.
+- In automatic mode, the first Ctrl+C or Ctrl+Break console event cancels all overlapping standalone runs in one process-wide ownership epoch and resolves a successful or cancelled run to exit code `130`. On supported Unix platforms, SIGTERM behaves the same way with exit code `143`. A subsequent signal uses the operating-system default, and stderr diagnostics identify both steps. Explicit non-zero handler exit codes remain authoritative.
 
 ### Operational notes — process signals
 
 - Exit codes `130` (`128 + SIGINT(2)`) and `143` (`128 + SIGTERM(15)`) follow the widely adopted Unix/Bash convention; they are not universal .NET or Windows exit-code guarantees. SIGTERM bridging is Unix-only.
 - Automatic handling has no built-in grace-period timeout. A supervisor can send a second signal to force termination. The process callbacks are installed lazily once and remain inert outside automatic runs so runtime callback snapshots cannot race handler teardown.
-- The cancellation token injected into handlers in automatic mode is linked and run-scoped; handlers must not retain it after the run completes. External host/provider overloads keep standalone signal bridging and cancellation-token ownership with their caller; an interactive loop retains its separate Ctrl+C policy.
-- Android, browser, iOS, and tvOS do not install the unsupported process-signal bridge; their platform host must provide cancellation.
+- The cancellation token injected into handlers in automatic mode is linked and run-scoped; handlers must not retain it after the run completes. External host/provider overloads keep standalone signal bridging and cancellation-token ownership with their caller; an explicit `Automatic` request on those overloads is ignored with a diagnostic on the active error channel. An interactive loop retains its separate cancel-key policy.
+- Android, browser, iOS (excluding Mac Catalyst), and tvOS do not install the unsupported process-signal bridge; `Automatic` emits a diagnostic and their platform host must provide cancellation. Mac Catalyst uses the supported console/POSIX registrations. Consumer cancellation-callback failures are also diagnosed without replacing an established `130`/`143` exit policy.
 
 ### Added — option visibility
 

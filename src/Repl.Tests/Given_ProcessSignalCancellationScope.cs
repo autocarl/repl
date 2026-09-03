@@ -54,6 +54,19 @@ public sealed class Given_ProcessSignalCancellationScope
 	}
 
 	[TestMethod]
+	[Description("Ctrl+Break follows the same cooperative first-signal policy as Ctrl+C.")]
+	public async Task When_FirstCtrlBreakArrives_Then_ActiveScopeIsCancelled()
+	{
+		await using var scope = new ProcessSignalCancellationScope(default);
+
+		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(ConsoleSpecialKey.ControlBreak);
+
+		result.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
+		scope.ExitCode.Should().Be(ProcessSignalCoordinator.SigIntExitCode);
+		scope.Token.IsCancellationRequested.Should().BeTrue();
+	}
+
+	[TestMethod]
 	[Description("Disposing the interactive claim atomically hands Ctrl+C ownership back to the active standalone scope.")]
 	public async Task When_InteractiveHandlerIsDisposed_Then_StandaloneScopeClaimsCtrlC()
 	{
@@ -101,7 +114,9 @@ public sealed class Given_ProcessSignalCancellationScope
 		CancelKeyHandler? replacementHandler = null;
 		try
 		{
-			var dispatchTask = Task.Run(() => ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(() =>
+			var dispatchTask = Task.Run(() => ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(
+				ConsoleSpecialKey.ControlC,
+				() =>
 			{
 				initialSelectionCaptured.TrySetResult();
 				if (!releaseSelection.Wait(TimeSpan.FromSeconds(5)))
@@ -204,6 +219,32 @@ public sealed class Given_ProcessSignalCancellationScope
 	}
 
 	[TestMethod]
+	[Description("A scope remains signal-owned until its removal is atomic, so a signal in the pre-unregister window cannot be suppressed while the run still returns success.")]
+	public async Task When_DisposalStartsBeforeAtomicUnregister_Then_SignalStillCancelsTheRun()
+	{
+		var scope = new ProcessSignalCancellationScope(default);
+		var executionToken = scope.Token;
+		var disposalPaused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var resumeDisposal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+		var disposeTask = Task.Run(async () =>
+			await scope.DisposeForTestingAsync(() =>
+			{
+			disposalPaused.SetResult();
+			resumeDisposal.Task.GetAwaiter().GetResult();
+		}).ConfigureAwait(false));
+
+		await disposalPaused.Task.WaitAsync(timeout: TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+		var signalResult = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting();
+		resumeDisposal.SetResult();
+		await disposeTask.WaitAsync(timeout: TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+		signalResult.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
+		executionToken.IsCancellationRequested.Should().BeTrue();
+		scope.ResolveExitCode(runExitCode: 0).Should().Be(130);
+	}
+
+	[TestMethod]
 	[Description("Two concurrent process-signal dispatches produce exactly one cooperative first signal.")]
 	public async Task When_TwoSignalsRace_Then_ExactlyOneIsSuppressed()
 	{
@@ -265,6 +306,8 @@ public sealed class Given_ProcessSignalCancellationScope
 	[Description("A throwing cancellation callback cannot replace the conventional signal exit policy during scope disposal.")]
 	public async Task When_SignalCancellationCallbackThrows_Then_DisposalStillCompletes()
 	{
+		using var error = new StringWriter();
+		using var session = ReplSessionIO.SetSession(TextWriter.Null, TextReader.Null, error: error);
 		var scope = new ProcessSignalCancellationScope(default);
 		using var registration = scope.Token.Register(
 			static () => throw new InvalidOperationException("callback failure"));
@@ -275,6 +318,27 @@ public sealed class Given_ProcessSignalCancellationScope
 		result.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
 		await act.Should().NotThrowAsync().ConfigureAwait(false);
 		scope.ExitCode.Should().Be(ProcessSignalCoordinator.SigIntExitCode);
+		error.ToString().Should().Contain("process-signal cancellation callback")
+			.And.Contain(nameof(InvalidOperationException));
+	}
+
+	[TestMethod]
+	[Description("Mac Catalyst is not rejected merely because OperatingSystem.IsIOS also identifies it as iOS.")]
+	public void When_PlatformIsMacCatalyst_Then_SignalBridgeIsSupported()
+	{
+		ProcessSignalCoordinator.IsSignalBridgeSupportedForTesting(
+			isAndroid: false,
+			isBrowser: false,
+			isIOS: true,
+			isMacCatalyst: true,
+			isTvOS: false).Should().BeTrue();
+
+		ProcessSignalCoordinator.IsSignalBridgeSupportedForTesting(
+			isAndroid: false,
+			isBrowser: false,
+			isIOS: true,
+			isMacCatalyst: false,
+			isTvOS: false).Should().BeFalse();
 	}
 
 }

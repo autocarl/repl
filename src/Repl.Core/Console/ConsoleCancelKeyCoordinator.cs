@@ -1,11 +1,11 @@
 namespace Repl;
 
 /// <summary>
-/// Arbitrates Ctrl+C ownership for the process through one lazily installed, process-lifetime
+/// Arbitrates console cancel-key ownership through one lazily installed, process-lifetime
 /// <see cref="Console.CancelKeyPress"/> subscription. Interactive handlers take priority over
 /// standalone handlers. Registration and removal are atomic with respect to selection snapshots.
 /// If ownership changes before selection is validated, the coordinator reselects once; after
-/// validation, the selected callbacks own that in-flight occurrence even if their registrations
+/// validation, the retained callbacks own that in-flight occurrence even if their registrations
 /// are concurrently removed. No consumer callback runs while the coordinator gate is held.
 /// </summary>
 internal static class ConsoleCancelKeyCoordinator
@@ -22,10 +22,6 @@ internal static class ConsoleCancelKeyCoordinator
 
 	internal static IDisposable RegisterStandalone(Func<ConsoleCancelKeyHandlingResult> handler) =>
 		Register(handler, isInteractive: false);
-
-	internal static ConsoleCancelKeyHandlingResult HandleCancelKeyForTesting(
-		Action? afterInitialSelection = null) =>
-		Dispatch(afterInitialSelection);
 
 	private static Registration Register(
 		Func<ConsoleCancelKeyHandlingResult> handler,
@@ -56,35 +52,52 @@ internal static class ConsoleCancelKeyCoordinator
 
 	private static void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
 	{
-		if (e.SpecialKey == ConsoleSpecialKey.ControlC
+		if (IsHandledCancelKey(e.SpecialKey)
 			&& Dispatch() == ConsoleCancelKeyHandlingResult.SuppressProcessTermination)
 		{
 			e.Cancel = true;
 		}
 	}
 
-	private static ConsoleCancelKeyHandlingResult Dispatch(Action? afterInitialSelection = null)
+	private static ConsoleCancelKeyHandlingResult Dispatch() =>
+		Invoke(RevalidateSelection(CaptureSelection()).Handlers);
+
+	internal static ConsoleCancelKeyHandlingResult HandleCancelKeyForTesting(
+		ConsoleSpecialKey specialKey = ConsoleSpecialKey.ControlC,
+		Action? afterInitialSelection = null)
 	{
-		DispatchSelection selection;
-		lock (Gate)
+		if (!IsHandledCancelKey(specialKey))
 		{
-			selection = CaptureSelection();
+			return ConsoleCancelKeyHandlingResult.NotHandled;
 		}
 
+		var selection = CaptureSelection();
 		afterInitialSelection?.Invoke();
-
-		lock (Gate)
-		{
-			if (selection.Version != s_registrationVersion)
-			{
-				selection = CaptureSelection();
-			}
-		}
-
-		return Invoke(selection.Handlers);
+		return Invoke(RevalidateSelection(selection).Handlers);
 	}
 
+	private static bool IsHandledCancelKey(ConsoleSpecialKey specialKey) =>
+		specialKey is ConsoleSpecialKey.ControlC or ConsoleSpecialKey.ControlBreak;
+
 	private static DispatchSelection CaptureSelection()
+	{
+		lock (Gate)
+		{
+			return CaptureSelectionUnsafe();
+		}
+	}
+
+	private static DispatchSelection RevalidateSelection(DispatchSelection selection)
+	{
+		lock (Gate)
+		{
+			return selection.Version == s_registrationVersion
+				? selection
+				: CaptureSelectionUnsafe();
+		}
+	}
+
+	private static DispatchSelection CaptureSelectionUnsafe()
 	{
 		var handlers = InteractiveHandlers.Count > 0
 			? InteractiveHandlers.Values
@@ -98,16 +111,15 @@ internal static class ConsoleCancelKeyCoordinator
 		var result = ConsoleCancelKeyHandlingResult.NotHandled;
 		foreach (var handler in handlers)
 		{
-			var current = handler();
-			if (current == ConsoleCancelKeyHandlingResult.SuppressProcessTermination)
+			result = handler() switch
 			{
-				result = current;
-			}
-			else if (current == ConsoleCancelKeyHandlingResult.AllowProcessTermination
-				&& result == ConsoleCancelKeyHandlingResult.NotHandled)
-			{
-				result = current;
-			}
+				ConsoleCancelKeyHandlingResult.SuppressProcessTermination =>
+					ConsoleCancelKeyHandlingResult.SuppressProcessTermination,
+				ConsoleCancelKeyHandlingResult.AllowProcessTermination
+					when result == ConsoleCancelKeyHandlingResult.NotHandled =>
+					ConsoleCancelKeyHandlingResult.AllowProcessTermination,
+				_ => result,
+			};
 		}
 
 		return result;

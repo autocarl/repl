@@ -6,8 +6,8 @@ namespace Repl.Tests;
 public sealed class Given_RunOptions
 {
 	[TestMethod]
-	[Description("Regression guard: verifies run options preserve the active profile's process-signal default unless explicitly overridden.")]
-	public void When_CreatingRunOptions_Then_ProcessSignalHandlingDefaultsToProfileDefault()
+	[Description("Regression guard: verifies a new run-options record leaves process-signal handling unspecified.")]
+	public void When_CreatingRunOptions_Then_ProcessSignalHandlingIsNull()
 	{
 		var options = new ReplRunOptions();
 

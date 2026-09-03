@@ -6,9 +6,9 @@ namespace Repl;
 public enum ProcessSignalHandlingMode
 {
 	/// <summary>
-	/// Standalone <see cref="ReplApp.Run(string[], ReplRunOptions?)"/> and
-	/// <see cref="ReplApp.RunAsync(string[], ReplRunOptions?, CancellationToken)"/> calls
-	/// handle Ctrl+C/SIGINT for the duration of the run and also handle SIGTERM on Unix platforms. Interactive sessions retain their existing Ctrl+C behavior.
+	/// Standalone runs handle Ctrl+C and Ctrl+Break console events for their duration.
+	/// They also handle SIGTERM on supported Unix platforms. Interactive sessions retain
+	/// their existing console command-cancellation behavior.
 	/// </summary>
 	Automatic = 0,
 

@@ -56,6 +56,7 @@ internal static class Program
 
 	private static void ConfigureProcessSignalScenario(ReplApp app)
 	{
+		app.UseCliProfile();
 		app.Map("wait {marker}", async (string marker, CancellationToken cancellationToken) =>
 		{
 			await File.WriteAllTextAsync(marker, "READY\n", CancellationToken.None).ConfigureAwait(false);
@@ -85,6 +86,7 @@ internal static class Program
 
 	private static void ConfigureProcessSignalExitCodeScenario(ReplApp app)
 	{
+		app.UseCliProfile();
 		app.Map("wait {marker}", async (string marker, CancellationToken cancellationToken) =>
 		{
 			await File.WriteAllTextAsync(marker, "READY\n", CancellationToken.None).ConfigureAwait(false);

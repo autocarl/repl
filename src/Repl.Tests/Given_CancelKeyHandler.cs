@@ -3,6 +3,7 @@ using AwesomeAssertions;
 namespace Repl.Tests;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class Given_CancelKeyHandler
 {
 	[TestMethod]
@@ -30,6 +31,20 @@ public sealed class Given_CancelKeyHandler
 		using var cts = new CancellationTokenSource();
 		handler.SetCommandCts(cts);
 		handler.SetCommandCts(cts: null); // Should not throw.
+	}
+
+	[TestMethod]
+	[Description("Ctrl+Break is routed to the active interactive command just like Ctrl+C.")]
+	public void When_CtrlBreakArrivesDuringCommand_Then_CommandIsCancelled()
+	{
+		using var handler = new CancelKeyHandler();
+		using var cancellation = new CancellationTokenSource();
+		handler.SetCommandCts(cancellation);
+
+		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(ConsoleSpecialKey.ControlBreak);
+
+		result.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
+		cancellation.IsCancellationRequested.Should().BeTrue();
 	}
 
 	[TestMethod]

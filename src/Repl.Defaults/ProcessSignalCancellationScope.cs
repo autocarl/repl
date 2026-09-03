@@ -17,9 +17,7 @@ internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 
 	public ProcessSignalCancellationScope(CancellationToken cancellationToken)
 	{
-		_linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-			cancellationToken,
-			CancellationToken.None);
+		_linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
 		try
 		{
@@ -51,23 +49,33 @@ internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 		return runExitCode != 0 || signalExitCode is null ? runExitCode : signalExitCode.Value;
 	}
 
-	public async ValueTask DisposeAsync()
+	public ValueTask DisposeAsync() => DisposeCoreAsync(afterWinningDisposal: null);
+
+	internal ValueTask DisposeForTestingAsync(Action afterWinningDisposal)
+	{
+		ArgumentNullException.ThrowIfNull(afterWinningDisposal);
+		return DisposeCoreAsync(afterWinningDisposal);
+	}
+
+	private async ValueTask DisposeCoreAsync(Action? afterWinningDisposal)
 	{
 		if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
 		{
 			return;
 		}
 
+		afterWinningDisposal?.Invoke();
 		try
 		{
-			await ProcessSignalCoordinator.UnregisterAsync(this).ConfigureAwait(false);
+			var cancellationCallbackException = await ProcessSignalCoordinator.UnregisterAsync(this)
+				.ConfigureAwait(false);
+			if (cancellationCallbackException is not null)
+			{
+				ProcessSignalCoordinator.WriteDiagnostic(
+					"A process-signal cancellation callback failed after the signal exit policy "
+					+ $"was established: {cancellationCallbackException}");
+			}
 		}
-#pragma warning disable CA1031 // Consumer callbacks are arbitrary; they must not replace the established signal exit code.
-		catch (Exception) when (ExitCode is not null)
-		{
-			// The cancellation task was awaited and observed before the linked source is disposed.
-		}
-#pragma warning restore CA1031
 		finally
 		{
 			_linkedCancellation.Dispose();
@@ -84,6 +92,9 @@ internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 			}
 
 			_exitCode = exitCode;
+			// Reserve the eventual CancelAsync task under this gate so DisposeAsync cannot miss it.
+			// The outer TCS is completed only after the process coordinator gate is released, which
+			// guarantees that no consumer cancellation callback runs while either gate is held.
 			var cancellationTaskSource = new TaskCompletionSource<Task>(
 				TaskCreationOptions.RunContinuationsAsynchronously);
 			_cancellationTask = cancellationTaskSource.Task.Unwrap();

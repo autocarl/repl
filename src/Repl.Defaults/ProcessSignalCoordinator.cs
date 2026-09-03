@@ -7,9 +7,11 @@ namespace Repl;
 /// atomically claims the current ownership epoch and prepares cancellation for every active scope;
 /// later scopes join that draining epoch, and any subsequent signal is left to the operating-system
 /// default. The epoch resets only after its final scope and all signal-triggered cancellation work
-/// have drained. Interactive Ctrl+C ownership is selected first by
-/// <see cref="ConsoleCancelKeyCoordinator"/>. Process registrations are installed lazily once and
-/// remain inert when there are no active standalone scopes.
+/// have drained. Interactive console-key ownership is selected first by
+/// <see cref="ConsoleCancelKeyCoordinator"/>. Its gate is always released before this coordinator is
+/// invoked. This coordinator may acquire an individual scope gate, but a scope never enters this
+/// coordinator while holding its gate; reserved consumer callbacks start only after both gates are
+/// released. Process registrations are installed lazily once and remain inert without active scopes.
 /// </summary>
 internal static class ProcessSignalCoordinator
 {
@@ -29,10 +31,11 @@ internal static class ProcessSignalCoordinator
 	{
 		ArgumentNullException.ThrowIfNull(scope);
 		RegistrationFailure? registrationFailure;
+		var bridgeUnavailable = false;
 		Action? startCancellation = null;
 		lock (Gate)
 		{
-			registrationFailure = TryInitializeRegistrations();
+			registrationFailure = TryInitializeRegistrations(out bridgeUnavailable);
 			if (registrationFailure is null)
 			{
 				ActiveScopes.Add(scope);
@@ -43,18 +46,30 @@ internal static class ProcessSignalCoordinator
 			}
 		}
 
+		if (bridgeUnavailable)
+		{
+			WriteDiagnostic(
+				"Automatic process-signal handling is unavailable on this platform; "
+				+ "the caller or platform host remains responsible for cancellation.");
+		}
+
 		if (registrationFailure is { } failure)
 		{
 			failure.CancelKeyRegistration?.Dispose();
 			failure.SigTermRegistration?.Dispose();
+			WriteDiagnostic(
+				"Failed to install automatic process-signal handling: "
+				+ $"{failure.Exception.GetType().Name}: {failure.Exception.Message}");
+			// Rethrow only after partial registrations are disposed and the diagnostic is emitted.
 			System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure.Exception).Throw();
 		}
 
 		startCancellation?.Invoke();
 	}
 
-	private static RegistrationFailure? TryInitializeRegistrations()
+	private static RegistrationFailure? TryInitializeRegistrations(out bool bridgeUnavailable)
 	{
+		bridgeUnavailable = false;
 		if (s_registrationsInitialized)
 		{
 			return null;
@@ -63,6 +78,7 @@ internal static class ProcessSignalCoordinator
 		if (!IsSignalBridgeSupported())
 		{
 			s_registrationsInitialized = true;
+			bridgeUnavailable = true;
 			return null;
 		}
 
@@ -93,7 +109,7 @@ internal static class ProcessSignalCoordinator
 		}
 	}
 
-	internal static async Task UnregisterAsync(ProcessSignalCancellationScope scope)
+	internal static async Task<Exception?> UnregisterAsync(ProcessSignalCancellationScope scope)
 	{
 		ArgumentNullException.ThrowIfNull(scope);
 		Task cancellationTask;
@@ -104,11 +120,17 @@ internal static class ProcessSignalCoordinator
 			s_pendingDrainCount++;
 		}
 
+		Exception? cancellationCallbackException = null;
 		try
 		{
 #pragma warning disable VSTHRD003 // Signal-triggered callbacks must drain before their epoch can reset.
 			await cancellationTask.ConfigureAwait(false);
 #pragma warning restore VSTHRD003
+		}
+		catch (Exception ex)
+		{
+			// This task exclusively represents CancellationToken callbacks reserved by the scope.
+			cancellationCallbackException = ex;
 		}
 		finally
 		{
@@ -121,6 +143,8 @@ internal static class ProcessSignalCoordinator
 				}
 			}
 		}
+
+		return cancellationCallbackException;
 	}
 
 	private static ConsoleCancelKeyHandlingResult HandleSigInt(int generation) =>
@@ -176,7 +200,12 @@ internal static class ProcessSignalCoordinator
 			return ConsoleCancelKeyHandlingResult.AllowProcessTermination;
 		}
 
-		foreach (var startCancellation in startCancellations!)
+		if (startCancellations is not { } cancellations)
+		{
+			return ConsoleCancelKeyHandlingResult.NotHandled;
+		}
+
+		foreach (var startCancellation in cancellations)
 		{
 			startCancellation();
 		}
@@ -187,12 +216,25 @@ internal static class ProcessSignalCoordinator
 	}
 
 	private static bool IsSignalBridgeSupported() =>
-		!OperatingSystem.IsAndroid()
-		&& !OperatingSystem.IsBrowser()
-		&& !OperatingSystem.IsIOS()
-		&& !OperatingSystem.IsTvOS();
+		IsSignalBridgeSupportedForTesting(
+			OperatingSystem.IsAndroid(),
+			OperatingSystem.IsBrowser(),
+			OperatingSystem.IsIOS(),
+			OperatingSystem.IsMacCatalyst(),
+			OperatingSystem.IsTvOS());
 
-	private static void WriteDiagnostic(string message)
+	internal static bool IsSignalBridgeSupportedForTesting(
+		bool isAndroid,
+		bool isBrowser,
+		bool isIOS,
+		bool isMacCatalyst,
+		bool isTvOS) =>
+		!isAndroid
+		&& !isBrowser
+		&& (!isIOS || isMacCatalyst)
+		&& !isTvOS;
+
+	internal static void WriteDiagnostic(string message)
 	{
 		try
 		{

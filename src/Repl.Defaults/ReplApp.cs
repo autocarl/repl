@@ -21,7 +21,7 @@ public sealed class ReplApp : IReplApp
 	// Ensures modules resolved via DI share the same service instances
 	// as handler parameters resolved at runtime.
 	private ServiceProvider? _sharedProvider;
-	private ProcessSignalHandlingMode _defaultProcessSignalHandling = ProcessSignalHandlingMode.Automatic;
+	private ProcessSignalHandlingMode _defaultProcessSignalHandling = ProcessSignalHandlingMode.None;
 
 	// Extension packages (e.g. Repl.Spectre) park per-app configuration here so it stays
 	// reachable even when the shared provider was materialized before the Use* call —
@@ -227,7 +227,7 @@ public sealed class ReplApp : IReplApp
 	/// </summary>
 	/// <param name="args">Command-line arguments.</param>
 	/// <param name="options">Per-run options. A null signal-handling value inherits the active profile.</param>
-	/// <param name="cancellationToken">Caller-owned cancellation token. In automatic signal mode, handlers receive a linked token that is valid only for this run and must not be retained after their work completes.</param>
+	/// <param name="cancellationToken">Caller-owned cancellation token. Automatic signal mode injects a linked, run-scoped token; caller-owned mode passes this token through directly.</param>
 	public async ValueTask<int> RunAsync(
 		string[] args,
 		ReplRunOptions? options = null,
@@ -239,7 +239,8 @@ public sealed class ReplApp : IReplApp
 		if (processSignalHandling == ProcessSignalHandlingMode.None)
 		{
 			var provider = EnsureSharedProvider();
-			return await RunAsync(args, provider, runOptions, cancellationToken).ConfigureAwait(false);
+			return await RunWithServicesAsync(args, provider, runOptions, cancellationToken)
+				.ConfigureAwait(false);
 		}
 
 		var signals = new ProcessSignalCancellationScope(cancellationToken);
@@ -248,7 +249,8 @@ public sealed class ReplApp : IReplApp
 		try
 		{
 			var provider = EnsureSharedProvider();
-			runExitCode = await RunAsync(args, provider, runOptions, signals.Token).ConfigureAwait(false);
+			runExitCode = await RunWithServicesAsync(args, provider, runOptions, signals.Token)
+				.ConfigureAwait(false);
 		}
 		catch (OperationCanceledException ex)
 		{
@@ -261,6 +263,8 @@ public sealed class ReplApp : IReplApp
 
 		if (cancellationException is not null && signals.ExitCode is null)
 		{
+			// Scope disposal must finish before deciding whether cancellation came from a claimed
+			// process signal; ExceptionDispatchInfo preserves the original cancellation stack.
 			System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cancellationException).Throw();
 		}
 
@@ -271,7 +275,7 @@ public sealed class ReplApp : IReplApp
 	/// Runs using internally configured services and owns process signals according to <see cref="ReplRunOptions"/>.
 	/// </summary>
 	/// <param name="args">Command-line arguments.</param>
-	/// <param name="cancellationToken">Caller-owned cancellation token. Handlers receive a linked, run-scoped token and must not retain it after their work completes.</param>
+	/// <param name="cancellationToken">Caller-owned cancellation token. Automatic signal mode injects a linked, run-scoped token; caller-owned mode passes this token through directly.</param>
 	public ValueTask<int> RunAsync(string[] args, CancellationToken cancellationToken) =>
 		RunAsync(args, options: null, cancellationToken);
 
@@ -304,7 +308,7 @@ public sealed class ReplApp : IReplApp
 	/// </summary>
 	/// <param name="args">Command-line arguments.</param>
 	/// <param name="services">Caller-owned service provider.</param>
-	/// <param name="options">Per-run options. <see cref="ReplRunOptions.ProcessSignalHandling"/> is not applied by this overload.</param>
+	/// <param name="options">Per-run options. An explicit <see cref="ProcessSignalHandlingMode.Automatic"/> request is diagnosed and ignored because this overload is externally owned.</param>
 	/// <param name="cancellationToken">Caller-owned cancellation token. This overload does not install a standalone process-signal bridge or create a signal-linked token.</param>
 	public async ValueTask<int> RunAsync(
 		string[] args,
@@ -315,6 +319,17 @@ public sealed class ReplApp : IReplApp
 		ArgumentNullException.ThrowIfNull(args);
 		ArgumentNullException.ThrowIfNull(services);
 		var runOptions = options ?? new ReplRunOptions();
+		DiagnoseIgnoredProcessSignalHandling(runOptions);
+		return await RunWithServicesAsync(args, services, runOptions, cancellationToken)
+			.ConfigureAwait(false);
+	}
+
+	private async ValueTask<int> RunWithServicesAsync(
+		string[] args,
+		IServiceProvider services,
+		ReplRunOptions runOptions,
+		CancellationToken cancellationToken)
+	{
 		if (runOptions.HostedServiceLifecycle is HostedServiceLifecycleMode.None or HostedServiceLifecycleMode.Guest)
 		{
 			return await _core.RunWithServicesAsync(args, services, cancellationToken).ConfigureAwait(false);
@@ -483,7 +498,7 @@ public sealed class ReplApp : IReplApp
 	/// </summary>
 	/// <param name="args">Command-line arguments.</param>
 	/// <param name="host">Caller-owned application host.</param>
-	/// <param name="options">Per-run options. <see cref="ReplRunOptions.ProcessSignalHandling"/> is not applied by this overload.</param>
+	/// <param name="options">Per-run options. An explicit <see cref="ProcessSignalHandlingMode.Automatic"/> request is diagnosed and ignored because this overload is externally owned.</param>
 	/// <param name="cancellationToken">Caller-owned cancellation token. This overload does not install a standalone process-signal bridge or create a signal-linked token.</param>
 	public ValueTask<int> RunAsync(
 		string[] args,
@@ -513,7 +528,7 @@ public sealed class ReplApp : IReplApp
 	/// </summary>
 	/// <param name="args">Command-line arguments.</param>
 	/// <param name="host">Caller-owned input/output host.</param>
-	/// <param name="options">Per-run options. <see cref="ReplRunOptions.ProcessSignalHandling"/> is not applied by this overload.</param>
+	/// <param name="options">Per-run options. An explicit <see cref="ProcessSignalHandlingMode.Automatic"/> request is diagnosed and ignored because this overload is externally owned.</param>
 	/// <param name="cancellationToken">Caller-owned cancellation token. This overload does not install a standalone process-signal bridge or create a signal-linked token.</param>
 	public async ValueTask<int> RunAsync(
 		string[] args,
@@ -553,7 +568,7 @@ public sealed class ReplApp : IReplApp
 	/// <param name="args">Command-line arguments.</param>
 	/// <param name="host">Caller-owned input/output host.</param>
 	/// <param name="services">Caller-owned service provider.</param>
-	/// <param name="options">Per-run options. <see cref="ReplRunOptions.ProcessSignalHandling"/> is not applied by this overload.</param>
+	/// <param name="options">Per-run options. An explicit <see cref="ProcessSignalHandlingMode.Automatic"/> request is diagnosed and ignored because this overload is externally owned.</param>
 	/// <param name="cancellationToken">Caller-owned cancellation token. This overload does not install a standalone process-signal bridge or create a signal-linked token.</param>
 	public async ValueTask<int> RunAsync(
 		string[] args,
@@ -570,6 +585,7 @@ public sealed class ReplApp : IReplApp
 		var sessionHost = host as IReplSessionHost;
 		using (ReplSessionIO.SetSession(host.Output, host.Input, runOptions.AnsiSupport, sessionHost?.SessionId))
 		{
+			DiagnoseIgnoredProcessSignalHandling(runOptions);
 			ApplyTerminalOverrides(runOptions);
 
 			// Before building the overlay, which resolves the presenter, the interaction handlers and
@@ -584,6 +600,16 @@ public sealed class ReplApp : IReplApp
 			var sessionProvider = CreateSessionOverlay(services);
 			return await _core.RunWithServicesAsync(args, sessionProvider, cancellationToken)
 				.ConfigureAwait(false);
+		}
+	}
+
+	private static void DiagnoseIgnoredProcessSignalHandling(ReplRunOptions runOptions)
+	{
+		if (runOptions.ProcessSignalHandling == ProcessSignalHandlingMode.Automatic)
+		{
+			ProcessSignalCoordinator.WriteDiagnostic(
+				"Ignoring ReplRunOptions.ProcessSignalHandling=Automatic because this overload "
+				+ "uses an externally managed host or service provider; the caller owns process signals.");
 		}
 	}
 
