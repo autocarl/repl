@@ -42,6 +42,25 @@ internal static class ShellCompletionTestHostRunner
 		return (process.ExitCode, MergeOutput(stdout.ToString(), stderr.ToString()));
 	}
 
+	public static Process Start(
+		string scenario,
+		IReadOnlyList<string> args,
+		IReadOnlyDictionary<string, string?>? environment = null)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(scenario);
+		ArgumentNullException.ThrowIfNull(args);
+
+		var process = CreateProcess(scenario, args, environment);
+		if (process.Start())
+		{
+			return process;
+		}
+
+		var fileName = process.StartInfo.FileName;
+		process.Dispose();
+		throw new InvalidOperationException($"Failed to start test host process '{fileName}'.");
+	}
+
 	private static Process CreateProcess(
 		string scenario,
 		IReadOnlyList<string> args,

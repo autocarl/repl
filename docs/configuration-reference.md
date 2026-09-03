@@ -201,6 +201,7 @@ Accessed via `ReplOptions.ShellCompletion`. See [Shell Completion](shell-complet
 
 A record passed to `app.RunAsync(...)` to control runtime behavior. Separate from `ReplOptions`.
 
+- `ProcessSignalHandling` (`ProcessSignalHandlingMode`, default: `Automatic`) — For standalone `Run`/`RunAsync` overloads on Unix, converts the first `SIGTERM` into cooperative cancellation and returns the conventional exit code `143`. A second `SIGTERM` retains the operating system default behavior. Set to `None` when the caller owns process signals. Overloads that use an external host, service provider, or `IReplHost` leave signal handling to that owner.
 - `HostedServiceLifecycle` (`HostedServiceLifecycleMode`, default: `None`) — Hosted service lifecycle mode.
 - `AnsiSupport` (`AnsiMode`, default: `Auto`) — ANSI support mode for this run.
 - `TerminalOverrides` (`TerminalSessionOverrides?`, default: `null`) — Terminal session overrides.

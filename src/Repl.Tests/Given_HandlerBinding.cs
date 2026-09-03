@@ -124,11 +124,48 @@ public sealed class Given_HandlerBinding
 			return "ok";
 		});
 
-		var exitCode = await sut.RunAsync(["work"], cancellationTokenSource.Token).ConfigureAwait(false);
+		var exitCode = await sut.RunAsync(
+			["work"],
+			new ReplRunOptions { ProcessSignalHandling = ProcessSignalHandlingMode.None },
+			cancellationTokenSource.Token).ConfigureAwait(false);
 
 		exitCode.Should().Be(0);
 		captured.CanBeCanceled.Should().BeTrue();
 		captured.Should().Be(cancellationTokenSource.Token);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies automatic signal handling preserves caller-requested cancellation through the linked execution token.")]
+	public async Task When_ProcessSignalHandlingIsAutomatic_Then_HandlerObservesCallerCancellation()
+	{
+		var sut = ReplApp.Create();
+		using var cancellationTokenSource = new CancellationTokenSource();
+		var handlerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var observedCancellation = false;
+
+		sut.Map("work", async (CancellationToken ct) =>
+		{
+			handlerStarted.SetResult();
+			try
+			{
+				await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException) when (ct.IsCancellationRequested)
+			{
+				observedCancellation = true;
+				throw;
+			}
+		});
+
+		var runTask = sut.RunAsync(["work"], cancellationTokenSource.Token).AsTask();
+		await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+		await cancellationTokenSource.CancelAsync().ConfigureAwait(false);
+
+#pragma warning disable VSTHRD003 // The run must start before this test requests caller cancellation.
+		var act = async () => await runTask.ConfigureAwait(false);
+#pragma warning restore VSTHRD003
+		await act.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
+		observedCancellation.Should().BeTrue();
 	}
 
 	[TestMethod]

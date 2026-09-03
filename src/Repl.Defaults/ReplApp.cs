@@ -213,9 +213,8 @@ public sealed class ReplApp : IReplApp
 	public int Run(string[] args, ReplRunOptions? options = null)
 	{
 		ArgumentNullException.ThrowIfNull(args);
-		var provider = EnsureSharedProvider();
 #pragma warning disable VSTHRD002
-		return RunAsync(args, provider, options).AsTask().GetAwaiter().GetResult();
+		return RunAsync(args, options).AsTask().GetAwaiter().GetResult();
 #pragma warning restore VSTHRD002
 	}
 
@@ -228,8 +227,25 @@ public sealed class ReplApp : IReplApp
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(args);
-		var provider = EnsureSharedProvider();
-		return await RunAsync(args, provider, options, cancellationToken).ConfigureAwait(false);
+		var runOptions = options ?? new ReplRunOptions();
+		if (runOptions.ProcessSignalHandling == ProcessSignalHandlingMode.None || OperatingSystem.IsWindows())
+		{
+			var provider = EnsureSharedProvider();
+			return await RunAsync(args, provider, runOptions, cancellationToken).ConfigureAwait(false);
+		}
+
+		var signals = new ProcessSignalCancellationScope(cancellationToken);
+		await using var configuredSignals = signals.ConfigureAwait(false);
+		try
+		{
+			var provider = EnsureSharedProvider();
+			var exitCode = await RunAsync(args, provider, runOptions, signals.Token).ConfigureAwait(false);
+			return signals.ExitCode == 0 ? exitCode : signals.ExitCode;
+		}
+		catch (OperationCanceledException) when (signals.ExitCode != 0)
+		{
+			return signals.ExitCode;
+		}
 	}
 
 	/// <summary>
@@ -480,7 +496,8 @@ public sealed class ReplApp : IReplApp
 		using (ReplSessionIO.SetSession(host.Output, host.Input, runOptions.AnsiSupport, sessionHost?.SessionId))
 		{
 			ApplyTerminalOverrides(runOptions);
-			return await RunAsync(args, runOptions, cancellationToken).ConfigureAwait(false);
+			var provider = EnsureSharedProvider();
+			return await RunAsync(args, provider, runOptions, cancellationToken).ConfigureAwait(false);
 		}
 	}
 

@@ -6,6 +6,11 @@ namespace Repl;
 public sealed record ReplRunOptions
 {
 	/// <summary>
+	/// Gets how standalone runs handle POSIX termination.
+	/// </summary>
+	public ProcessSignalHandlingMode ProcessSignalHandling { get; init; } = ProcessSignalHandlingMode.Automatic;
+
+	/// <summary>
 	/// Gets or sets the hosted-service lifecycle behavior.
 	/// </summary>
 	public HostedServiceLifecycleMode HostedServiceLifecycle { get; init; } = HostedServiceLifecycleMode.None;

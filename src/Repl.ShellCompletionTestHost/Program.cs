@@ -6,7 +6,7 @@ namespace Repl.ShellCompletionTestHost;
 
 internal static class Program
 {
-	private static int Main(string[] args)
+	private static async Task<int> Main(string[] args)
 	{
 		var app = ReplApp.Create();
 		ConfigureScenario(app, Environment.GetEnvironmentVariable("REPL_TEST_SCENARIO"));
@@ -16,9 +16,7 @@ internal static class Program
 			app.UseDefaultInteractive();
 		}
 
-#pragma warning disable MA0045 // Sync entry point is intentional for this test host.
-		return app.Run(args);
-#pragma warning restore MA0045
+		return await app.RunAsync(args).ConfigureAwait(false);
 	}
 
 	private static void ConfigureScenario(ReplApp app, string? scenario)
@@ -33,10 +31,29 @@ internal static class Program
 			case "setup":
 				ConfigureCompletionScenario(app);
 				return;
+			case "process-signal":
+				ConfigureProcessSignalScenario(app);
+				return;
 			default:
 				throw new InvalidOperationException(
-					$"Unknown REPL test scenario '{scenario}'. Supported values: completion, setup.");
+					$"Unknown REPL test scenario '{scenario}'. Supported values: completion, setup, process-signal.");
 		}
+	}
+
+	private static void ConfigureProcessSignalScenario(ReplApp app)
+	{
+		app.Map("wait {marker}", async (string marker, CancellationToken cancellationToken) =>
+		{
+			await File.WriteAllTextAsync(marker, "READY\n", CancellationToken.None).ConfigureAwait(false);
+			try
+			{
+				await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+			}
+			finally
+			{
+				await File.AppendAllTextAsync(marker, "FINALLY\n", CancellationToken.None).ConfigureAwait(false);
+			}
+		});
 	}
 
 	private static void ConfigureCompletionScenario(ReplApp app)
