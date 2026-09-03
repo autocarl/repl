@@ -19,12 +19,13 @@ public static class ReplAppProfileExtensions
 			options.Interactive.Prompt = ">";
 			options.Interactive.InteractivePolicy = InteractivePolicy.Auto;
 		});
+		app.SetDefaultProcessSignalHandling(ProcessSignalHandlingMode.Automatic);
 
 		return app;
 	}
 
 	/// <summary>
-	/// Applies defaults suited for CLI one-shot execution.
+	/// Applies process-owning defaults suited for CLI one-shot execution.
 	/// </summary>
 	/// <param name="app">Target app.</param>
 	/// <returns>The same app instance.</returns>
@@ -38,12 +39,13 @@ public static class ReplAppProfileExtensions
 			options.Output.DefaultFormat = "human";
 			options.Output.BannerEnabled = true;
 		});
+		app.SetDefaultProcessSignalHandling(ProcessSignalHandlingMode.Automatic);
 
 		return app;
 	}
 
 	/// <summary>
-	/// Applies defaults suited for embedded host scenarios.
+	/// Applies defaults suited for embedded host scenarios, leaving process signal ownership with the caller.
 	/// </summary>
 	/// <param name="app">Target app.</param>
 	/// <returns>The same app instance.</returns>
@@ -56,6 +58,7 @@ public static class ReplAppProfileExtensions
 			options.AmbientCommands.ExitCommandEnabled = false;
 			options.Interactive.InteractivePolicy = InteractivePolicy.Auto;
 		});
+		app.SetDefaultProcessSignalHandling(ProcessSignalHandlingMode.None);
 
 		return app;
 	}

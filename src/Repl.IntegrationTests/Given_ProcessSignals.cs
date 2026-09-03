@@ -9,8 +9,12 @@ public sealed class Given_ProcessSignals
 	private static readonly TimeSpan ProcessTimeout = TimeSpan.FromSeconds(15);
 
 	[TestMethod]
-	[Description("A standalone one-shot run converts SIGTERM into cooperative cancellation before exiting.")]
-	public async Task When_StandaloneRunReceivesSigTerm_Then_FinallyRunsAndConventionalExitCodeIsReturned()
+	[DataRow(2, 130, DisplayName = "SIGINT cancels cooperatively and exits 130")]
+	[DataRow(15, 143, DisplayName = "SIGTERM cancels cooperatively and exits 143")]
+	[Description("A standalone one-shot run converts process signals into cooperative cancellation before exiting.")]
+	public async Task When_StandaloneRunReceivesSignal_Then_FinallyRunsAndConventionalExitCodeIsReturned(
+		int signal,
+		int expectedExitCode)
 	{
 		if (OperatingSystem.IsWindows())
 		{
@@ -25,6 +29,42 @@ public sealed class Given_ProcessSignals
 		{
 			await WaitForMarkerAsync(process, marker, "READY").ConfigureAwait(false);
 
+			await SendSignalAsync(process, signal).ConfigureAwait(false);
+			await process.WaitForExitAsync().WaitAsync(ProcessTimeout).ConfigureAwait(false);
+
+			process.ExitCode.Should().Be(expectedExitCode);
+			(await File.ReadAllLinesAsync(marker).ConfigureAwait(false)).Should().Equal("READY", "FINALLY");
+		}
+		finally
+		{
+			await TerminateIfRunningAsync(process).ConfigureAwait(false);
+			File.Delete(marker);
+		}
+	}
+
+	[TestMethod]
+	[Description("A second SIGTERM during cooperative cleanup falls through to the operating system.")]
+	public async Task When_SecondSigTermArrivesDuringCleanup_Then_OperatingSystemTerminatesProcess()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			Assert.Inconclusive("POSIX signal delivery is exercised on Unix runners.");
+		}
+
+		var marker = Path.Combine(Path.GetTempPath(), $"repl-signal-{Guid.NewGuid():N}.txt");
+		using var process = ShellCompletionTestHostRunner.Start(
+			"process-signal",
+			["wait", marker, "--no-logo"],
+			new Dictionary<string, string?>(StringComparer.Ordinal)
+			{
+				["REPL_TEST_SIGNAL_CLEANUP_DELAY_MS"] = "30000",
+			});
+		try
+		{
+			await WaitForMarkerAsync(process, marker, "READY").ConfigureAwait(false);
+			await SendSignalAsync(process, signal: 15).ConfigureAwait(false);
+			await WaitForMarkerAsync(process, marker, "FINALLY").ConfigureAwait(false);
+
 			await SendSignalAsync(process, signal: 15).ConfigureAwait(false);
 			await process.WaitForExitAsync().WaitAsync(ProcessTimeout).ConfigureAwait(false);
 
@@ -33,12 +73,7 @@ public sealed class Given_ProcessSignals
 		}
 		finally
 		{
-			if (!process.HasExited)
-			{
-				process.Kill(entireProcessTree: true);
-				await process.WaitForExitAsync().WaitAsync(ProcessTimeout).ConfigureAwait(false);
-			}
-
+			await TerminateIfRunningAsync(process).ConfigureAwait(false);
 			File.Delete(marker);
 		}
 	}
@@ -80,5 +115,14 @@ public sealed class Given_ProcessSignals
 		await sender.WaitForExitAsync().WaitAsync(ProcessTimeout).ConfigureAwait(false);
 		var error = await sender.StandardError.ReadToEndAsync().ConfigureAwait(false);
 		sender.ExitCode.Should().Be(0, because: $"the test signal must reach the child process: {error}");
+	}
+
+	private static async Task TerminateIfRunningAsync(Process process)
+	{
+		if (!process.HasExited)
+		{
+			process.Kill(entireProcessTree: true);
+			await process.WaitForExitAsync().WaitAsync(ProcessTimeout).ConfigureAwait(false);
+		}
 	}
 }

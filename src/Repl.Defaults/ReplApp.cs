@@ -21,6 +21,7 @@ public sealed class ReplApp : IReplApp
 	// Ensures modules resolved via DI share the same service instances
 	// as handler parameters resolved at runtime.
 	private ServiceProvider? _sharedProvider;
+	private ProcessSignalHandlingMode _defaultProcessSignalHandling = ProcessSignalHandlingMode.Automatic;
 
 	// Extension packages (e.g. Repl.Spectre) park per-app configuration here so it stays
 	// reachable even when the shared provider was materialized before the Use* call —
@@ -28,6 +29,9 @@ public sealed class ReplApp : IReplApp
 	private readonly System.Collections.Concurrent.ConcurrentDictionary<Type, object> _extensionState = new();
 
 	internal IServiceCollection ServiceDescriptors => _services;
+
+	internal void SetDefaultProcessSignalHandling(ProcessSignalHandlingMode mode) =>
+		_defaultProcessSignalHandling = mode;
 
 	internal void SetExtensionState<T>(T value) where T : class => _extensionState[typeof(T)] = value;
 
@@ -208,7 +212,7 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs using internally configured services.
+	/// Runs using internally configured services and owns process signals according to <see cref="ReplRunOptions"/>.
 	/// </summary>
 	public int Run(string[] args, ReplRunOptions? options = null)
 	{
@@ -219,7 +223,7 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs using internally configured services.
+	/// Runs using internally configured services and owns process signals according to <see cref="ReplRunOptions"/>.
 	/// </summary>
 	public async ValueTask<int> RunAsync(
 		string[] args,
@@ -227,8 +231,8 @@ public sealed class ReplApp : IReplApp
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(args);
-		var runOptions = options ?? new ReplRunOptions();
-		if (runOptions.ProcessSignalHandling == ProcessSignalHandlingMode.None || OperatingSystem.IsWindows())
+		var runOptions = options ?? new ReplRunOptions { ProcessSignalHandling = _defaultProcessSignalHandling };
+		if (runOptions.ProcessSignalHandling == ProcessSignalHandlingMode.None)
 		{
 			var provider = EnsureSharedProvider();
 			return await RunAsync(args, provider, runOptions, cancellationToken).ConfigureAwait(false);
@@ -249,7 +253,7 @@ public sealed class ReplApp : IReplApp
 	}
 
 	/// <summary>
-	/// Runs using internally configured services.
+	/// Runs using internally configured services and owns process signals according to <see cref="ReplRunOptions"/>.
 	/// </summary>
 	public ValueTask<int> RunAsync(string[] args, CancellationToken cancellationToken) =>
 		RunAsync(args, options: null, cancellationToken);

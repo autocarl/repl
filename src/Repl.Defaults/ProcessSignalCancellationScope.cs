@@ -4,11 +4,12 @@ namespace Repl;
 
 internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 {
+	private const int SigIntExitCode = 130;
 	private const int SigTermExitCode = 143;
 
 	private readonly CancellationTokenSource _signalCancellation = new();
 	private readonly CancellationTokenSource _linkedCancellation;
-	private readonly PosixSignalRegistration _sigTermRegistration;
+	private readonly PosixSignalRegistration? _sigTermRegistration;
 	private readonly Lock _gate = new();
 	private Task _cancellationTask = Task.CompletedTask;
 	private int _exitCode;
@@ -20,14 +21,25 @@ internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 			cancellationToken,
 			_signalCancellation.Token);
 
+		var cancelKeyRegistered = false;
 		try
 		{
-			_sigTermRegistration = PosixSignalRegistration.Create(
-				PosixSignal.SIGTERM,
-				HandleSignal);
+			Console.CancelKeyPress += HandleCancelKey;
+			cancelKeyRegistered = true;
+			if (!OperatingSystem.IsWindows())
+			{
+				_sigTermRegistration = PosixSignalRegistration.Create(
+					PosixSignal.SIGTERM,
+					HandleSigTerm);
+			}
 		}
 		catch
 		{
+			if (cancelKeyRegistered)
+			{
+				Console.CancelKeyPress -= HandleCancelKey;
+			}
+
 			_linkedCancellation.Dispose();
 			_signalCancellation.Dispose();
 			throw;
@@ -52,7 +64,8 @@ internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 			cancellationTask = _cancellationTask;
 		}
 
-		_sigTermRegistration.Dispose();
+		Console.CancelKeyPress -= HandleCancelKey;
+		_sigTermRegistration?.Dispose();
 		try
 		{
 #pragma warning disable VSTHRD003 // The OS signal callback starts this task; disposal must observe its completion.
@@ -66,7 +79,29 @@ internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 		}
 	}
 
-	private void HandleSignal(PosixSignalContext context)
+	internal void HandleCancelKey(object? sender, ConsoleCancelEventArgs context)
+	{
+		_ = sender;
+		if (context.SpecialKey != ConsoleSpecialKey.ControlC
+			|| CancelKeyHandler.HasActiveConsoleHandler)
+		{
+			return;
+		}
+
+		lock (_gate)
+		{
+			if (_disposed || _exitCode != 0 || CancelKeyHandler.HasActiveConsoleHandler)
+			{
+				return;
+			}
+
+			_exitCode = SigIntExitCode;
+			context.Cancel = true;
+			_cancellationTask = _signalCancellation.CancelAsync();
+		}
+	}
+
+	private void HandleSigTerm(PosixSignalContext context)
 	{
 		lock (_gate)
 		{
@@ -80,5 +115,4 @@ internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 			_cancellationTask = _signalCancellation.CancelAsync();
 		}
 	}
-
 }

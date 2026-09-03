@@ -52,6 +52,15 @@ internal static class Program
 			finally
 			{
 				await File.AppendAllTextAsync(marker, "FINALLY\n", CancellationToken.None).ConfigureAwait(false);
+				if (int.TryParse(
+						Environment.GetEnvironmentVariable("REPL_TEST_SIGNAL_CLEANUP_DELAY_MS"),
+						NumberStyles.Integer,
+						CultureInfo.InvariantCulture,
+						out var cleanupDelayMs)
+					&& cleanupDelayMs > 0)
+				{
+					await Task.Delay(TimeSpan.FromMilliseconds(cleanupDelayMs), CancellationToken.None).ConfigureAwait(false);
+				}
 			}
 		});
 	}

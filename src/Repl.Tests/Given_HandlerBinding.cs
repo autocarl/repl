@@ -135,6 +135,26 @@ public sealed class Given_HandlerBinding
 	}
 
 	[TestMethod]
+	[Description("Embedded console profile keeps process signal ownership with its caller by default.")]
+	public async Task When_UsingEmbeddedConsoleProfile_Then_HandlerReceivesCallerTokenDirectly()
+	{
+		var sut = ReplApp.Create().UseEmbeddedConsoleProfile();
+		CancellationToken captured = default;
+		using var cancellationTokenSource = new CancellationTokenSource();
+
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			captured = ct;
+			return "ok";
+		});
+
+		var exitCode = await sut.RunAsync(["work"], cancellationTokenSource.Token).ConfigureAwait(false);
+
+		exitCode.Should().Be(0);
+		captured.Should().Be(cancellationTokenSource.Token);
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies automatic signal handling preserves caller-requested cancellation through the linked execution token.")]
 	public async Task When_ProcessSignalHandlingIsAutomatic_Then_HandlerObservesCallerCancellation()
 	{

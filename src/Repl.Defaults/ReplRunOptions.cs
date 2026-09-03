@@ -6,7 +6,7 @@ namespace Repl;
 public sealed record ReplRunOptions
 {
 	/// <summary>
-	/// Gets how standalone runs handle POSIX termination.
+	/// Gets how standalone runs handle process termination signals.
 	/// </summary>
 	public ProcessSignalHandlingMode ProcessSignalHandling { get; init; } = ProcessSignalHandlingMode.Automatic;
 

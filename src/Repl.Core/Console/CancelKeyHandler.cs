@@ -12,18 +12,33 @@ namespace Repl;
 internal sealed class CancelKeyHandler : IDisposable
 {
 	private static readonly TimeSpan DoubleTapWindow = TimeSpan.FromSeconds(2);
+	private static int s_activeConsoleHandlers;
 
 	private CancellationTokenSource? _commandCts;
 	private DateTimeOffset _lastCancelPress;
 	private readonly Lock _lock = new();
 	private readonly bool _hooked;
+	private int _disposed;
+
+	// Standalone signal scopes yield Ctrl+C while an interactive console handler owns its process-wide semantics.
+	internal static bool HasActiveConsoleHandler => Volatile.Read(ref s_activeConsoleHandlers) != 0;
 
 	internal CancelKeyHandler()
 	{
 		_hooked = !ReplSessionIO.IsSessionActive;
 		if (_hooked)
 		{
-			Console.CancelKeyPress += OnCancelKeyPress;
+			// Publish ownership before subscribing so an outer standalone handler never claims the same key press.
+			Interlocked.Increment(ref s_activeConsoleHandlers);
+			try
+			{
+				Console.CancelKeyPress += OnCancelKeyPress;
+			}
+			catch
+			{
+				Interlocked.Decrement(ref s_activeConsoleHandlers);
+				throw;
+			}
 		}
 	}
 
@@ -41,9 +56,15 @@ internal sealed class CancelKeyHandler : IDisposable
 
 	public void Dispose()
 	{
+		if (Interlocked.Exchange(ref _disposed, 1) != 0)
+		{
+			return;
+		}
+
 		if (_hooked)
 		{
 			Console.CancelKeyPress -= OnCancelKeyPress;
+			Interlocked.Decrement(ref s_activeConsoleHandlers);
 		}
 	}
 
