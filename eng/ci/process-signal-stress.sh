@@ -54,11 +54,11 @@ run_stress \
   "$unit_iterations" \
   src/Repl.Tests/Repl.Tests.csproj \
   "FullyQualifiedName~Given_ProcessSignalCancellationScope" \
-  16
+  17
 
 run_stress \
   "process-signal integration stress" \
   "$integration_iterations" \
   src/Repl.IntegrationTests/Repl.IntegrationTests.csproj \
   "FullyQualifiedName~Given_ProcessSignals" \
-  7
+  8

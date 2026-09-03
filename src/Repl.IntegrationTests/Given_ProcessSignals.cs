@@ -8,8 +8,10 @@ namespace Repl.IntegrationTests;
 public sealed class Given_ProcessSignals
 {
 	private const int SigInt = 2;
+	private const int SigQuit = 3;
 	private const int SigTerm = 15;
 	private const int SigIntExitCode = 130;
+	private const int SigQuitExitCode = 131;
 	private const int SigTermExitCode = 143;
 	private const int CleanupDelayMilliseconds = 30_000;
 	private const string CleanupCompletedMarker = "CLEANUP-COMPLETED";
@@ -80,6 +82,33 @@ public sealed class Given_ProcessSignals
 			process.ExitCode.Should().Be(SigTermExitCode);
 			(await File.ReadAllLinesAsync(marker).ConfigureAwait(false)).Should().Equal("READY");
 			readOutput().Should().NotContain("Received SIGTERM");
+		}
+		finally
+		{
+			await TerminateIfRunningAsync(process).ConfigureAwait(false);
+			File.Delete(marker);
+		}
+	}
+
+	[TestMethod]
+	[Description("Automatic handling leaves Unix SIGQUIT to the operating system instead of reinterpreting ControlBreak as SIGINT.")]
+	public async Task When_AutomaticRunReceivesSigQuit_Then_OperatingSystemTerminatesProcess()
+	{
+		var marker = Path.Combine(Path.GetTempPath(), $"repl-signal-{Guid.NewGuid():N}.txt");
+		using var process = ShellCompletionTestHostRunner.Start(
+			"process-signal",
+			["wait", marker, "--no-logo"],
+			out var readOutput);
+		try
+		{
+			await WaitForMarkerAsync(process, marker, "READY", readOutput).ConfigureAwait(false);
+
+			await SendSignalAsync(process, SigQuit).ConfigureAwait(false);
+			await WaitForExitAsync(process, readOutput).ConfigureAwait(false);
+
+			process.ExitCode.Should().Be(SigQuitExitCode);
+			(await File.ReadAllLinesAsync(marker).ConfigureAwait(false)).Should().Equal("READY");
+			readOutput().Should().NotContain("Received SIGINT");
 		}
 		finally
 		{

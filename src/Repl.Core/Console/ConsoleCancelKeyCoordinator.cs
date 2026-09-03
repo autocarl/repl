@@ -52,21 +52,25 @@ internal static class ConsoleCancelKeyCoordinator
 
 	private static void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
 	{
-		if (IsHandledCancelKey(e.SpecialKey)
-			&& Dispatch() == ConsoleCancelKeyHandlingResult.SuppressProcessTermination)
+		if (HandleCancelKey(e.SpecialKey, OperatingSystem.IsWindows())
+			== ConsoleCancelKeyHandlingResult.SuppressProcessTermination)
 		{
 			e.Cancel = true;
 		}
 	}
 
-	private static ConsoleCancelKeyHandlingResult Dispatch() =>
-		Invoke(RevalidateSelection(CaptureSelection()).Handlers);
-
 	internal static ConsoleCancelKeyHandlingResult HandleCancelKeyForTesting(
 		ConsoleSpecialKey specialKey = ConsoleSpecialKey.ControlC,
+		Action? afterInitialSelection = null,
+		bool? isWindows = null) =>
+		HandleCancelKey(specialKey, isWindows ?? OperatingSystem.IsWindows(), afterInitialSelection);
+
+	private static ConsoleCancelKeyHandlingResult HandleCancelKey(
+		ConsoleSpecialKey specialKey,
+		bool isWindows,
 		Action? afterInitialSelection = null)
 	{
-		if (!IsHandledCancelKey(specialKey))
+		if (!IsHandledCancelKey(specialKey, isWindows))
 		{
 			return ConsoleCancelKeyHandlingResult.NotHandled;
 		}
@@ -76,8 +80,9 @@ internal static class ConsoleCancelKeyCoordinator
 		return Invoke(RevalidateSelection(selection).Handlers);
 	}
 
-	private static bool IsHandledCancelKey(ConsoleSpecialKey specialKey) =>
-		specialKey is ConsoleSpecialKey.ControlC or ConsoleSpecialKey.ControlBreak;
+	private static bool IsHandledCancelKey(ConsoleSpecialKey specialKey, bool isWindows) =>
+		specialKey == ConsoleSpecialKey.ControlC
+		|| (isWindows && specialKey == ConsoleSpecialKey.ControlBreak);
 
 	private static DispatchSelection CaptureSelection()
 	{

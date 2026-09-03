@@ -6,7 +6,7 @@ namespace Repl;
 public enum ProcessSignalHandlingMode
 {
 	/// <summary>
-	/// Standalone runs handle Ctrl+C and Ctrl+Break console events for their duration.
+	/// Standalone runs handle Ctrl+C console events, plus Ctrl+Break on Windows, for their duration.
 	/// They also handle SIGTERM on supported Unix platforms. Interactive sessions retain
 	/// their existing console command-cancellation behavior.
 	/// </summary>

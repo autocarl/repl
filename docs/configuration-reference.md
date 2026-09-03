@@ -255,7 +255,7 @@ Automatic handling supports overlapping standalone runs in one process-wide owne
 2. A subsequent supported signal is not suppressed. Repl writes a final diagnostic and leaves termination to the operating system, so cleanup is not guaranteed to finish.
 3. After the last automatic scope is disposed **and all signal-triggered cancellation callbacks have drained**, the process-wide claimed-signal state resets. A run that joins while callbacks are still draining inherits the cancelled epoch.
 
-Interactive console-key handling has priority over standalone handling: the first Ctrl+C or Ctrl+Break event during an interactive command cancels that command; a subsequent event, or one with no active command, retains the operating-system default.
+Interactive console-key handling has priority over standalone handling: the first Ctrl+C event—or Ctrl+Break on Windows—during an interactive command cancels that command; a subsequent event, or one with no active command, retains the operating-system default.
 
 Repl does **not** impose an automatic grace-period timeout after the first signal. A non-cooperative handler can therefore keep running until another signal is sent or an external supervisor escalates termination. Cancellation-callback draining is likewise unbounded: resetting the epoch while a callback is still running could cause the next signal to be suppressed as a new first signal. If a callback never completes, the epoch remains claimed and every subsequent supported signal falls through to operating-system termination. This avoids embedding an application-specific shutdown deadline in the library.
 
@@ -264,7 +264,7 @@ Repl does **not** impose an automatic grace-period timeout after the first signa
 | Signal/event | Typical source | Exit code | Basis |
 |---|---|---:|---|
 | `SIGINT` | Ctrl+C | `130` | Unix convention: `128 + 2` |
-| `ConsoleSpecialKey.ControlBreak` | Ctrl+Break where the host raises `Console.CancelKeyPress` | `130` | Repl compatibility policy |
+| `ConsoleSpecialKey.ControlBreak` | Ctrl+Break on Windows | `130` | Repl compatibility policy |
 | `SIGTERM` | Service manager, container runtime, or `kill` | `143` | Unix convention: `128 + 15` |
 
 The `128 + signal number` calculation is a widely adopted Unix shell convention, notably used by Bash. It is not a universal .NET exit-code standard, and POSIX requires signal termination statuses to be distinguishable without requiring this exact arithmetic on every shell and platform. Repl deliberately returns `130` or `143` for predictable Unix CLI, script, container, and supervisor integration.
@@ -273,8 +273,8 @@ If a handler completes normally with its own non-zero exit code, that code takes
 
 #### Platform scope and token lifetime
 
-- Ctrl+C and Ctrl+Break are bridged through `Console.CancelKeyPress`; support still depends on the host and console environment raising that event.
+- Ctrl+C is bridged through `Console.CancelKeyPress`. Ctrl+Break follows the same Repl policy only on Windows. On Unix, .NET surfaces SIGQUIT through `Console.CancelKeyPress` as `ControlBreak`; Repl leaves that event unclaimed so the operating-system SIGQUIT behavior is preserved.
 - SIGTERM bridging uses .NET's POSIX signal API and is enabled only on supported non-Windows platforms. SIGTERM does not participate in the interactive console-key priority rule. Repl does not install a direct POSIX SIGQUIT registration. Windows `taskkill`, console-window close, and service-control shutdown do not acquire equivalent SIGTERM semantics from this option; a Windows host must translate its lifecycle events into the caller cancellation token.
-- Android, browser, iOS (excluding Mac Catalyst), and tvOS do not support the required console/POSIX registrations. `Automatic` emits a diagnostic and installs no process-signal bridge there; the platform host must provide cancellation. Mac Catalyst is supported because .NET's `OperatingSystem.IsIOS()` also identifies Mac Catalyst even though the relevant APIs are not marked unsupported there.
-- In `Automatic` mode, handlers receive a run-scoped token linked to the caller token and the process-signal cancellation source. It is disposed when the run completes. Handlers may use it for work they await before returning, but must not retain it for background work or access it after the run.
-- In `None` mode and external-host overloads, Repl does not create the standalone signal-linked token; cancellation ownership and token lifetime remain with the caller. An interactive loop can still apply its separate Ctrl+C policy.
+- Android, browser, iOS (including Mac Catalyst), and tvOS do not support the required console/POSIX registrations. `Automatic` emits a diagnostic and installs no process-signal bridge there; the platform host must provide cancellation. .NET identifies Mac Catalyst as part of its iOS-like mobile family and compiles the platform-not-supported POSIX signal registration there.
+- In `Automatic` mode, a one-shot handler receives a run-scoped token linked to the caller token and the process-signal cancellation source. An interactive command receives a command-scoped token linked to that run token so Ctrl+C can cancel only the active command. Repl disposes each linked token when its scope ends; handlers may use it for awaited work but must not retain it for detached work.
+- In `None` mode and external-host overloads, Repl does not create the standalone signal-linked token. A one-shot handler receives the caller token unchanged. An interactive command still receives its separate command-scoped linked token, so its identity and lifetime differ from the caller token even though host-shutdown cancellation flows through it.

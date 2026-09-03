@@ -54,16 +54,33 @@ public sealed class Given_ProcessSignalCancellationScope
 	}
 
 	[TestMethod]
-	[Description("Ctrl+Break follows the same cooperative first-signal policy as Ctrl+C.")]
-	public async Task When_FirstCtrlBreakArrives_Then_ActiveScopeIsCancelled()
+	[Description("Ctrl+Break follows the cooperative first-signal policy on Windows.")]
+	public async Task When_FirstCtrlBreakArrivesOnWindows_Then_ActiveScopeIsCancelled()
 	{
 		await using var scope = new ProcessSignalCancellationScope(default);
 
-		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(ConsoleSpecialKey.ControlBreak);
+		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(
+			ConsoleSpecialKey.ControlBreak,
+			isWindows: true);
 
 		result.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
 		scope.ExitCode.Should().Be(ProcessSignalCoordinator.SigIntExitCode);
 		scope.Token.IsCancellationRequested.Should().BeTrue();
+	}
+
+	[TestMethod]
+	[Description("ControlBreak represents SIGQUIT on Unix and does not acquire the standalone SIGINT epoch.")]
+	public async Task When_ControlBreakArrivesOnUnix_Then_StandaloneScopeDoesNotClaimSigQuit()
+	{
+		await using var scope = new ProcessSignalCancellationScope(default);
+
+		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(
+			ConsoleSpecialKey.ControlBreak,
+			isWindows: false);
+
+		result.Should().Be(ConsoleCancelKeyHandlingResult.NotHandled);
+		scope.ExitCode.Should().BeNull();
+		scope.Token.IsCancellationRequested.Should().BeFalse();
 	}
 
 	[TestMethod]
@@ -323,21 +340,13 @@ public sealed class Given_ProcessSignalCancellationScope
 	}
 
 	[TestMethod]
-	[Description("Mac Catalyst is not rejected merely because OperatingSystem.IsIOS also identifies it as iOS.")]
-	public void When_PlatformIsMacCatalyst_Then_SignalBridgeIsSupported()
+	[Description("Mac Catalyst remains unsupported because .NET compiles the mobile PosixSignalRegistration implementation there.")]
+	public void When_PlatformIsInTheIOSFamily_Then_SignalBridgeIsUnsupported()
 	{
 		ProcessSignalCoordinator.IsSignalBridgeSupportedForTesting(
 			isAndroid: false,
 			isBrowser: false,
 			isIOS: true,
-			isMacCatalyst: true,
-			isTvOS: false).Should().BeTrue();
-
-		ProcessSignalCoordinator.IsSignalBridgeSupportedForTesting(
-			isAndroid: false,
-			isBrowser: false,
-			isIOS: true,
-			isMacCatalyst: false,
 			isTvOS: false).Should().BeFalse();
 	}
 

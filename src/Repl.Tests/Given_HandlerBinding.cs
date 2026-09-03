@@ -289,7 +289,7 @@ public sealed class Given_HandlerBinding
 	[DataRow("host", DisplayName = "IHost overload")]
 	[DataRow("repl-host", DisplayName = "IReplHost overload")]
 	[DataRow("repl-host-and-services", DisplayName = "IReplHost and IServiceProvider overload")]
-	[Description("External-owner overloads diagnose an ignored Automatic request and pass the caller token through unchanged.")]
+	[Description("External-owner overloads diagnose an ignored Automatic request and pass the caller token unchanged to one-shot handlers.")]
 	public async Task When_ExternalOwnerReceivesExplicitAutomatic_Then_DiagnosticIsWrittenAndCallerTokenIsPreserved(
 		string overload)
 	{

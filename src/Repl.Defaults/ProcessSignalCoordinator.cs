@@ -220,18 +220,16 @@ internal static class ProcessSignalCoordinator
 			OperatingSystem.IsAndroid(),
 			OperatingSystem.IsBrowser(),
 			OperatingSystem.IsIOS(),
-			OperatingSystem.IsMacCatalyst(),
 			OperatingSystem.IsTvOS());
 
 	internal static bool IsSignalBridgeSupportedForTesting(
 		bool isAndroid,
 		bool isBrowser,
 		bool isIOS,
-		bool isMacCatalyst,
 		bool isTvOS) =>
 		!isAndroid
 		&& !isBrowser
-		&& (!isIOS || isMacCatalyst)
+		&& !isIOS
 		&& !isTvOS;
 
 	internal static void WriteDiagnostic(string message)

@@ -34,17 +34,35 @@ public sealed class Given_CancelKeyHandler
 	}
 
 	[TestMethod]
-	[Description("Ctrl+Break is routed to the active interactive command just like Ctrl+C.")]
-	public void When_CtrlBreakArrivesDuringCommand_Then_CommandIsCancelled()
+	[Description("Ctrl+Break is routed to the active interactive command on Windows.")]
+	public void When_CtrlBreakArrivesOnWindowsDuringCommand_Then_CommandIsCancelled()
 	{
 		using var handler = new CancelKeyHandler();
 		using var cancellation = new CancellationTokenSource();
 		handler.SetCommandCts(cancellation);
 
-		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(ConsoleSpecialKey.ControlBreak);
+		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(
+			ConsoleSpecialKey.ControlBreak,
+			isWindows: true);
 
 		result.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
 		cancellation.IsCancellationRequested.Should().BeTrue();
+	}
+
+	[TestMethod]
+	[Description("ControlBreak represents SIGQUIT on Unix and is left to the operating system.")]
+	public void When_ControlBreakArrivesOnUnixDuringCommand_Then_SigQuitIsNotClaimed()
+	{
+		using var handler = new CancelKeyHandler();
+		using var cancellation = new CancellationTokenSource();
+		handler.SetCommandCts(cancellation);
+
+		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(
+			ConsoleSpecialKey.ControlBreak,
+			isWindows: false);
+
+		result.Should().Be(ConsoleCancelKeyHandlingResult.NotHandled);
+		cancellation.IsCancellationRequested.Should().BeFalse();
 	}
 
 	[TestMethod]
