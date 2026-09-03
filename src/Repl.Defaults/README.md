@@ -27,6 +27,10 @@ app.Map("hello", () => "world");
 return app.Run(args);
 ```
 
+## Process signals
+
+Standalone runs cooperatively translate a first Ctrl+C/SIGINT—and SIGTERM on supported Unix platforms—into handler cancellation. Embedded hosts retain standalone ownership by default; interactive mode keeps its own Ctrl+C policy. Configure this per run with `ReplRunOptions.ProcessSignalHandling`; see the [configuration reference](https://repl.yllibed.org/reference/configuration/#process-signal-handling) for exit codes `130`/`143`, second-signal escalation, token lifetime, and platform limits.
+
 ## Docs
 
 - [REPL Mode](https://repl.yllibed.org/getting-started/repl-mode/) — interactive session, scopes, history

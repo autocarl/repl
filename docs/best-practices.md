@@ -359,4 +359,24 @@ app.Map("dashboard", static async (
 
 That keeps status/progress/problem events out of the main Spectre surface and avoids terminal control sequences fighting with your TUI.
 
+## Own process signals exactly once
+
+Use automatic process-signal handling for a standalone CLI, where Repl is the process owner. Use `UseEmbeddedConsoleProfile()` or explicitly set `ProcessSignalHandlingMode.None` when an ASP.NET Core host, worker service, test runner, or another command framework already owns Ctrl+C and shutdown. Feed that host's cancellation token into `RunAsync` instead of installing competing handlers.
+
+Supplying a `ReplRunOptions` instance for an unrelated setting preserves the profile default because `ProcessSignalHandling` is nullable:
+
+```csharp
+var app = ReplApp.Create().UseEmbeddedConsoleProfile();
+
+return await app.RunAsync(
+    args,
+    new ReplRunOptions
+    {
+        AnsiSupport = AnsiMode.Never,
+    },
+    hostStoppingToken);
+```
+
+A cancellation token injected into a handler during `Automatic` handling is run-scoped. Await all work that uses it before returning; do not capture it for detached background work. See [Process signal handling](configuration-reference.md#process-signal-handling) for first/second-signal behavior, exit-code conventions, and platform limits.
+
 See also: [Modules](module-presence.md) | [Route System](route-system.md) | [MCP Overview](mcp-overview.md) | [Testing](testing-toolkit.md) | [Configuration](configuration-reference.md)

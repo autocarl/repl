@@ -201,7 +201,79 @@ Accessed via `ReplOptions.ShellCompletion`. See [Shell Completion](shell-complet
 
 A record passed to `app.RunAsync(...)` to control runtime behavior. Separate from `ReplOptions`.
 
-- `ProcessSignalHandling` (`ProcessSignalHandlingMode`, default: `Automatic`) — For standalone `Run`/`RunAsync` overloads, converts the first Ctrl+C/SIGINT into cooperative cancellation and returns exit code `130`; on Unix it also converts SIGTERM and returns `143`. A second signal retains the operating system default behavior. Interactive sessions retain their existing first-press command cancellation and second-press exit behavior. `UseEmbeddedConsoleProfile()` defaults to `None`; callers can explicitly select `Automatic` per run. Overloads that use an external host, service provider, or `IReplHost` leave signal handling to that owner.
+- `ProcessSignalHandling` (`ProcessSignalHandlingMode?`, default: `null`) — `null` preserves the active application's profile default. Set it to `Automatic` or `None` to override that default for one run.
 - `HostedServiceLifecycle` (`HostedServiceLifecycleMode`, default: `None`) — Hosted service lifecycle mode.
 - `AnsiSupport` (`AnsiMode`, default: `Auto`) — ANSI support mode for this run.
 - `TerminalOverrides` (`TerminalSessionOverrides?`, default: `null`) — Terminal session overrides.
+
+### Process signal handling
+
+`ProcessSignalHandling` applies only to standalone `Run`/`RunAsync` overloads that use the app's internally configured services. Overloads that receive an external `IServiceProvider`, `IHost`, or `IReplHost` do not install the standalone process-signal bridge; the external owner remains responsible for translating shutdown into the caller-owned cancellation token. If such a run enters Repl's interactive loop, that loop still retains its own Ctrl+C command-cancellation policy.
+
+| Value | Behavior |
+|---|---|
+| `null` | Inherit the active profile's default. Supplying unrelated options such as `AnsiSupport` does not change signal ownership. |
+| `ProcessSignalHandlingMode.Automatic` | Repl temporarily owns standalone process-signal handling and converts a first supported signal into cooperative cancellation. |
+| `ProcessSignalHandlingMode.None` | Repl installs no standalone process-signal handling. The caller or host owns shutdown. |
+
+Profile defaults are:
+
+| App configuration | Default | Intended owner |
+|---|---|---|
+| `ReplApp.Create()` | `Automatic` | Standalone CLI process |
+| `UseCliProfile()` | `Automatic` | Standalone CLI process |
+| `UseDefaultInteractive()` | `Automatic` for one-shot runs; the interactive session keeps its existing Ctrl+C behavior | Repl |
+| `UseEmbeddedConsoleProfile()` | `None` | Embedding host |
+
+An embedded host can opt in for one run, while a standalone app can opt out:
+
+```csharp
+var exitCode = await app.RunAsync(
+    args,
+    new ReplRunOptions
+    {
+        ProcessSignalHandling = ProcessSignalHandlingMode.Automatic,
+    },
+    stoppingToken);
+```
+
+```csharp
+var exitCode = await app.RunAsync(
+    args,
+    new ReplRunOptions
+    {
+        ProcessSignalHandling = ProcessSignalHandlingMode.None,
+    },
+    stoppingToken);
+```
+
+#### First and second signals
+
+Automatic handling uses one process-wide ownership epoch, even if standalone runs overlap. The shared OS callbacks are installed lazily once per process and remain inert when no automatic run owns signals; keeping the callbacks stable avoids registration teardown races with runtime callback snapshots.
+
+1. The first supported signal is claimed once, a diagnostic is written to standard error, and every active automatic run receives cooperative cancellation. A run that starts before the last scope from that epoch is disposed joins the already-cancelled epoch rather than interpreting the next signal as another first signal.
+2. A subsequent supported signal is not suppressed. Repl writes a final diagnostic and leaves termination to the operating system, so cleanup is not guaranteed to finish.
+3. After the last automatic scope is disposed **and all signal-triggered cancellation callbacks have drained**, the process-wide claimed-signal state resets. A run that joins while callbacks are still draining inherits the cancelled epoch.
+
+Interactive Ctrl+C handling has priority over standalone handling: the first press during an interactive command cancels that command; a subsequent press, or a press with no active command, retains the operating-system default.
+
+Repl does **not** impose an automatic grace-period timeout after the first signal. A non-cooperative handler can therefore keep running until another signal is sent or an external supervisor escalates termination. This avoids embedding an application-specific shutdown deadline in the library.
+
+#### Exit codes
+
+| Signal | Typical source | Conventional exit code | Calculation |
+|---|---|---:|---:|
+| `SIGINT` | Ctrl+C | `130` | `128 + 2` |
+| `SIGTERM` | Service manager, container runtime, or `kill` | `143` | `128 + 15` |
+
+The `128 + signal number` calculation is a widely adopted Unix shell convention, notably used by Bash. It is not a universal .NET exit-code standard, and POSIX requires signal termination statuses to be distinguishable without requiring this exact arithmetic on every shell and platform. Repl deliberately returns `130` or `143` for predictable Unix CLI, script, container, and supervisor integration.
+
+If a handler completes normally with its own non-zero exit code, that code takes precedence. A successful `0` result or an `OperationCanceledException` caused by the claimed signal resolves to the signal code. Exceptions thrown by consumer cancellation callbacks are observed during scope disposal but do not replace an already-established signal exit code.
+
+#### Platform scope and token lifetime
+
+- Ctrl+C is bridged through `Console.CancelKeyPress`; support still depends on the host and console environment raising that event.
+- SIGTERM bridging uses .NET's POSIX signal API and is enabled only on supported non-Windows platforms. Windows `taskkill`, console-window close, and service-control shutdown do not acquire equivalent SIGTERM semantics from this option; a Windows host must translate its lifecycle events into the caller cancellation token.
+- Android, browser, iOS, and tvOS do not support the required console/POSIX registrations. `Automatic` remains construction-safe there but installs no process-signal bridge; the platform host must provide cancellation.
+- In `Automatic` mode, handlers receive a run-scoped token linked to the caller token and the process-signal cancellation source. It is disposed when the run completes. Handlers may use it for work they await before returning, but must not retain it for background work or access it after the run.
+- In `None` mode and external-host overloads, Repl does not create the standalone signal-linked token; cancellation ownership and token lifetime remain with the caller. An interactive loop can still apply its separate Ctrl+C policy.
