@@ -15,6 +15,13 @@ public sealed class Given_RunOptions
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies the zero value of the mode enum leaves signals to the caller. Enum zero is what an unset configuration field, a zero-initialized struct, or an explicit default() yields, so it must agree with the caller-owned application default rather than silently claiming process-wide signal ownership.")]
+	public void When_UsingDefaultProcessSignalHandlingMode_Then_ValueIsNone()
+	{
+		default(ProcessSignalHandlingMode).Should().Be(ProcessSignalHandlingMode.None);
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies hosted-service lifecycle defaults to none so that runs avoid orchestration unless explicitly requested.")]
 	public void When_CreatingRunOptions_Then_HostedServiceLifecycleDefaultsToNone()
 	{

@@ -6,14 +6,16 @@ namespace Repl;
 public enum ProcessSignalHandlingMode
 {
 	/// <summary>
+	/// Process signal handling remains the responsibility of the caller. This is the zero value so that
+	/// an unset configuration field or a zero-initialized value agrees with the caller-owned application
+	/// default instead of silently claiming process-wide signal ownership.
+	/// </summary>
+	None = 0,
+
+	/// <summary>
 	/// Standalone runs handle Ctrl+C console events, plus Ctrl+Break on Windows, for their duration.
 	/// They also handle SIGTERM on supported Unix platforms. Interactive sessions retain
 	/// their existing console command-cancellation behavior.
 	/// </summary>
-	Automatic = 0,
-
-	/// <summary>
-	/// Process signal handling remains the responsibility of the caller.
-	/// </summary>
-	None = 1,
+	Automatic = 1,
 }

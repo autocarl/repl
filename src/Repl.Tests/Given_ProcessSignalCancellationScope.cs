@@ -216,7 +216,7 @@ public sealed class Given_ProcessSignalCancellationScope
 	}
 
 	[TestMethod]
-	[Description("A cancellation callback can join the draining epoch without re-entering the process coordinator gate.")]
+	[Description("A cancellation callback can join the draining epoch without re-entering the process coordinator gate. This exercises the documented shape rather than proving deadlock freedom: callbacks start after both gates are released, so the callback never contends for a gate it already holds.")]
 	public async Task When_CancellationCallbackStartsScope_Then_NewScopeIsCancelledWithoutDeadlock()
 	{
 		await using var firstScope = new ProcessSignalCancellationScope(default);
@@ -262,7 +262,7 @@ public sealed class Given_ProcessSignalCancellationScope
 	}
 
 	[TestMethod]
-	[Description("Two concurrent process-signal dispatches produce exactly one cooperative first signal.")]
+	[Description("Two concurrent process-signal dispatches produce exactly one cooperative first signal. This is a smoke test, not proof of atomicity: the coordinator gate serializes both dispatches, so the test has no interleaving control and would also pass against a non-atomic claim.")]
 	public async Task When_TwoSignalsRace_Then_ExactlyOneIsSuppressed()
 	{
 		await using var scope = new ProcessSignalCancellationScope(default);
@@ -340,14 +340,71 @@ public sealed class Given_ProcessSignalCancellationScope
 	}
 
 	[TestMethod]
-	[Description("Mac Catalyst remains unsupported because .NET compiles the mobile PosixSignalRegistration implementation there.")]
-	public void When_PlatformIsInTheIOSFamily_Then_SignalBridgeIsUnsupported()
+	[Description("A failed signal registration degrades to caller-owned handling instead of aborting the run. Automatic is the CLI-profile default, so an environment that rejects a signal registration must not turn a working command into one that never executes.")]
+	public async Task When_SignalRegistrationFails_Then_RunContinuesCallerOwned()
+	{
+		using var error = new StringWriter();
+		using var session = ReplSessionIO.SetSession(TextWriter.Null, TextReader.Null, error: error);
+		using var fault = ProcessSignalCoordinator.InjectRegistrationFaultForTesting(
+			new PlatformNotSupportedException("signal registration rejected"));
+
+		// Construction must not throw: that is the whole behavior under test.
+		await using var scope = new ProcessSignalCancellationScope(default);
+
+		scope.Token.IsCancellationRequested.Should().BeFalse();
+		scope.ExitCode.Should().BeNull();
+		error.ToString().Should().Contain("Failed to install automatic process-signal handling")
+			.And.Contain(nameof(PlatformNotSupportedException));
+	}
+
+	[TestMethod]
+	[Description("A failed signal registration latches so later runs in the same process neither retry nor fail. Without the latch every subsequent run repeats the failing registration, so one rejected registration would break the whole process instead of a single run.")]
+	public async Task When_SignalRegistrationFailed_Then_LaterRunsDoNotRetry()
+	{
+		using var error = new StringWriter();
+		using var session = ReplSessionIO.SetSession(TextWriter.Null, TextReader.Null, error: error);
+		using var fault = ProcessSignalCoordinator.InjectRegistrationFaultForTesting(
+			new PlatformNotSupportedException("signal registration rejected"));
+		await using (var first = new ProcessSignalCancellationScope(default))
+		{
+			first.ExitCode.Should().BeNull();
+		}
+
+		await using var second = new ProcessSignalCancellationScope(default);
+
+		second.Token.IsCancellationRequested.Should().BeFalse();
+		// Split yields one more part than there are occurrences, so a single diagnostic gives two parts.
+		error.ToString().Split("Failed to install automatic process-signal handling").Should().HaveCount(2);
+	}
+
+	[TestMethod]
+	[DataRow(true, false, false, false, DisplayName = "Android")]
+	[DataRow(false, true, false, false, DisplayName = "Browser")]
+	[DataRow(false, false, true, false, DisplayName = "iOS family, which OperatingSystem.IsIOS also reports for Mac Catalyst")]
+	[DataRow(false, false, false, true, DisplayName = "tvOS")]
+	[Description("Each mobile platform flag on its own disables the signal bridge. One row per flag so a duplicated operand in the predicate cannot pass unnoticed; Mac Catalyst rides the iOS row because .NET compiles the mobile PosixSignalRegistration implementation there and OperatingSystem.IsIOS reports it.")]
+	public void When_APlatformFlagIsSet_Then_SignalBridgeIsUnsupported(
+		bool isAndroid,
+		bool isBrowser,
+		bool isIOS,
+		bool isTvOS)
+	{
+		ProcessSignalCoordinator.IsSignalBridgeSupportedForTesting(
+			isAndroid,
+			isBrowser,
+			isIOS,
+			isTvOS).Should().BeFalse();
+	}
+
+	[TestMethod]
+	[Description("A platform with no mobile flag keeps the signal bridge, so the platform predicate is not vacuously false for every input.")]
+	public void When_NoPlatformFlagIsSet_Then_SignalBridgeIsSupported()
 	{
 		ProcessSignalCoordinator.IsSignalBridgeSupportedForTesting(
 			isAndroid: false,
 			isBrowser: false,
-			isIOS: true,
-			isTvOS: false).Should().BeFalse();
+			isIOS: false,
+			isTvOS: false).Should().BeTrue();
 	}
 
 }

@@ -266,6 +266,7 @@ Repl does **not** impose an automatic grace-period timeout after the first signa
 | `SIGINT` | Ctrl+C | `130` | Unix convention: `128 + 2` |
 | `ConsoleSpecialKey.ControlBreak` | Ctrl+Break on Windows | `130` | Repl compatibility policy |
 | `SIGTERM` | Service manager, container runtime, or `kill` | `143` | Unix convention: `128 + 15` |
+| `SIGQUIT` | Ctrl+\ on Unix, or `kill -QUIT` | `131` | Unclaimed by Repl; whatever the operating system produces |
 
 The `128 + signal number` calculation is a widely adopted Unix shell convention, notably used by Bash. It is not a universal .NET exit-code standard, and POSIX requires signal termination statuses to be distinguishable without requiring this exact arithmetic on every shell and platform. Repl deliberately returns `130` or `143` for predictable Unix CLI, script, container, and supervisor integration.
 

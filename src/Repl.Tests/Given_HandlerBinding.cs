@@ -204,6 +204,27 @@ public sealed class Given_HandlerBinding
 	}
 
 	[TestMethod]
+	[Description("The interactive profile takes process signal ownership, so its one-shot handlers receive a linked run-scoped token rather than the caller token. The ownership table documents this profile as automatic, and only the CLI, embedded and unprofiled rows were pinned by a test.")]
+	public async Task When_UsingDefaultInteractiveProfile_Then_HandlerReceivesLinkedToken()
+	{
+		var sut = ReplApp.Create().UseDefaultInteractive();
+		CancellationToken captured = default;
+		using var cancellationTokenSource = new CancellationTokenSource();
+
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			captured = ct;
+			return "ok";
+		});
+
+		var exitCode = await sut.RunAsync(["work"], cancellationTokenSource.Token).ConfigureAwait(false);
+
+		exitCode.Should().Be(0);
+		captured.Should().NotBe(cancellationTokenSource.Token);
+		captured.CanBeCanceled.Should().BeTrue();
+	}
+
+	[TestMethod]
 	[Description("An app without a process-owning profile preserves the caller-owned signal and token contract.")]
 	public async Task When_NoProfileSelectsSignalOwnership_Then_HandlerReceivesCallerTokenDirectly()
 	{

@@ -174,6 +174,9 @@ public sealed class Given_ProcessSignals
 			var markers = await File.ReadAllLinesAsync(marker).ConfigureAwait(false);
 			markers.Should().Equal("READY", "FINALLY");
 			markers.Should().NotContain(CleanupCompletedMarker);
+			// The escalation diagnostic is documented operator-facing behavior, so pin its text: an
+			// operator greps it to tell a forced termination from a crash.
+			readOutput().Should().Contain("allowing immediate operating-system termination");
 		}
 		finally
 		{
