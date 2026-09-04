@@ -210,6 +210,23 @@ A record passed to `app.RunAsync(...)` to control runtime behavior. Separate fro
 
 `ProcessSignalHandling` applies only to standalone `Run`/`RunAsync` overloads that use the app's internally configured services. Overloads that receive an external `IServiceProvider`, `IHost`, or `IReplHost` do not install the standalone process-signal bridge; the external owner remains responsible for translating shutdown into the caller-owned cancellation token. Passing an explicit `Automatic` value to one of those overloads writes a diagnostic to the active error channel and ignores the value. If such a run enters Repl's interactive loop, that loop still retains its own console command-cancellation policy.
 
+The mode that actually applies to a run is resolved in this order:
+
+```mermaid
+flowchart TD
+    A["Run / RunAsync"] --> B{"Which overload?"}
+    B -->|"External IServiceProvider, IHost or IReplHost"| C["Caller-owned<br/>an explicit Automatic is diagnosed and ignored"]
+    B -->|"Internally configured services"| D{"ReplRunOptions.ProcessSignalHandling"}
+    D -->|"None"| E["Caller-owned<br/>no bridge is installed"]
+    D -->|"Automatic"| G{"Is the bridge available?"}
+    D -->|"null (default)"| F["Active profile default"]
+    F -->|"UseCliProfile / UseDefaultInteractive"| G
+    F -->|"no profile / UseEmbeddedConsoleProfile"| E
+    G -->|"yes"| H["Repl owns signals for this run<br/>the handler receives a linked run-scoped token"]
+    G -->|"Android, browser, iOS incl. Mac Catalyst, tvOS"| I["Diagnostic, then caller-owned"]
+    G -->|"registration rejected by the environment"| I
+```
+
 | Value | Behavior |
 |---|---|
 | `null` | Inherit the active profile's default. Supplying unrelated options such as `AnsiSupport` does not change signal ownership. |
@@ -255,7 +272,51 @@ Automatic handling supports overlapping standalone runs in one process-wide owne
 2. A subsequent supported signal is not suppressed. Repl writes a final diagnostic and leaves termination to the operating system, so cleanup is not guaranteed to finish.
 3. After the last automatic scope is disposed **and all signal-triggered cancellation callbacks have drained**, the process-wide claimed-signal state resets. A run that joins while callbacks are still draining inherits the cancelled epoch.
 
+The epoch is process-wide, so its state is easier to read as a machine than as a list:
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Inert
+
+    Inert --> Unclaimed: a run starts
+    Unclaimed --> Inert: last run disposed
+    Unclaimed --> Claimed: step 1
+    Claimed --> Claimed: a run starts
+    Claimed --> Inert: step 3
+    Claimed --> [*]: step 2
+
+    note right of Inert
+        OS callbacks are installed lazily once per
+        process and stay installed. With no automatic
+        run active, a signal falls through to the OS.
+    end note
+
+    note right of Claimed
+        Late joiners inherit the cancelled epoch
+        instead of reading the next signal as a
+        new first signal.
+    end note
+```
+
+The step numbers are the three above. Two edges are worth reading twice: `Claimed --> [*]` is the operating system terminating the process, not Repl returning an exit code; and `Claimed --> Inert` waits on cancellation-callback draining as well as scope disposal, neither of which is bounded. That is deliberate — see the paragraph below the priority rule.
+
 Interactive console-key handling has priority over standalone handling: the first Ctrl+C event—or Ctrl+Break on Windows—during an interactive command cancels that command; a subsequent event, or one with no active command, retains the operating-system default.
+
+One `Console.CancelKeyPress` subscription serves both owners, and which key counts depends on the platform:
+
+```mermaid
+flowchart TD
+    A["Console.CancelKeyPress"] --> B{"Special key"}
+    B -->|"ControlC"| D
+    B -->|"ControlBreak on Windows"| D
+    B -->|"ControlBreak on Unix, i.e. SIGQUIT"| C["Unclaimed<br/>OS default applies"]
+    D{"An interactive handler is registered?"}
+    D -->|"yes"| E["Interactive handler decides<br/>first press cancels the running command"]
+    D -->|"no"| F{"An automatic standalone run is active?"}
+    F -->|"yes"| G["The standalone epoch claims it<br/>see the epoch machine above"]
+    F -->|"no"| C
+```
 
 Repl does **not** impose an automatic grace-period timeout after the first signal. A non-cooperative handler can therefore keep running until another signal is sent or an external supervisor escalates termination. Cancellation-callback draining is likewise unbounded: resetting the epoch while a callback is still running could cause the next signal to be suppressed as a new first signal. If a callback never completes, the epoch remains claimed and every subsequent supported signal falls through to operating-system termination. This avoids embedding an application-specific shutdown deadline in the library.
 
