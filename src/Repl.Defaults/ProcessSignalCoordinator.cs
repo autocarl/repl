@@ -26,28 +26,34 @@ internal static class ProcessSignalCoordinator
 	private static int s_generation;
 	private static int s_pendingDrainCount;
 	private static bool s_registrationsInitialized;
-	private static Exception? s_registrationFaultForTesting;
+	private static RegistrationFault? s_registrationFaultForTesting;
 
 	/// <summary>
-	/// Forces the next registration attempt to fail, then restores the coordinator when disposed.
-	/// The registrations are process-wide and latch on first use, so a test that exercises the
-	/// failure policy has to put the coordinator back the way it found it.
+	/// Gives a test a coordinator with no installed registrations, optionally failing the next
+	/// registration attempt, and leaves it able to install fresh ones on disposal.
+	/// <para>
+	/// Registrations capture the generation counter they were created under, so putting a saved
+	/// registration object back after the counter has moved would leave it permanently stale and
+	/// silently disable the bridge for the rest of the process. Both entering and leaving therefore
+	/// tear the registrations down and let the next scope install new ones.
+	/// </para>
 	/// </summary>
-	internal static IDisposable InjectRegistrationFaultForTesting(Exception fault)
-	{
-		ArgumentNullException.ThrowIfNull(fault);
-		return new RegistrationFaultScope(fault);
-	}
+	internal static IDisposable IsolateRegistrationsForTesting(
+		Exception? registrationFault = null,
+		bool faultAfterSigTermRegistration = false) =>
+		new RegistrationIsolationScope(
+			registrationFault is null
+				? null
+				: new RegistrationFault(registrationFault, faultAfterSigTermRegistration));
 
 	internal static void Register(ProcessSignalCancellationScope scope)
 	{
 		ArgumentNullException.ThrowIfNull(scope);
-		RegistrationFailure? registrationFailure;
-		var bridgeUnavailable = false;
+		RegistrationOutcome outcome;
 		Action? startCancellation = null;
 		lock (Gate)
 		{
-			registrationFailure = TryInitializeRegistrations(out bridgeUnavailable);
+			outcome = TryInitializeRegistrations();
 			// The scope joins the epoch even when no bridge could be installed, so that disposal stays
 			// symmetric and a run started before an earlier scope claimed a signal still inherits it.
 			ActiveScopes.Add(scope);
@@ -57,42 +63,34 @@ internal static class ProcessSignalCoordinator
 			}
 		}
 
-		if (bridgeUnavailable)
+		// Installing the bridge is a convenience, not a precondition for running the command. Every way
+		// it can fail to install — an unsupported platform, or an environment that refuses the
+		// registration — degrades to caller-owned handling and says so once, on the same path.
+		if (outcome.Diagnostic is { } diagnostic)
 		{
-			WriteDiagnostic(
-				"Automatic process-signal handling is unavailable on this platform; "
-				+ "the caller or platform host remains responsible for cancellation.");
-		}
-
-		if (registrationFailure is { } failure)
-		{
-			failure.CancelKeyRegistration?.Dispose();
-			failure.SigTermRegistration?.Dispose();
-			// Installing the bridge is a convenience, not a precondition for running the command, so a
-			// rejected registration degrades to caller-owned handling exactly like an unsupported
-			// platform. Aborting here would turn every run in a restricted environment into a failure.
-			WriteDiagnostic(
-				"Failed to install automatic process-signal handling: "
-				+ $"{failure.Exception.GetType().Name}: {failure.Exception.Message}. "
-				+ "The caller or platform host remains responsible for cancellation.");
+			outcome.OrphanedCancelKeyRegistration?.Dispose();
+			outcome.OrphanedSigTermRegistration?.Dispose();
+			WriteDiagnostic(diagnostic);
 		}
 
 		startCancellation?.Invoke();
 	}
 
-	private static RegistrationFailure? TryInitializeRegistrations(out bool bridgeUnavailable)
+	private static RegistrationOutcome TryInitializeRegistrations()
 	{
-		bridgeUnavailable = false;
 		if (s_registrationsInitialized)
 		{
-			return null;
+			return default;
 		}
 
 		if (!IsSignalBridgeSupported())
 		{
 			s_registrationsInitialized = true;
-			bridgeUnavailable = true;
-			return null;
+			return new RegistrationOutcome(
+				"Automatic process-signal handling is unavailable on this platform; "
+				+ "the caller or platform host remains responsible for cancellation.",
+				OrphanedCancelKeyRegistration: null,
+				OrphanedSigTermRegistration: null);
 		}
 
 		PosixSignalRegistration? sigTermRegistration = null;
@@ -101,11 +99,10 @@ internal static class ProcessSignalCoordinator
 		try
 		{
 			// No supported platform rejects a signal registration on demand, so the failure policy
-			// would otherwise be untestable. Tests set this to drive Register through the failing path.
-			if (s_registrationFaultForTesting is { } injectedFault)
-			{
-				throw injectedFault;
-			}
+			// would otherwise be untestable. Tests set this to drive Register through the failing path,
+			// either before anything is registered or after SIGTERM is, which is the only way to reach
+			// the orphaned-registration cleanup below.
+			ThrowIfFaultInjected(afterSigTermRegistration: false);
 
 			if (!OperatingSystem.IsWindows())
 			{
@@ -114,21 +111,37 @@ internal static class ProcessSignalCoordinator
 					e => HandleSigTerm(generation, e));
 			}
 
+			ThrowIfFaultInjected(afterSigTermRegistration: true);
+
 			cancelKeyRegistration = ConsoleCancelKeyCoordinator.RegisterStandalone(
 				() => HandleSigInt(generation));
 			s_sigTermRegistration = sigTermRegistration;
 			s_cancelKeyRegistration = cancelKeyRegistration;
 			s_registrationsInitialized = true;
-			return null;
+			return default;
 		}
 		catch (Exception ex)
 		{
 			// Invalidate callbacks created by the failed generation before releasing the gate.
 			s_generation++;
-			// Latch the attempt: retrying on every later run would repeat a failure the environment
-			// has already refused, and would emit the same diagnostic once per run.
+			// Latch the attempt: without this every later run repeats a registration the environment
+			// has already refused, and emits the same diagnostic once per run.
 			s_registrationsInitialized = true;
-			return new RegistrationFailure(ex, cancelKeyRegistration, sigTermRegistration);
+			return new RegistrationOutcome(
+				"Failed to install automatic process-signal handling: "
+				+ $"{ex.GetType().Name}: {ex.Message}. "
+				+ "The caller or platform host remains responsible for cancellation.",
+				cancelKeyRegistration,
+				sigTermRegistration);
+		}
+	}
+
+	private static void ThrowIfFaultInjected(bool afterSigTermRegistration)
+	{
+		if (s_registrationFaultForTesting is { } fault
+			&& fault.AfterSigTermRegistration == afterSigTermRegistration)
+		{
+			throw fault.Exception;
 		}
 	}
 
@@ -269,51 +282,48 @@ internal static class ProcessSignalCoordinator
 		}
 	}
 
-	private sealed class RegistrationFaultScope : IDisposable
+	private sealed class RegistrationIsolationScope : IDisposable
 	{
-		private readonly IDisposable? _previousCancelKeyRegistration;
-		private readonly PosixSignalRegistration? _previousSigTermRegistration;
-		private readonly bool _wasInitialized;
+		public RegistrationIsolationScope(RegistrationFault? registrationFault) =>
+			TearDownRegistrations(registrationFault);
 
-		public RegistrationFaultScope(Exception fault)
+		public void Dispose() => TearDownRegistrations(registrationFault: null);
+
+		private static void TearDownRegistrations(RegistrationFault? registrationFault)
 		{
+			IDisposable? cancelKeyRegistration;
+			PosixSignalRegistration? sigTermRegistration;
 			lock (Gate)
 			{
-				_previousCancelKeyRegistration = s_cancelKeyRegistration;
-				_previousSigTermRegistration = s_sigTermRegistration;
-				_wasInitialized = s_registrationsInitialized;
+				cancelKeyRegistration = s_cancelKeyRegistration;
+				sigTermRegistration = s_sigTermRegistration;
 				s_cancelKeyRegistration = null;
 				s_sigTermRegistration = null;
+				// Uninstalled, so the next Register installs fresh registrations under a current
+				// generation instead of reviving ones the counter has already left behind.
 				s_registrationsInitialized = false;
-				s_registrationFaultForTesting = fault;
-			}
-		}
-
-		public void Dispose()
-		{
-			IDisposable? installedCancelKeyRegistration;
-			PosixSignalRegistration? installedSigTermRegistration;
-			lock (Gate)
-			{
-				s_registrationFaultForTesting = null;
-				installedCancelKeyRegistration = s_cancelKeyRegistration;
-				installedSigTermRegistration = s_sigTermRegistration;
-				s_cancelKeyRegistration = _previousCancelKeyRegistration;
-				s_sigTermRegistration = _previousSigTermRegistration;
-				s_registrationsInitialized = _wasInitialized;
-				// Callbacks created while the fault was installed must never fire afterwards.
 				s_generation++;
+				s_registrationFaultForTesting = registrationFault;
 			}
 
-			installedCancelKeyRegistration?.Dispose();
-			installedSigTermRegistration?.Dispose();
+			cancelKeyRegistration?.Dispose();
+			sigTermRegistration?.Dispose();
 		}
 	}
 
 	private readonly record struct ClaimedSignal(string Name, int ExitCode);
 
-	private sealed record RegistrationFailure(
+	/// <summary>
+	/// The result of one registration attempt. A null <paramref name="Diagnostic"/> means the bridge is
+	/// installed, or was already. Otherwise the bridge is not installed, the caller owns signals, and any
+	/// registration created before the attempt failed is handed back for disposal outside the gate.
+	/// </summary>
+	private readonly record struct RegistrationOutcome(
+		string? Diagnostic,
+		IDisposable? OrphanedCancelKeyRegistration,
+		PosixSignalRegistration? OrphanedSigTermRegistration);
+
+	private readonly record struct RegistrationFault(
 		Exception Exception,
-		IDisposable? CancelKeyRegistration,
-		PosixSignalRegistration? SigTermRegistration);
+		bool AfterSigTermRegistration);
 }

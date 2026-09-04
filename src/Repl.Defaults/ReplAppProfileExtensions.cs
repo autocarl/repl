@@ -7,10 +7,10 @@ public static class ReplAppProfileExtensions
 {
 	/// <summary>
 	/// Applies interactive defaults for console usage. This profile also takes process signal ownership
-	/// for standalone runs (<see cref="ProcessSignalHandlingMode.Automatic"/>): the first Ctrl+C, Ctrl+Break
-	/// on Windows, or SIGTERM on supported Unix platforms cancels the handler token so cleanup can run, and
-	/// the run then reports 130 or 143. Set <see cref="ReplRunOptions.ProcessSignalHandling"/> to
-	/// <see cref="ProcessSignalHandlingMode.None"/> to keep that ownership with the caller for one run.
+	/// for standalone runs — see <see cref="ProcessSignalHandlingMode.Automatic"/> for exactly what that
+	/// means, including why an interactive session's own Ctrl+C behavior is unchanged. Set
+	/// <see cref="ReplRunOptions.ProcessSignalHandling"/> to <see cref="ProcessSignalHandlingMode.None"/>
+	/// to keep that ownership with the caller for one run.
 	/// </summary>
 	/// <param name="app">Target app.</param>
 	/// <returns>The same app instance.</returns>
@@ -30,11 +30,9 @@ public static class ReplAppProfileExtensions
 
 	/// <summary>
 	/// Applies process-owning defaults suited for CLI one-shot execution. This profile takes process signal
-	/// ownership for standalone runs (<see cref="ProcessSignalHandlingMode.Automatic"/>): the first Ctrl+C,
-	/// Ctrl+Break on Windows, or SIGTERM on supported Unix platforms cancels the handler token so cleanup can
-	/// run, and the run then reports 130 or 143. A second signal is left to the operating system. Set
-	/// <see cref="ReplRunOptions.ProcessSignalHandling"/> to <see cref="ProcessSignalHandlingMode.None"/> to
-	/// keep that ownership with the caller for one run.
+	/// ownership for standalone runs — see <see cref="ProcessSignalHandlingMode.Automatic"/> for exactly
+	/// what that means. Set <see cref="ReplRunOptions.ProcessSignalHandling"/> to
+	/// <see cref="ProcessSignalHandlingMode.None"/> to keep that ownership with the caller for one run.
 	/// </summary>
 	/// <param name="app">Target app.</param>
 	/// <returns>The same app instance.</returns>

@@ -150,18 +150,20 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
 ### Changed — process signal ownership
 
 - Apps that select `UseCliProfile()` or `UseDefaultInteractive()` now take process signal ownership by
-  default. Two observable changes follow for an existing consumer, neither of which requires a code
-  change to keep working — select `ProcessSignalHandlingMode.None` to restore the previous behavior:
+  default. Two observable changes follow for an existing consumer. Selecting
+  `ProcessSignalHandlingMode.None` restores the previous behavior:
   - **Exit codes.** A run interrupted by Ctrl+C, Ctrl+Break on Windows, or SIGTERM on Unix now resolves
     to `130` or `143` where it previously produced whatever the operating-system default termination
     yielded. A wrapper script or CI step that treats any non-zero code as a failure will start seeing
     these on interruption. An explicit non-zero handler exit code still takes precedence.
   - **Handler token identity.** One-shot handlers now receive a run-scoped token linked to the caller
-    token instead of the caller token itself, and Repl disposes it when the run ends. A handler that
-    stored the token and used it after the run returned — for detached or background work — will now
-    observe `ObjectDisposedException` on that stored token. Handlers that only await work within the
-    run are unaffected. Apps with no profile, `UseEmbeddedConsoleProfile()`, and the external
-    `IServiceProvider`/`IHost`/`IReplHost` overloads keep passing the caller token through unchanged.
+    token instead of the caller token itself, and Repl disposes it when the run ends. No token Repl
+    creates may outlive its run. A handler that stored one and used it afterwards — for detached or
+    background work — sees `ObjectDisposedException` from `Register` or `WaitHandle`, and, worse,
+    nothing at all from `IsCancellationRequested`, which keeps reporting `false`. Handlers that only
+    await work within the run are unaffected. Apps with no profile, `UseEmbeddedConsoleProfile()`, and
+    the external `IServiceProvider`/`IHost`/`IReplHost` overloads keep passing the caller token through
+    unchanged.
 
 ### Operational notes — process signals
 

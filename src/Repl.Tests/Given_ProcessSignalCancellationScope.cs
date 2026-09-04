@@ -263,7 +263,7 @@ public sealed class Given_ProcessSignalCancellationScope
 
 	[TestMethod]
 	[Description("Two concurrent process-signal dispatches produce exactly one cooperative first signal. This is a smoke test, not proof of atomicity: the coordinator gate serializes both dispatches, so the test has no interleaving control and would also pass against a non-atomic claim.")]
-	public async Task When_TwoSignalsRace_Then_ExactlyOneIsSuppressed()
+	public async Task When_TwoConcurrentDispatches_Then_ExactlyOneIsSuppressed()
 	{
 		await using var scope = new ProcessSignalCancellationScope(default);
 		using var start = new ManualResetEventSlim();
@@ -345,7 +345,7 @@ public sealed class Given_ProcessSignalCancellationScope
 	{
 		using var error = new StringWriter();
 		using var session = ReplSessionIO.SetSession(TextWriter.Null, TextReader.Null, error: error);
-		using var fault = ProcessSignalCoordinator.InjectRegistrationFaultForTesting(
+		using var fault = ProcessSignalCoordinator.IsolateRegistrationsForTesting(
 			new PlatformNotSupportedException("signal registration rejected"));
 
 		// Construction must not throw: that is the whole behavior under test.
@@ -358,12 +358,12 @@ public sealed class Given_ProcessSignalCancellationScope
 	}
 
 	[TestMethod]
-	[Description("A failed signal registration latches so later runs in the same process neither retry nor fail. Without the latch every subsequent run repeats the failing registration, so one rejected registration would break the whole process instead of a single run.")]
+	[Description("A failed signal registration latches, so later runs in the same process do not retry it. Without the latch every subsequent run repeats a registration the environment has already refused and re-emits the same diagnostic, once per run.")]
 	public async Task When_SignalRegistrationFailed_Then_LaterRunsDoNotRetry()
 	{
 		using var error = new StringWriter();
 		using var session = ReplSessionIO.SetSession(TextWriter.Null, TextReader.Null, error: error);
-		using var fault = ProcessSignalCoordinator.InjectRegistrationFaultForTesting(
+		using var fault = ProcessSignalCoordinator.IsolateRegistrationsForTesting(
 			new PlatformNotSupportedException("signal registration rejected"));
 		await using (var first = new ProcessSignalCancellationScope(default))
 		{
@@ -375,6 +375,56 @@ public sealed class Given_ProcessSignalCancellationScope
 		second.Token.IsCancellationRequested.Should().BeFalse();
 		// Split yields one more part than there are occurrences, so a single diagnostic gives two parts.
 		error.ToString().Split("Failed to install automatic process-signal handling").Should().HaveCount(2);
+	}
+
+	[TestMethod]
+	[OSCondition(ConditionMode.Exclude, OperatingSystems.Windows)]
+	[Description("A registration that fails after SIGTERM was registered disposes the orphan instead of leaking it. This is the only ordering that reaches the cleanup, and a leaked PosixSignalRegistration would keep suppressing SIGTERM for a process that has already been told the bridge is caller-owned.")]
+	public async Task When_RegistrationFailsAfterSigTerm_Then_TheOrphanedRegistrationIsReleased()
+	{
+		using var error = new StringWriter();
+		using var session = ReplSessionIO.SetSession(TextWriter.Null, TextReader.Null, error: error);
+		using (var isolation = ProcessSignalCoordinator.IsolateRegistrationsForTesting(
+			new PlatformNotSupportedException("cancel-key registration rejected"),
+			faultAfterSigTermRegistration: true))
+		{
+			await using var degraded = new ProcessSignalCancellationScope(default);
+
+			degraded.Token.IsCancellationRequested.Should().BeFalse();
+			error.ToString().Should().Contain("Failed to install automatic process-signal handling");
+		}
+
+		// A leaked registration would still be claiming SIGTERM under a stale generation. After the
+		// isolation scope tears down and a fresh run installs its own, signals must be claimed again.
+		await using var scope = new ProcessSignalCancellationScope(default);
+
+		ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting()
+			.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
+	}
+
+	[TestMethod]
+	[Description("The registration-fault test scope leaves the coordinator able to claim signals again. The scope is the only thing that resets process-wide registration state, so if it restores a registration whose captured generation is stale, every later scope in the process silently stops claiming signals.")]
+	public async Task When_RegistrationFaultScopeIsDisposed_Then_SignalsAreClaimedAgain()
+	{
+		// Install the real registrations first: the trap only exists when the scope has something
+		// to restore, which is the state every test after the first one runs in.
+		await using (var warmUp = new ProcessSignalCancellationScope(default))
+		{
+			warmUp.ExitCode.Should().BeNull();
+		}
+
+		using (var fault = ProcessSignalCoordinator.IsolateRegistrationsForTesting(
+			new PlatformNotSupportedException("signal registration rejected")))
+		{
+			await using var degraded = new ProcessSignalCancellationScope(default);
+		}
+
+		await using var scope = new ProcessSignalCancellationScope(default);
+
+		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting();
+
+		result.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
+		scope.ExitCode.Should().Be(ProcessSignalCoordinator.SigIntExitCode);
 	}
 
 	[TestMethod]

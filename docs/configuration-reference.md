@@ -223,7 +223,7 @@ flowchart TD
     F -->|"UseCliProfile / UseDefaultInteractive"| G
     F -->|"no profile / UseEmbeddedConsoleProfile"| E
     G -->|"yes"| H["Repl owns signals for this run<br/>the handler receives a linked run-scoped token"]
-    G -->|"Android, browser, iOS incl. Mac Catalyst, tvOS"| I["Diagnostic, then caller-owned"]
+    G -->|"Android, browser, iOS incl. Mac Catalyst, tvOS"| I["Diagnostic, then no bridge<br/>the handler still receives a linked run-scoped token"]
     G -->|"registration rejected by the environment"| I
 ```
 
@@ -287,9 +287,11 @@ stateDiagram-v2
     Claimed --> [*]: step 2
 
     note right of Inert
-        OS callbacks are installed lazily once per
-        process and stay installed. With no automatic
-        run active, a signal falls through to the OS.
+        OS callbacks are installed lazily on the first
+        automatic run, then stay installed. If the
+        platform or the environment refuses them, runs
+        still start and stop but no signal can reach
+        this machine, so it never reaches Claimed.
     end note
 
     note right of Claimed

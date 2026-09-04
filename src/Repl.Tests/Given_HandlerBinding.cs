@@ -204,7 +204,7 @@ public sealed class Given_HandlerBinding
 	}
 
 	[TestMethod]
-	[Description("The interactive profile takes process signal ownership, so its one-shot handlers receive a linked run-scoped token rather than the caller token. The ownership table documents this profile as automatic, and only the CLI, embedded and unprofiled rows were pinned by a test.")]
+	[Description("The interactive profile takes process signal ownership, so its one-shot handlers receive a run-scoped token rather than the caller token. The ownership table lists this profile as automatic; its sibling profiles each had a test and this one did not.")]
 	public async Task When_UsingDefaultInteractiveProfile_Then_HandlerReceivesLinkedToken()
 	{
 		var sut = ReplApp.Create().UseDefaultInteractive();
@@ -222,6 +222,28 @@ public sealed class Given_HandlerBinding
 		exitCode.Should().Be(0);
 		captured.Should().NotBe(cancellationTokenSource.Token);
 		captured.CanBeCanceled.Should().BeTrue();
+	}
+
+	[TestMethod]
+	[Description("The run-scoped token an automatic profile hands a handler is linked to the caller token, not merely a fresh one. Every other profile-ownership test asserts only that the token differs from the caller's, which a token that silently dropped caller-initiated cancellation would also satisfy.")]
+	public async Task When_CallerCancelsDuringAnAutomaticRun_Then_TheHandlerTokenObservesIt()
+	{
+		var sut = ReplApp.Create().UseCliProfile();
+		var observedCallerCancellation = false;
+		using var cancellationTokenSource = new CancellationTokenSource();
+
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			cancellationTokenSource.Cancel();
+			observedCallerCancellation = ct.IsCancellationRequested;
+			return "ok";
+		});
+
+		var act = async () => await sut.RunAsync(["work", "--no-logo"], cancellationTokenSource.Token)
+			.ConfigureAwait(false);
+
+		await act.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
+		observedCallerCancellation.Should().BeTrue();
 	}
 
 	[TestMethod]
