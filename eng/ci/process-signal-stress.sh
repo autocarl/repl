@@ -20,9 +20,14 @@ cd "$repo_root"
 log_file="$(mktemp)"
 trap 'rm -f "$log_file"' EXIT
 
+# Restore explicitly, then build without one. An incremental restore audits no projects, which trips
+# the CI-only NuGet audit assertion in src/Directory.Solution.targets when the caller already restored.
+dotnet restore src/Repl.slnx --force
+
 dotnet build src/Repl.slnx \
   -c "$configuration" \
   -warnaserror \
+  --no-restore \
   --nologo
 
 run_stress() {
