@@ -65,6 +65,16 @@ none.)
   overload, without starting hosted services.
 - A binding failure now carries the rendered refusal in `ReplExecutionOutcome.Result` alongside the
   `Exception`, matching the documented contract; previously only routing refusals did.
+- A hosted-service failure carries its exception in the outcome, and a startup stopped by the
+  caller's own token is a `Cancelled` outcome rather than a `FrameworkError`: it prints no startup
+  error and, with no cancellation policy configured, propagates the `OperationCanceledException` like
+  every other path. A shutdown that fails still outranks everything the run produced, including a
+  cancellation the pipeline was propagating.
+- An unknown `--output` format is a `UsageError` on every path, including while a failure was being
+  reported and for an `EnterInteractive` payload — the interactive loop is then not entered. A
+  diagnostic the caller never saw cannot stand as the run's outcome.
+- `ReplApp.RunAsync(args, IReplHost, IServiceProvider, …)` observes an already-cancelled token before
+  opening the session, so the caller's service factories are not resolved for a run nobody awaits.
 
 ### Compatibility notes — exit codes
 

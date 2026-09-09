@@ -209,7 +209,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			// The failure arm comes first: an ambient command that failed is a usage error whatever kind
 			// it would have reported on success (a help invocation that cannot render is still a refusal).
 			var ambientExecution = ambientOutcome == AmbientCommandOutcome.HandledError
-				? ExecutionOutcome.Usage()
+				? ExecutionOutcome.UsageError()
 				: successKind == ReplExecutionOutcomeKind.Help
 					? ExecutionOutcome.Help
 					: ExecutionOutcome.Success;
@@ -223,7 +223,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			var ambiguous = RoutingEngine.CreateAmbiguousPrefixResult(resolution.Prefix);
 			_ = await app.RenderOutputAsync(ambiguous, resolution.Options.OutputFormat, cancellationToken, isInteractive: true)
 				.ConfigureAwait(false);
-			return (AmbientCommandOutcome.Handled, ExecutionOutcome.Usage(ambiguous));
+			return (AmbientCommandOutcome.Handled, ExecutionOutcome.UsageError(ambiguous));
 		}
 
 		// Help or Routed: both flow through the command-cancellation scope so Ctrl-C and
@@ -250,12 +250,13 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
 		{
 			await ReplSessionIO.Output.WriteLineAsync("Cancelled.").ConfigureAwait(false);
-			// 128 + SIGINT(2): the shell convention for an interrupted command, so
-			// shell-integration marks decorate it as interrupted rather than failed. An
-			// outer-token cancellation (host shutdown) is NOT matched here — it propagates
-			// to ExecuteCommittedInputAsync's OCE catch, which closes the cycle with an
-			// aborted D (no exit code) rather than a failure.
-			return ExecutionOutcome.Cancelled(ex, conventionalExitCode: 130);
+			// Carried explicitly so shell-integration marks decorate this as interrupted rather than
+			// failed. An outer-token cancellation (host shutdown) is NOT matched here — it propagates
+			// to ExecuteCommittedInputAsync's OCE catch, which closes the cycle with an aborted D (no
+			// exit code) rather than a failure.
+			return ExecutionOutcome.Cancelled(
+				ex,
+				conventionalExitCode: ExitCodeOptions.ConventionalInterruptedExitCode);
 		}
 		finally
 		{
@@ -503,7 +504,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		if (globalOptions.HelpRequested)
 		{
 			var rendered = await app.RenderHelpAsync(globalOptions, cancellationToken).ConfigureAwait(false);
-			return rendered ? ExecutionOutcome.Help : ExecutionOutcome.Usage();
+			return rendered ? ExecutionOutcome.Help : ExecutionOutcome.UsageError();
 		}
 
 		// Reuse the single routing-graph snapshot and route resolution captured in
@@ -556,7 +557,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 						cancellationToken,
 						isInteractive: true)
 					.ConfigureAwait(false);
-				return ExecutionOutcome.Usage(contextValidation.Failure);
+				return ExecutionOutcome.UsageError(contextValidation.Failure);
 			}
 
 			cycle.ScopeTokens.Clear();
@@ -580,7 +581,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				cancellationToken,
 				isInteractive: true)
 			.ConfigureAwait(false);
-		return ExecutionOutcome.Usage(failure);
+		return ExecutionOutcome.UsageError(failure);
 	}
 
 	/// <summary>

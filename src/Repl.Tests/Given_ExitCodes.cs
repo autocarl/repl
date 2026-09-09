@@ -236,7 +236,12 @@ public sealed class Given_ExitCodes
 
 		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.Cancelled);
 		recorder.Last.Exception.Should().BeAssignableTo<OperationCanceledException>();
-		exitCode.Should().Be(recorder.Last.ExitCode);
+
+		// The literal, not recorder.Last.ExitCode: the recorder returns the code it was handed, so
+		// comparing the two proves only that the resolver ran. 130 is the pre-resolver code a
+		// resolver-only application is handed for a cancellation.
+		recorder.Last.ExitCode.Should().Be(130);
+		exitCode.Should().Be(130);
 	}
 
 	[TestMethod]
@@ -463,14 +468,19 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies Cancelled and Interrupted fall back to the conventional code the outcome carries when no entry is configured, so a signal bridge keeps its 128+signal convention.")]
-	public void When_CancellationCodesAreUnset_Then_TheCarriedConventionalCodeIsUsed()
+	[Description("Regression guard: verifies Cancelled and Interrupted keep the conventional code the outcome carries and otherwise fall back to 130, never to the framework-error code, so an aborted run stays distinguishable from a broken one.")]
+	public void When_CancellationCodesAreUnset_Then_TheCarriedConventionalCodeIsUsedElseOneThirty()
 	{
 		var table = new ExitCodeOptions();
 
 		table.Map(ReplExecutionOutcomeKind.Cancelled, carriedExitCode: 130).Should().Be(130);
 		table.Map(ReplExecutionOutcomeKind.Interrupted, carriedExitCode: 143).Should().Be(143);
-		table.Map(ReplExecutionOutcomeKind.Interrupted, carriedExitCode: null).Should().Be(table.FrameworkError);
+
+		// The fallback both kinds share. Asserted as the literal, not as a reference to the constant
+		// under test, so renumbering it has to disagree with this line.
+		table.Map(ReplExecutionOutcomeKind.Cancelled, carriedExitCode: null).Should().Be(130);
+		table.Map(ReplExecutionOutcomeKind.Interrupted, carriedExitCode: null).Should().Be(130);
+		table.FrameworkError.Should().Be(1, "the fallback must not collide with a handler failure");
 	}
 
 	[TestMethod]
@@ -631,6 +641,23 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
+	[DataRow("binding failure", new[] { "set", "--output:toml" })]
+	[DataRow("handler exception", new[] { "boom", "--output:toml" })]
+	[Description("Regression guard: verifies an unknown output format outranks the failure being reported, so a diagnostic the caller never saw is a usage mistake rather than a silent binding or handler failure.")]
+	public void When_AFailureCannotBeRendered_Then_KindIsUsageError(string failure, string[] args)
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("set", (int value) => value);
+		sut.Map("boom", string () => throw new FormatException("boom"));
+
+		var exitCode = Run(sut, args, out _);
+
+		exitCode.Should().Be(2, failure);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError, failure);
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies an EnterInteractive payload that cannot be rendered is a UsageError and does not enter the loop, so a refused output never leaves the caller waiting at a prompt.")]
 	public void When_EnterInteractivePayloadCannotBeRendered_Then_KindIsUsageErrorAndTheLoopIsNotEntered()
 	{
@@ -670,6 +697,92 @@ public sealed class Given_ExitCodes
 
 		exitCode.Should().Be(1);
 		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerError);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a configured ExitCodes.Cancelled still outranks the conventional fallback so the 130 default never silently overrides an application's own code.")]
+	public async Task When_CancelledIsConfigured_Then_ItWinsOverTheConventionalFallback()
+	{
+		using var cts = new CancellationTokenSource();
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder, options => options.ExitCodes.Cancelled = 75);
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			cts.Cancel();
+			ct.ThrowIfCancellationRequested();
+			return "unreachable";
+		});
+		using var session = OpenSession(out _);
+
+		var exitCode = await sut.RunAsync(["work"], cts.Token).ConfigureAwait(false);
+
+		exitCode.Should().Be(75);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.Cancelled);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies an unknown --output format that displaces a handler exception still carries that exception on the outcome, so a caller-chosen format cannot erase the cause of a failed run from the resolver.")]
+	public void When_HandlerThrowsAndOutputFormatIsUnknown_Then_UsageErrorCarriesTheHandlerException()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("boom", string () => throw new FormatException("handler blew up"));
+
+		var exitCode = Run(sut, ["boom", "--output:toml"], out _);
+
+		exitCode.Should().Be(2);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+		recorder.Last.Exception.Should().BeOfType<FormatException>()
+			.Which.Message.Should().Be("handler blew up");
+
+		// The handler's un-rendered failure, not the format refusal: the caller saw neither, and the
+		// one worth reporting is the reason the run ended.
+		recorder.Last.Result.Should().BeAssignableTo<IReplResult>();
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies the hosted protocol-passthrough refusal is a FrameworkError when the caller saw it, so a hosting-capability mismatch keeps reporting as a framework problem.")]
+	public void When_HostedPassthroughLacksIoContext_Then_KindIsFrameworkError()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("serve", () => "payload").AsProtocolPassthrough();
+
+		var exitCode = Run(sut, ["serve"], out var output);
+
+		exitCode.Should().Be(1);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.FrameworkError);
+		output.Should().Contain("requires a handler parameter of type IReplIoContext");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies an unknown --output format outranks the hosted passthrough refusal, so the last FrameworkError site that ignored its render result can no longer report a diagnostic the caller never saw.")]
+	public void When_HostedPassthroughRefusalCannotBeRendered_Then_KindIsUsageError()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("serve", () => "payload").AsProtocolPassthrough();
+
+		var exitCode = Run(sut, ["serve", "--output:toml"], out var output);
+
+		exitCode.Should().Be(2);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+		output.Should().NotContain("requires a handler parameter of type IReplIoContext");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies an unrenderable element of a tuple result is a usage error and prevents the interactive transition, so an EnterInteractive earlier in the tuple cannot open a session whose payload was never shown.")]
+	public void When_TupleResultCannotBeRendered_Then_KindIsUsageErrorAndInteractiveIsNotEntered()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder, options => options.Interactive.InteractivePolicy = InteractivePolicy.Auto);
+		sut.Map("open", () => (Results.EnterInteractive(), Results.Success("ready")));
+
+		var exitCode = Run(sut, ["open", "--output:toml"], out var output);
+
+		exitCode.Should().Be(2);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+		output.Should().NotContain("ready");
 	}
 
 	private static ReplApp CreateApp(OutcomeRecorder? recorder, Action<ReplOptions>? configure = null)

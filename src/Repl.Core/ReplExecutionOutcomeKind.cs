@@ -48,8 +48,11 @@ public enum ReplExecutionOutcomeKind
 	HandlerException = 6,
 
 	/// <summary>
-	/// The run ended with an <see cref="OperationCanceledException"/>: typically the caller-supplied
-	/// <see cref="CancellationToken"/>, but also a cancelled interactive prompt or a handler that threw it.
+	/// The caller's own <see cref="CancellationToken"/> stopped the run — during the command, or while
+	/// hosted services were starting. In an interactive session this also covers Ctrl+C during a command
+	/// and a cancelled prompt, where the loop cannot tell who asked to stop. A handler that raises
+	/// <see cref="OperationCanceledException"/> on its own account in a one-shot run is a
+	/// <see cref="HandlerException"/> instead, so a real failure cannot pass for an operator abort.
 	/// </summary>
 	Cancelled = 7,
 
@@ -60,7 +63,9 @@ public enum ReplExecutionOutcomeKind
 	Interrupted = 8,
 
 	/// <summary>
-	/// The framework itself failed: incompatible adapter contract or an unsupported hosting capability.
+	/// The framework itself failed: an incompatible adapter contract, an unsupported hosting capability,
+	/// or a hosted service that could not start or stop. The outcome carries the exception when one
+	/// caused it.
 	/// </summary>
 	FrameworkError = 9,
 }

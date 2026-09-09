@@ -278,7 +278,9 @@ app.Options(options =>
 - A handler's `int` return value is **data**, rendered like any other value; it never becomes the
   exit code.
 - Set `ExitCodes.Cancelled` when the caller owns a `CancellationToken` and wants an integer rather
-  than an `OperationCanceledException` escaping `RunAsync`.
+  than an `OperationCanceledException` escaping `RunAsync`. Installing a `Resolver` opts in to the
+  same thing: cancellation then reaches the hook instead of propagating, so a resolver written to map
+  "every final outcome" really sees every one.
 
 ## Write deterministic tests
 

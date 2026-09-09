@@ -171,8 +171,8 @@ public sealed class Given_HostedServicesLifecycle
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies hosted service startup failures surface as execution errors so that lifecycle startup is observable.")]
-	public void When_HeadLifecycleStartupFails_Then_ExecutionFailsWithError()
+	[Description("Regression guard: verifies hosted service startup failures surface as execution errors on stderr so that lifecycle startup is observable without corrupting a headless run's stdout payload.")]
+	public void When_HeadLifecycleStartupFails_Then_ExecutionFailsWithErrorOnStdErr()
 	{
 		var services = new ServiceCollection()
 			.AddSingleton<IHostedService, StartFailingHostedService>();
@@ -181,18 +181,19 @@ public sealed class Given_HostedServicesLifecycle
 		var sut = ReplApp.Create();
 		sut.Map("status", () => "ok");
 
-		var output = ConsoleCaptureHelper.Capture(() => sut.Run(
+		var output = ConsoleCaptureHelper.CaptureStdOutAndErr(() => sut.Run(
 			["status", "--no-logo"],
 			provider,
 			new ReplRunOptions { HostedServiceLifecycle = HostedServiceLifecycleMode.Head }));
 
 		output.ExitCode.Should().Be(1);
-		output.Text.Should().Contain("Failed to start hosted service");
+		output.StdErr.Should().Contain("Failed to start hosted service");
+		output.StdOut.Should().NotContain("Failed to start hosted service");
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies hosted service stop failures turn run into an error so that lifecycle teardown problems are not silent.")]
-	public void When_HeadLifecycleStopFails_Then_ExecutionFailsWithError()
+	[Description("Regression guard: verifies hosted service stop failures turn run into an error reported on stderr so that teardown problems are neither silent nor mixed into the stdout payload a parent process parses.")]
+	public void When_HeadLifecycleStopFails_Then_ExecutionFailsWithErrorOnStdErr()
 	{
 		var services = new ServiceCollection()
 			.AddSingleton<IHostedService, StopFailingHostedService>();
@@ -201,13 +202,14 @@ public sealed class Given_HostedServicesLifecycle
 		var sut = ReplApp.Create();
 		sut.Map("status", () => "ok");
 
-		var output = ConsoleCaptureHelper.Capture(() => sut.Run(
+		var output = ConsoleCaptureHelper.CaptureStdOutAndErr(() => sut.Run(
 			["status", "--no-logo"],
 			provider,
 			new ReplRunOptions { HostedServiceLifecycle = HostedServiceLifecycleMode.Head }));
 
 		output.ExitCode.Should().Be(1);
-		output.Text.Should().Contain("Failed to stop hosted service");
+		output.StdErr.Should().Contain("Failed to stop hosted service");
+		output.StdOut.Should().Be("ok" + Environment.NewLine, "the command's own payload must survive intact");
 	}
 
 	[TestMethod]
@@ -330,6 +332,44 @@ public sealed class Given_HostedServicesLifecycle
 		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.FrameworkError);
 		observed.Exception.Should().NotBeNull();
 		observed.Exception!.Message.Should().Contain("Failed to stop hosted service");
+		observed.Exception.Should().NotBeOfType<AggregateException>(
+			"with nothing propagating, the stop failure travels as itself");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a shutdown failure that outranks an exception the pipeline was propagating still carries that exception, so a failed StopAsync can no longer make an unrelated failure vanish without a rethrow, a log, or a place on the outcome.")]
+	public void When_HeadLifecycleStopFailsWhileAnExceptionPropagates_Then_BothCausesTravelOnTheOutcome()
+	{
+		var services = new ServiceCollection()
+			.AddSingleton<IHostedService, StopFailingHostedService>();
+		using var provider = services.BuildServiceProvider();
+
+		ReplExecutionOutcome? observed = null;
+		var sut = ReplApp.Create();
+		sut.Options(options => options.ExitCodes.Resolver = outcome =>
+		{
+			observed = outcome;
+			return outcome.ExitCode;
+		});
+		// A banner delegate throws outside the handler-classification path, so the pipeline propagates
+		// instead of producing an outcome — the state in which the stop failure used to swallow it.
+		sut.WithBanner(string () => throw new InvalidOperationException("banner boom"));
+		sut.Map("status", () => "ok");
+
+		var output = ConsoleCaptureHelper.CaptureStdOutAndErr(() => sut.Run(
+			["status"],
+			provider,
+			new ReplRunOptions { HostedServiceLifecycle = HostedServiceLifecycleMode.Head }));
+
+		output.ExitCode.Should().Be(1, "the shutdown failure still decides the code");
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.FrameworkError);
+
+		var aggregate = observed.Exception.Should().BeOfType<AggregateException>().Subject;
+		aggregate.InnerExceptions.Should().HaveCount(2);
+		aggregate.InnerExceptions[0].Message.Should().Contain("Failed to stop hosted service");
+		aggregate.InnerExceptions[1].Should().BeOfType<InvalidOperationException>()
+			.Which.Message.Should().Be("banner boom");
+		output.StdErr.Should().Contain("banner boom", "the suppressed cause must reach the operator too");
 	}
 
 	[TestMethod]
@@ -386,6 +426,64 @@ public sealed class Given_HostedServicesLifecycle
 			cts.Token).AsTask();
 
 		await act.Should().ThrowAsync<OperationCanceledException>();
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a caller cancellation during startup does not print a hosted-service startup error, so a normal cancellation is not dressed up as a framework failure.")]
+	public async Task When_HeadLifecycleStartupIsCancelledByCaller_Then_NoStartupErrorIsPrinted()
+	{
+		using var cts = new CancellationTokenSource();
+		var services = new ServiceCollection()
+			.AddSingleton<CancellationTokenSource>(cts)
+			.AddSingleton<IHostedService, CallerCancellingHostedService>();
+		using var provider = services.BuildServiceProvider();
+
+		var sut = ReplApp.Create();
+		sut.Options(options => options.ExitCodes.Cancelled = 130);
+		sut.Map("status", () => "ok");
+
+		using var output = new StringWriter();
+		int exitCode;
+		using (ReplSessionIO.SetSession(output, TextReader.Null, commandOutput: output, error: output))
+		{
+			exitCode = await sut.RunAsync(
+				["status", "--no-logo"],
+				provider,
+				new ReplRunOptions { HostedServiceLifecycle = HostedServiceLifecycleMode.Head },
+				cts.Token);
+		}
+
+		exitCode.Should().Be(130);
+		output.ToString().Should().NotContain("Failed to start hosted service");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a shutdown failure still reaches the exit-code policy when the pipeline was propagating a cancellation, so the documented rule that a failed shutdown outranks the command outcome is not lost to the in-flight exception.")]
+	public async Task When_PipelineCancelsAndShutdownAlsoFails_Then_TheShutdownFailureIsResolved()
+	{
+		using var cts = new CancellationTokenSource();
+		var services = new ServiceCollection()
+			.AddSingleton<IHostedService, StopFailingHostedService>();
+		using var provider = services.BuildServiceProvider();
+
+		var sut = ReplApp.Create();
+		sut.Options(options => options.ExitCodes.FrameworkError = 70);
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			cts.Cancel();
+			ct.ThrowIfCancellationRequested();
+			return "unreachable";
+		});
+
+		// No cancellation conversion configured, so the pipeline propagates an OperationCanceledException
+		// through the teardown; the shutdown failure must still win and be mapped.
+		var exitCode = await ConsoleCaptureHelper.CaptureAsync(() => sut.RunAsync(
+			["work", "--no-logo"],
+			provider,
+			new ReplRunOptions { HostedServiceLifecycle = HostedServiceLifecycleMode.Head },
+			cts.Token).AsTask());
+
+		exitCode.ExitCode.Should().Be(70);
 	}
 
 	// Cancels the caller's token from inside StartAsync, then observes it: the shape that reaches

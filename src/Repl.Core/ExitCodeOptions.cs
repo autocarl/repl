@@ -39,20 +39,23 @@ public sealed class ExitCodeOptions
 
 	/// <summary>
 	/// Gets or sets the exit code for <see cref="ReplExecutionOutcomeKind.Cancelled"/> — a run stopped
-	/// through the caller's own <see cref="CancellationToken"/>. When <see langword="null"/> (the default)
-	/// the <see cref="OperationCanceledException"/> propagates to the caller instead of being converted,
-	/// unless a <see cref="Resolver"/> is set, which also opts in to observing cancellation. <c>130</c>
-	/// (128 + SIGINT) is the usual shell convention. A handler that raises
-	/// <see cref="OperationCanceledException"/> without the caller having asked for cancellation is a
-	/// failure, reported as <see cref="ReplExecutionOutcomeKind.HandlerException"/>.
+	/// through the caller's own <see cref="CancellationToken"/>, whether during the command or while
+	/// hosted services were starting. When <see langword="null"/> (the default) the
+	/// <see cref="OperationCanceledException"/> propagates to the caller instead of being converted,
+	/// unless a <see cref="Resolver"/> is set, which also opts in to observing cancellation — the
+	/// resolver is then handed <c>130</c>, the shell convention for <c>128 + SIGINT</c>. A handler that
+	/// raises <see cref="OperationCanceledException"/> without the caller having asked for cancellation
+	/// is a failure, reported as <see cref="ReplExecutionOutcomeKind.HandlerException"/>.
 	/// </summary>
 	public int? Cancelled { get; set; }
 
 	/// <summary>
 	/// Gets or sets the exit code for <see cref="ReplExecutionOutcomeKind.Interrupted"/> — a process
-	/// signal (SIGINT, Ctrl+Break, SIGTERM) bridged into a cooperative shutdown. When
-	/// <see langword="null"/> (the default) the conventional <c>128 + signal</c> code the bridge carries
-	/// is used; set it to publish a single code for every signal instead.
+	/// signal (SIGINT, Ctrl+Break, SIGTERM) turned into a cooperative shutdown by a process-signal
+	/// handler. The core pipeline never produces this kind: it exists so signal handling can route its
+	/// outcomes through the same table and resolver. When <see langword="null"/> (the default) the
+	/// conventional <c>128 + signal</c> code the handler supplies is used, falling back to <c>130</c>
+	/// when it supplies none; set it to publish a single code for every signal instead.
 	/// </summary>
 	public int? Interrupted { get; set; }
 
@@ -86,14 +89,23 @@ public sealed class ExitCodeOptions
 	/// hook must therefore not assume a one-to-one relationship with a process exit.
 	/// </para>
 	/// <para>
-	/// The hook must not throw: an exception from it is swallowed, the table-mapped code is used instead,
-	/// and one diagnostic line is written to the session's error stream.
+	/// The hook must not throw: an exception from it is swallowed and the table-mapped code is used
+	/// instead. One diagnostic line is written to the session's error stream on a best-effort basis — the
+	/// fallback code is the contract, so a failing error stream cannot turn a resolver bug into a failed
+	/// run either.
 	/// </para>
 	/// </remarks>
 	public Func<ReplExecutionOutcome, int>? Resolver { get; set; }
 
 	// Kept private so no friend assembly can mutate the process-wide defaults used by sub-invocations.
 	private static readonly ExitCodeOptions s_defaults = new();
+
+	/// <summary>
+	/// The shell convention for a command stopped by SIGINT (<c>128 + 2</c>). Used when a cancellation or
+	/// an interruption carries no conventional code of its own and none is configured for its kind, so an
+	/// aborted run is never reported with the same code as a handler failure.
+	/// </summary>
+	internal const int ConventionalInterruptedExitCode = 130;
 
 	/// <summary>
 	/// Maps a kind with the built-in defaults, ignoring any application configuration.
@@ -105,8 +117,11 @@ public sealed class ExitCodeOptions
 	/// Maps a kind to its configured code. <paramref name="carriedExitCode"/> is the code the outcome
 	/// itself carries: the <see cref="IExitResult"/> code, or the conventional <c>128 + signal</c> code
 	/// for a cancellation or an interruption, which <see cref="Cancelled"/> and
-	/// <see cref="Interrupted"/> override when set. Codes should stay within <c>0</c>-<c>255</c>:
-	/// POSIX <c>wait</c> exposes only the low eight bits to the parent process.
+	/// <see cref="Interrupted"/> override when set. A cancellation or interruption that carries no code
+	/// and has none configured falls back to <see cref="ConventionalInterruptedExitCode"/> rather than to
+	/// <see cref="FrameworkError"/>, so an aborted run stays distinguishable from a broken one. Codes
+	/// should stay within <c>0</c>-<c>255</c>: POSIX <c>wait</c> exposes only the low eight bits to the
+	/// parent process.
 	/// </summary>
 	internal int Map(ReplExecutionOutcomeKind kind, int? carriedExitCode) =>
 		kind switch
@@ -118,8 +133,8 @@ public sealed class ExitCodeOptions
 			ReplExecutionOutcomeKind.HandlerError => HandlerError,
 			ReplExecutionOutcomeKind.HandlerExitCode => carriedExitCode ?? Success,
 			ReplExecutionOutcomeKind.HandlerException => HandlerException,
-			ReplExecutionOutcomeKind.Cancelled => Cancelled ?? carriedExitCode ?? FrameworkError,
-			ReplExecutionOutcomeKind.Interrupted => Interrupted ?? carriedExitCode ?? FrameworkError,
+			ReplExecutionOutcomeKind.Cancelled => Cancelled ?? carriedExitCode ?? ConventionalInterruptedExitCode,
+			ReplExecutionOutcomeKind.Interrupted => Interrupted ?? carriedExitCode ?? ConventionalInterruptedExitCode,
 			_ => FrameworkError,
 		};
 }

@@ -373,7 +373,7 @@ Handlers can return any type. The framework renders the return value through the
 | `IReplResult` | Structured result with kind prefix (`Results.Ok`, `Error`, `NotFound`...) |
 | `ReplNavigationResult` | Renders payload and navigates scope (`Results.NavigateUp`, `NavigateTo`) |
 | `IExitResult` | Renders optional payload and sets the process exit code verbatim (`Results.Exit`); the only return type that carries an exit code — bypasses the `ReplOptions.ExitCodes` table, still visible to `ExitCodes.Resolver` |
-| `EnterInteractiveResult` | Renders optional payload and enters interactive REPL mode (`Results.EnterInteractive`) |
+| `EnterInteractiveResult` | Renders optional payload and enters interactive REPL mode (`Results.EnterInteractive`). A payload that cannot be rendered — an unknown `--output` format — is a `UsageError` and the loop is not entered |
 | `void` / `null` | No output |
 | `int` and other scalars | Rendered as data like any other value — **never** interpreted as an exit code (`int Count() => 3` prints `3`, exits `0`) |
 

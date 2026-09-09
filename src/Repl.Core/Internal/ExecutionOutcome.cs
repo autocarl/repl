@@ -21,14 +21,20 @@ internal readonly record struct ExecutionOutcome(
 
 	public static ExecutionOutcome Help { get; } = new(ReplExecutionOutcomeKind.Help);
 
-	public static ExecutionOutcome Usage(object? rendered = null) => new(ReplExecutionOutcomeKind.UsageError, rendered);
+	/// <summary>
+	/// A refusal the caller was shown. <paramref name="exception"/> is set only when the usage error
+	/// displaced a failure that was already being reported — an unknown output format while rendering a
+	/// handler exception — so the cause the run actually ended on is not lost to the resolver.
+	/// </summary>
+	public static ExecutionOutcome UsageError(object? rendered = null, Exception? exception = null) =>
+		new(ReplExecutionOutcomeKind.UsageError, rendered, exception);
 
-	public static ExecutionOutcome Binding(Exception exception, object? rendered = null) =>
+	public static ExecutionOutcome BindingError(Exception exception, object? rendered = null) =>
 		new(ReplExecutionOutcomeKind.BindingError, rendered, exception);
 
 	public static ExecutionOutcome HandlerError(object? result) => new(ReplExecutionOutcomeKind.HandlerError, result);
 
-	public static ExecutionOutcome Exit(IExitResult exitResult) =>
+	public static ExecutionOutcome HandlerExitCode(IExitResult exitResult) =>
 		new(ReplExecutionOutcomeKind.HandlerExitCode, exitResult, ExplicitExitCode: exitResult.ExitCode);
 
 	public static ExecutionOutcome HandlerException(Exception exception) => new(ReplExecutionOutcomeKind.HandlerException, Exception: exception);
