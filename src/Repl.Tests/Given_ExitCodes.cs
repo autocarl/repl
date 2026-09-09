@@ -607,6 +607,30 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies the resolver fallback survives a failing error stream, so reporting a resolver failure cannot itself become the failure that ends the run.")]
+	public void When_ResolverThrowsAndTheErrorStreamAlsoThrows_Then_TheTableCodeIsStillReturned()
+	{
+		var sut = CreateApp(recorder: null, options =>
+		{
+			options.ExitCodes.HandlerError = 9;
+			options.ExitCodes.Resolver = _ => throw new InvalidOperationException("resolver boom");
+		});
+		sut.Map("fail", () => Results.Error("boom", "failed"));
+		using var output = new StringWriter();
+		using var error = new ThrowingWriter();
+		using var session = ReplSessionIO.SetSession(
+			output,
+			TextReader.Null,
+			commandOutput: output,
+			error: error,
+			isHostedSession: false);
+
+		var exitCode = sut.Run(["fail"]);
+
+		exitCode.Should().Be(9);
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies a one-shot run reports Scope.Process so that a resolver can tell the process exit code from a per-command shell-integration mark.")]
 	public void When_OneShotRunResolves_Then_ScopeIsProcess()
 	{
@@ -699,6 +723,14 @@ public sealed class Given_ExitCodes
 	}
 
 	private interface IMissingDependency;
+
+	// Stands in for a torn-down transport: every write fails.
+	private sealed class ThrowingWriter : StringWriter
+	{
+		public override void WriteLine(string? value) => throw new ObjectDisposedException(nameof(ThrowingWriter));
+
+		public override void Write(string? value) => throw new ObjectDisposedException(nameof(ThrowingWriter));
+	}
 
 	private sealed class InMemoryHost(TextReader input, TextWriter output) : IReplHost
 	{

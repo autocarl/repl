@@ -708,6 +708,13 @@ public sealed partial class CoreReplApp : ICoreReplApp
 		];
 	}
 
+	/// <summary>
+	/// Whether the current invocation runs inside an interactive session. Reads the ambient runtime
+	/// state pushed for the session, so it stays correct for a protocol-passthrough command, which
+	/// carries no scope tokens whatever the mode.
+	/// </summary>
+	internal bool IsInteractiveSession => _runtimeState.Value?.IsInteractiveSession == true;
+
 	internal RuntimeStateScope PushRuntimeState(IServiceProvider serviceProvider, bool isInteractiveSession)
 	{
 		var previous = _runtimeState.Value;

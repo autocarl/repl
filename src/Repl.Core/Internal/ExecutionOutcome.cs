@@ -36,7 +36,8 @@ internal readonly record struct ExecutionOutcome(
 	public static ExecutionOutcome Cancelled(Exception exception, int? conventionalExitCode = null) =>
 		new(ReplExecutionOutcomeKind.Cancelled, Exception: exception, ExplicitExitCode: conventionalExitCode);
 
-	public static ExecutionOutcome FrameworkError(object? rendered) => new(ReplExecutionOutcomeKind.FrameworkError, rendered);
+	public static ExecutionOutcome FrameworkError(object? rendered, Exception? exception = null) =>
+		new(ReplExecutionOutcomeKind.FrameworkError, rendered, exception);
 
 	/// <summary>
 	/// True when the outcome should not prevent an automatic transition into the interactive loop.

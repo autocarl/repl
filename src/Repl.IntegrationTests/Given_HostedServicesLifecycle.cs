@@ -305,6 +305,80 @@ public sealed class Given_HostedServicesLifecycle
 		await act.Should().ThrowAsync<OperationCanceledException>();
 	}
 
+	[TestMethod]
+	[Description("Regression guard: verifies a hosting failure hands the lifecycle exception to the resolver, since the coordinator wraps whatever the service threw and that is the only way a consumer can inspect it.")]
+	public void When_HeadLifecycleStopFails_Then_TheOutcomeCarriesTheLifecycleException()
+	{
+		var services = new ServiceCollection()
+			.AddSingleton<IHostedService, StopFailingHostedService>();
+		using var provider = services.BuildServiceProvider();
+
+		ReplExecutionOutcome? observed = null;
+		var sut = ReplApp.Create();
+		sut.Options(options => options.ExitCodes.Resolver = outcome =>
+		{
+			observed = outcome;
+			return outcome.ExitCode;
+		});
+		sut.Map("status", () => "ok");
+
+		_ = ConsoleCaptureHelper.Capture(() => sut.Run(
+			["status", "--no-logo"],
+			provider,
+			new ReplRunOptions { HostedServiceLifecycle = HostedServiceLifecycleMode.Head }));
+
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.FrameworkError);
+		observed.Exception.Should().NotBeNull();
+		observed.Exception!.Message.Should().Contain("Failed to stop hosted service");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a startup cancelled through the caller's token is a Cancelled outcome, not a framework error: the coordinator wraps the OperationCanceledException, which used to hide it from ExitCodes.Cancelled.")]
+	public async Task When_HeadLifecycleStartupIsCancelledByCaller_Then_KindIsCancelledAndCancelledCodeApplies()
+	{
+		using var cts = new CancellationTokenSource();
+		var services = new ServiceCollection()
+			.AddSingleton<CancellationTokenSource>(cts)
+			.AddSingleton<IHostedService, CallerCancellingHostedService>();
+		using var provider = services.BuildServiceProvider();
+
+		ReplExecutionOutcome? observed = null;
+		var sut = ReplApp.Create();
+		sut.Options(options =>
+		{
+			options.ExitCodes.Cancelled = 130;
+			options.ExitCodes.Resolver = outcome =>
+			{
+				observed = outcome;
+				return outcome.ExitCode;
+			};
+		});
+		sut.Map("status", () => "ok");
+
+		var exitCode = await sut.RunAsync(
+			["status", "--no-logo"],
+			provider,
+			new ReplRunOptions { HostedServiceLifecycle = HostedServiceLifecycleMode.Head },
+			cts.Token);
+
+		exitCode.Should().Be(130);
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.Cancelled);
+		observed.Exception.Should().NotBeNull();
+	}
+
+	// Cancels the caller's token from inside StartAsync, then observes it: the shape that reaches
+	// ReplApp as a HostedServiceLifecycleException wrapping an OperationCanceledException.
+	private sealed class CallerCancellingHostedService(CancellationTokenSource callerTokenSource) : IHostedService
+	{
+		public async Task StartAsync(CancellationToken cancellationToken)
+		{
+			await callerTokenSource.CancelAsync().ConfigureAwait(false);
+			cancellationToken.ThrowIfCancellationRequested();
+		}
+
+		public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+	}
+
 	private sealed class LifecycleTracker
 	{
 		public int StartCount { get; private set; }

@@ -227,11 +227,27 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		{
 			// The resolver is application code on the way out of a run; a throw here would replace a real
 			// outcome with an unrelated failure, so it degrades to the table code and says so once.
+			TryWriteResolverDiagnostic(ex, mappedExitCode);
+			return mappedExitCode;
+		}
+	}
+
+	[SuppressMessage(
+		"Design",
+		"CA1031:Do not catch general exception types",
+		Justification = "Reporting a resolver failure must not itself fail the run: the error stream may be disposed or its transport already torn down.")]
+	private static void TryWriteResolverDiagnostic(Exception resolverFailure, int mappedExitCode)
+	{
+		try
+		{
 #pragma warning disable MA0045 // Intentionally synchronous — the exit-code policy resolves on non-async members
 			ReplSessionIO.Error.WriteLine(
-				$"Error: ExitCodes.Resolver threw {ex.GetType().Name} ({ex.Message}); using exit code {mappedExitCode.ToString(CultureInfo.InvariantCulture)}.");
+				$"Error: ExitCodes.Resolver threw {resolverFailure.GetType().Name} ({resolverFailure.Message}); using exit code {mappedExitCode.ToString(CultureInfo.InvariantCulture)}.");
 #pragma warning restore MA0045
-			return mappedExitCode;
+		}
+		catch
+		{
+			// Best-effort: the fallback exit code is the contract, the diagnostic is a courtesy.
 		}
 	}
 
@@ -717,7 +733,9 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				// RenderOutputAsync returns false only for an unknown requested output format: a usage mistake.
 				return (rendered ? ClassifyResult(normalizedResult) : ExecutionOutcome.Usage(normalizedResult), false);
 		}
-		catch (OperationCanceledException ex) when (scopeTokens is null && !cancellationToken.IsCancellationRequested)
+		// The ambient runtime state, not scopeTokens: a protocol-passthrough command always passes
+		// scopeTokens: null, interactive or not, so it is not a mode discriminator.
+		catch (OperationCanceledException ex) when (!IsInteractiveSession && !cancellationToken.IsCancellationRequested)
 		{
 			// One-shot, and nobody asked for this run to stop: the handler cancelled itself, which is a
 			// failure like any other exception. Rendering it is the point — a bare rethrow here used to

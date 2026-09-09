@@ -300,7 +300,12 @@ public sealed class ReplApp : IReplApp
 		catch (HostedServiceLifecycleException ex)
 		{
 			await ReplSessionIO.Output.WriteLineAsync($"Error: {ex.Message}").ConfigureAwait(false);
-			outcome = ExecutionOutcome.FrameworkError(rendered: null);
+			// The coordinator wraps whatever a hosted service threw, cancellation included. A startup the
+			// caller cancelled is a cancellation, not a framework defect, so it follows ExitCodes.Cancelled
+			// like any other caller-token cancellation.
+			outcome = ex.InnerException is OperationCanceledException && cancellationToken.IsCancellationRequested
+				? ExecutionOutcome.Cancelled(ex)
+				: ExecutionOutcome.FrameworkError(rendered: null, exception: ex);
 		}
 		finally
 		{
@@ -313,7 +318,9 @@ public sealed class ReplApp : IReplApp
 			{
 				await ReplSessionIO.Output.WriteLineAsync($"Error: {ex.Message}").ConfigureAwait(false);
 				// A failed shutdown outranks whatever the command reported: the process is leaving dirty.
-				outcome = ExecutionOutcome.FrameworkError(rendered: null);
+				// Not reclassified as a cancellation — shutdown runs on CancellationToken.None, so a
+				// cancellation surfacing here is the service's own, not the caller's.
+				outcome = ExecutionOutcome.FrameworkError(rendered: null, exception: ex);
 			}
 		}
 

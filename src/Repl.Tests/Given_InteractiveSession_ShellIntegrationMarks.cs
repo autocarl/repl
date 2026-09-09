@@ -644,6 +644,26 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
+	[Description("An interactive passthrough handler that cancels itself keeps the interactive cancellation semantics: a passthrough command carries no scope tokens whatever the mode, so the mode must come from the session, not from that argument.")]
+	public void When_InteractivePassthroughHandlerCancelsItself_Then_CancellationIsReportedNotAHandlerFailure()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		// Takes IReplIoContext so the hosted-session passthrough guard lets it dispatch and the handler
+		// actually runs; without it the run stops at that guard instead of reaching the cancellation.
+		sut.Map("serve", string (IReplIoContext io) => throw new OperationCanceledException())
+			.AsProtocolPassthrough();
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "serve\rexit\r");
+
+		// The interactive loop owns cancellation: it prints "Cancelled." and keeps the session alive,
+		// instead of the one-shot path rendering an execution_error and reporting a handler failure.
+		raw.Should().Contain("Cancelled.");
+		raw.Should().NotContain("execution_error");
+	}
+
+	[TestMethod]
 	[Description("A dispatch that throws (history with a non-numeric --limit) still closes the lifecycle with a failed command-end mark so the terminal never keeps an unterminated command segment.")]
 	public void When_AmbientCommandThrows_Then_CommandEndStillReportsFailure()
 	{
