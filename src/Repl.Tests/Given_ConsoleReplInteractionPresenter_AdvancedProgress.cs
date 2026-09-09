@@ -72,11 +72,11 @@ public sealed class Given_ConsoleReplInteractionPresenter_AdvancedProgress
 	public async Task When_AdvancedProgressAuto_And_TmuxDetected_Then_TextRendersWithoutOscSequence()
 	{
 		using var env = new EnvironmentVariableScope(
+		[
+			.. TerminalTestEnvironments.Neutral,
 			("TMUX", "/tmp/tmux-1000/default,123,0"),
 			("TERM", "tmux-256color"),
-			("WT_SESSION", null),
-			("ConEmuANSI", null),
-			("TERM_PROGRAM", null));
+		]);
 
 		var harness = new TerminalHarness(cols: 80, rows: 12);
 		var presenter = new ConsoleReplInteractionPresenter(
@@ -100,12 +100,7 @@ public sealed class Given_ConsoleReplInteractionPresenter_AdvancedProgress
 	[Description("A hosted client that advertises ANSI purely through capability flags (identity inference, no AnsiSupport override) gets advanced progress in Auto mode — the same hosted-ANSI fallback the shell-integration marks honor.")]
 	public async Task When_HostedClientAdvertisesAnsiViaCapabilities_Then_AdvancedProgressIsEmitted()
 	{
-		using var env = new EnvironmentVariableScope(
-			("TMUX", null),
-			("TERM", null),
-			("WT_SESSION", null),
-			("ConEmuANSI", null),
-			("TERM_PROGRAM", null));
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var harness = new TerminalHarness(cols: 80, rows: 12);
 		var presenter = new ConsoleReplInteractionPresenter(
 			new InteractionOptions { AdvancedProgressMode = AdvancedProgressMode.Auto },
@@ -127,11 +122,10 @@ public sealed class Given_ConsoleReplInteractionPresenter_AdvancedProgress
 	public async Task When_AdvancedProgressAuto_And_WindowsTerminalDetected_Then_PresenterEmitsOscSequence()
 	{
 		using var env = new EnvironmentVariableScope(
-			("TMUX", null),
-			("TERM", null),
+		[
+			.. TerminalTestEnvironments.Neutral,
 			("WT_SESSION", "test-session"),
-			("ConEmuANSI", null),
-			("TERM_PROGRAM", null));
+		]);
 
 		var harness = new TerminalHarness(cols: 80, rows: 12);
 		var presenter = new ConsoleReplInteractionPresenter(

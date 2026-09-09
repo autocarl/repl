@@ -394,12 +394,10 @@ public sealed class Given_ShellIntegrationMarkEmitter
 	public async Task When_TermIsDumb_Then_HostedCapabilityFallbackDoesNotReenableMarks()
 	{
 		using var env = new EnvironmentVariableScope(
-			("NO_COLOR", null),
-			("TMUX", null),
+		[
+			.. TerminalTestEnvironments.Neutral,
 			("TERM", "dumb"),
-			("WT_SESSION", null),
-			("ConEmuANSI", null),
-			("TERM_PROGRAM", null));
+		]);
 		var harness = new TerminalHarness(cols: 80, rows: 12);
 		using var session = ReplSessionIO.SetSession(
 			output: harness.Writer,

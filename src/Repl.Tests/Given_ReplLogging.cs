@@ -35,6 +35,10 @@ public sealed partial class Given_ReplLogging
 	public void When_DefaultAppLogsWithoutProvider_Then_NoUserFacingLogOutputIsProduced()
 	{
 		var app = ReplApp.Create();
+		// This test asserts the absence of *log* output, and asserts it over the whole writer. Terminal
+		// chrome rides the same stream — a progress-clear OSC 9;4 lands there when ANSI is enabled — so
+		// the ANSI decision is pinned rather than left to the ambient environment (CLICOLOR_FORCE).
+		app.Options(options => options.Output.AnsiMode = AnsiMode.Never);
 		app.Map("status", (ILogger<Given_ReplLogging> logger) =>
 		{
 			LogMessages.StatusRequested(logger);
