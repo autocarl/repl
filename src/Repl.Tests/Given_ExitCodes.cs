@@ -62,75 +62,37 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies an unknown command is a UsageError with exit code 2 so that it is distinguishable from a handler failure.")]
-	public void When_CommandIsUnknown_Then_KindIsUsageErrorAndExitCodeIsTwo()
+	[DataRow("unknown command", new[] { "nope" })]
+	[DataRow("ambiguous prefix", new[] { "contact", "l" })]
+	[DataRow("unknown command option", new[] { "hello", "--bogus", "x" })]
+	[DataRow("global option missing its value", new[] { "hello", "--output" })]
+	[DataRow("unknown output format", new[] { "hello", "--output:toml" })]
+	[Description("Regression guard: verifies every framework refusal is a UsageError with exit code 2 so that misuse stays distinguishable from a handler failure.")]
+	public void When_InvocationIsRefused_Then_KindIsUsageErrorAndExitCodeIsTwo(string refusal, string[] args)
 	{
 		var recorder = new OutcomeRecorder();
 		var sut = CreateApp(recorder);
-		sut.Map("hello", () => "world");
-
-		var exitCode = Run(sut, ["nope"], out _);
-
-		exitCode.Should().Be(2);
-		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
-		recorder.Last.Result.Should().BeAssignableTo<IReplResult>();
-	}
-
-	[TestMethod]
-	[Description("Regression guard: verifies an ambiguous command prefix is a UsageError so that typos never masquerade as handler errors.")]
-	public void When_PrefixIsAmbiguous_Then_KindIsUsageError()
-	{
-		var recorder = new OutcomeRecorder();
-		var sut = CreateApp(recorder);
+		sut.Map("hello", (string? name) => name ?? "world");
 		sut.Map("contact list", () => "list");
 		sut.Map("contact load", () => "load");
 
-		var exitCode = Run(sut, ["contact", "l"], out _);
+		var exitCode = Run(sut, args, out _);
 
-		exitCode.Should().Be(2);
-		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+		exitCode.Should().Be(2, refusal);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError, refusal);
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies an unknown command option is a UsageError so that misuse and breakage return different codes.")]
-	public void When_CommandOptionIsUnknown_Then_KindIsUsageError()
-	{
-		var recorder = new OutcomeRecorder();
-		var sut = CreateApp(recorder);
-		sut.Map("hello", (string name) => name);
-
-		var exitCode = Run(sut, ["hello", "--bogus", "x"], out _);
-
-		exitCode.Should().Be(2);
-		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
-	}
-
-	[TestMethod]
-	[Description("Regression guard: verifies an invalid global option is a UsageError so that global parse diagnostics follow the usage code.")]
-	public void When_GlobalOptionIsInvalid_Then_KindIsUsageError()
+	[Description("Regression guard: verifies a routing refusal hands the rendered refusal result to the resolver so that a consumer can map on the framework's own diagnostic instead of parsing text.")]
+	public void When_CommandIsUnknown_Then_OutcomeCarriesTheRenderedRefusal()
 	{
 		var recorder = new OutcomeRecorder();
 		var sut = CreateApp(recorder);
 		sut.Map("hello", () => "world");
 
-		var exitCode = Run(sut, ["hello", "--output"], out _);
+		_ = Run(sut, ["nope"], out _);
 
-		exitCode.Should().Be(2);
-		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
-	}
-
-	[TestMethod]
-	[Description("Regression guard: verifies an unknown output format is a UsageError so that a bad --output value is reported as misuse.")]
-	public void When_OutputFormatIsUnknown_Then_KindIsUsageError()
-	{
-		var recorder = new OutcomeRecorder();
-		var sut = CreateApp(recorder);
-		sut.Map("hello", () => new { Name = "world" });
-
-		var exitCode = Run(sut, ["hello", "--output:toml"], out _);
-
-		exitCode.Should().Be(2);
-		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+		recorder.Last!.Result.Should().BeAssignableTo<IReplResult>();
 	}
 
 	[TestMethod]
@@ -237,8 +199,27 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies cancellation still propagates as an exception when Cancelled is unmapped so that existing callers keep their contract.")]
-	public async Task When_TokenIsCancelledAndCancelledIsUnmapped_Then_OperationCanceledExceptionPropagates()
+	[Description("Regression guard: verifies cancellation still propagates as an exception when an application asked for neither a Cancelled code nor a resolver, so existing callers keep their contract.")]
+	public async Task When_TokenIsCancelledAndNoCancellationPolicyIsSet_Then_OperationCanceledExceptionPropagates()
+	{
+		using var cts = new CancellationTokenSource();
+		var sut = CreateApp(recorder: null);
+		sut.Map("work", (CancellationToken ct) =>
+		{
+			cts.Cancel();
+			ct.ThrowIfCancellationRequested();
+			return "unreachable";
+		});
+		using var session = OpenSession(out _);
+
+		var act = async () => await sut.RunAsync(["work"], cts.Token).ConfigureAwait(false);
+
+		await act.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a resolver alone makes cancellation observable so that the single interception point issue #81 asks for covers every final outcome, not only the ones with a table entry.")]
+	public async Task When_TokenIsCancelledAndOnlyResolverIsSet_Then_ResolverSeesCancelledOutcome()
 	{
 		using var cts = new CancellationTokenSource();
 		var recorder = new OutcomeRecorder();
@@ -251,10 +232,11 @@ public sealed class Given_ExitCodes
 		});
 		using var session = OpenSession(out _);
 
-		var act = async () => await sut.RunAsync(["work"], cts.Token).ConfigureAwait(false);
+		var exitCode = await sut.RunAsync(["work"], cts.Token).ConfigureAwait(false);
 
-		await act.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
-		recorder.Last.Should().BeNull("the resolver must not run when cancellation is left unmapped");
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.Cancelled);
+		recorder.Last.Exception.Should().BeAssignableTo<OperationCanceledException>();
+		exitCode.Should().Be(recorder.Last.ExitCode);
 	}
 
 	[TestMethod]
@@ -288,17 +270,18 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies a handler-thrown OperationCanceledException follows the Cancelled mapping so that prompt or self-imposed cancellations get the cancellation code.")]
-	public void When_HandlerThrowsOperationCanceledAndCancelledIsMapped_Then_KindIsCancelled()
+	[Description("Regression guard: verifies a handler that cancels itself in one-shot mode is a HandlerException with a rendered message, so a mapped Cancelled code cannot make a real failure look like an operator abort.")]
+	public void When_HandlerThrowsOperationCanceledWithoutCallerCancellation_Then_KindIsHandlerExceptionAndErrorIsRendered()
 	{
 		var recorder = new OutcomeRecorder();
 		var sut = CreateApp(recorder, options => options.ExitCodes.Cancelled = 130);
-		sut.Map("boom", string () => throw new OperationCanceledException());
+		sut.Map("boom", string () => throw new OperationCanceledException("handler gave up"));
 
-		var exitCode = Run(sut, ["boom"], out _);
+		var exitCode = Run(sut, ["boom"], out var output);
 
-		exitCode.Should().Be(130);
-		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.Cancelled);
+		exitCode.Should().Be(1);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerException);
+		output.Should().Contain("handler gave up");
 	}
 
 	[TestMethod]
@@ -316,7 +299,7 @@ public sealed class Given_ExitCodes
 		});
 		using var session = OpenSession(out _);
 
-		var exitCode = await sut.RunAsync(["work"], cts.Token);
+		var exitCode = await sut.RunAsync(["work"], cts.Token).ConfigureAwait(false);
 
 		exitCode.Should().Be(130);
 		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.Cancelled);
@@ -328,13 +311,13 @@ public sealed class Given_ExitCodes
 	public async Task When_PreCancelledTokenAndCancelledIsMapped_Then_ExitCodeIs130()
 	{
 		using var cts = new CancellationTokenSource();
-		await cts.CancelAsync();
+		await cts.CancelAsync().ConfigureAwait(false);
 		var recorder = new OutcomeRecorder();
 		var sut = CreateApp(recorder, options => options.ExitCodes.Cancelled = 130);
 		sut.Map("work", () => "never");
 		using var session = OpenSession(out _);
 
-		var exitCode = await sut.RunAsync(["work"], cts.Token);
+		var exitCode = await sut.RunAsync(["work"], cts.Token).ConfigureAwait(false);
 
 		exitCode.Should().Be(130);
 		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.Cancelled);
@@ -398,8 +381,8 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies every outcome kind has its own table entry so that a kind added later cannot silently fall through to the FrameworkError default.")]
-	public void When_EveryKindIsMapped_Then_NoKindFallsThroughToTheDefaultArm()
+	[Description("Regression guard: verifies every outcome kind maps to its own configured entry so that swapping two arms of the table, or adding a kind without an entry, cannot pass unnoticed.")]
+	public void When_EveryKindIsMapped_Then_EachKindReturnsItsOwnConfiguredCode()
 	{
 		var table = new ExitCodeOptions
 		{
@@ -410,25 +393,46 @@ public sealed class Given_ExitCodes
 			HandlerError = 14,
 			HandlerException = 15,
 			Cancelled = 16,
-			FrameworkError = 17,
+			Interrupted = 17,
+			FrameworkError = 18,
 		};
 		const int carried = 99;
 
-		foreach (var kind in Enum.GetValues<ReplExecutionOutcomeKind>())
+		// Spelled out rather than derived from the value under test: this table IS the assertion, so a
+		// reordered switch arm in ExitCodeOptions.Map has to disagree with it.
+		var expectedByKind = new Dictionary<ReplExecutionOutcomeKind, int>
 		{
-			var mapped = table.Map(kind, carried);
-			var expected = kind switch
-			{
-				ReplExecutionOutcomeKind.HandlerExitCode or ReplExecutionOutcomeKind.Interrupted => carried,
-				ReplExecutionOutcomeKind.FrameworkError => table.FrameworkError,
-				_ => mapped,
-			};
-			mapped.Should().Be(expected, $"{kind} must map through its own arm");
-			if (kind != ReplExecutionOutcomeKind.FrameworkError)
-			{
-				mapped.Should().NotBe(table.FrameworkError, $"{kind} must not fall through to the default arm");
-			}
+			[ReplExecutionOutcomeKind.Success] = 10,
+			[ReplExecutionOutcomeKind.Help] = 11,
+			[ReplExecutionOutcomeKind.UsageError] = 12,
+			[ReplExecutionOutcomeKind.BindingError] = 13,
+			[ReplExecutionOutcomeKind.HandlerError] = 14,
+			[ReplExecutionOutcomeKind.HandlerExitCode] = carried,
+			[ReplExecutionOutcomeKind.HandlerException] = 15,
+			[ReplExecutionOutcomeKind.Cancelled] = 16,
+			[ReplExecutionOutcomeKind.Interrupted] = 17,
+			[ReplExecutionOutcomeKind.FrameworkError] = 18,
+		};
+
+		expectedByKind.Keys.Should().BeEquivalentTo(
+			Enum.GetValues<ReplExecutionOutcomeKind>(),
+			"a new kind must be given an expected code here before it can ship");
+
+		foreach (var (kind, expected) in expectedByKind)
+		{
+			table.Map(kind, carried).Should().Be(expected, $"{kind} must map through its own arm");
 		}
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies Cancelled and Interrupted fall back to the conventional code the outcome carries when no entry is configured, so a signal bridge keeps its 128+signal convention.")]
+	public void When_CancellationCodesAreUnset_Then_TheCarriedConventionalCodeIsUsed()
+	{
+		var table = new ExitCodeOptions();
+
+		table.Map(ReplExecutionOutcomeKind.Cancelled, carriedExitCode: 130).Should().Be(130);
+		table.Map(ReplExecutionOutcomeKind.Interrupted, carriedExitCode: 143).Should().Be(143);
+		table.Map(ReplExecutionOutcomeKind.Interrupted, carriedExitCode: null).Should().Be(table.FrameworkError);
 	}
 
 	[TestMethod]
@@ -544,6 +548,54 @@ public sealed class Given_ExitCodes
 		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.FrameworkError);
 	}
 
+	[TestMethod]
+	[Description("Regression guard: verifies a resolver that throws degrades to the table-mapped code and reports itself once on the error stream, so a faulty exit-code hook cannot replace the run's own outcome.")]
+	public void When_ResolverThrows_Then_TableCodeIsUsedAndOneDiagnosticIsWritten()
+	{
+		var sut = CreateApp(recorder: null, options =>
+		{
+			options.ExitCodes.HandlerError = 9;
+			options.ExitCodes.Resolver = _ => throw new InvalidOperationException("resolver boom");
+		});
+		sut.Map("fail", () => Results.Error("boom", "failed"));
+		using var session = OpenSplitSession(out var output, out var error);
+
+		var exitCode = sut.Run(["fail"]);
+
+		exitCode.Should().Be(9);
+		error.ToString().Should().Contain("ExitCodes.Resolver threw InvalidOperationException", Exactly.Once());
+		error.ToString().Should().Contain("resolver boom");
+		output.ToString().Should().NotContain("ExitCodes.Resolver threw");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a one-shot run reports Scope.Process so that a resolver can tell the process exit code from a per-command shell-integration mark.")]
+	public void When_OneShotRunResolves_Then_ScopeIsProcess()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("hello", () => "world");
+
+		_ = Run(sut, ["hello"], out _);
+
+		recorder.Count.Should().Be(1);
+		recorder.Last!.Scope.Should().Be(ReplExitCodeScope.Process);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies an IReplResult carrying an unrecognized kind still fails so that a result the framework cannot classify never reports success to a pipeline.")]
+	public void When_ResultKindIsUnrecognized_Then_KindIsHandlerErrorAndExitCodeIsOne()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("odd", () => new ReplResult("mystery", Code: null, Message: "something happened", Details: null));
+
+		var exitCode = Run(sut, ["odd"], out _);
+
+		exitCode.Should().Be(1);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerError);
+	}
+
 	private static ReplApp CreateApp(OutcomeRecorder? recorder, Action<ReplOptions>? configure = null)
 	{
 		var app = ReplApp.Create();
@@ -551,12 +603,14 @@ public sealed class Given_ExitCodes
 		{
 			options.Interactive.InteractivePolicy = InteractivePolicy.Prevent;
 			options.Output.BannerEnabled = false;
-			if (recorder is not null)
+			configure?.Invoke(options);
+
+			// After configure, so a test can observe outcomes while configure installs its own table
+			// entries; a configure that sets its own Resolver keeps it.
+			if (recorder is not null && options.ExitCodes.Resolver is null)
 			{
 				options.ExitCodes.Resolver = recorder.Record;
 			}
-
-			configure?.Invoke(options);
 		});
 		return app;
 	}
@@ -575,13 +629,33 @@ public sealed class Given_ExitCodes
 		return ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
 	}
 
+	// Splits the session's error stream from its output so a framework diagnostic can be asserted on its
+	// own; modelled on Given_CancelKeyHandler's session setup.
+	private static IDisposable OpenSplitSession(out StringWriter output, out StringWriter error)
+	{
+		output = new StringWriter();
+		error = new StringWriter();
+		return ReplSessionIO.SetSession(
+			output,
+			TextReader.Null,
+			commandOutput: output,
+			error: error,
+			isHostedSession: false);
+	}
+
 	private sealed class OutcomeRecorder
 	{
-		public ReplExecutionOutcome? Last { get; private set; }
+		private readonly List<ReplExecutionOutcome> _observed = [];
+
+		public ReplExecutionOutcome? Last => _observed.Count == 0 ? null : _observed[^1];
+
+		public IReadOnlyList<ReplExecutionOutcome> Observed => _observed;
+
+		public int Count => _observed.Count;
 
 		public int Record(ReplExecutionOutcome outcome)
 		{
-			Last = outcome;
+			_observed.Add(outcome);
 			return outcome.ExitCode;
 		}
 	}

@@ -38,6 +38,10 @@ var text = execution.OutputText;         // rendered output text
 var duration = execution.Duration;       // elapsed command time
 ```
 
+`RunCommandAsync` throws `TimeoutException` when a command exceeds
+`ReplScenarioOptions.CommandTimeout`, whether the application under test lets the cancellation
+propagate or maps it to an exit code through `ReplOptions.ExitCodes.Cancelled`.
+
 ## Assertion Surface (Complete)
 
 ### Exit code and text output

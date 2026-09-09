@@ -278,6 +278,10 @@ public sealed class ReplApp : IReplApp
 			return await _core.RunWithServicesAsync(args, services, cancellationToken).ConfigureAwait(false);
 		}
 
+		// Checked before starting hosted services so an already-cancelled caller token stops this
+		// overload as early as it stops the others, instead of after a full start/stop cycle.
+		cancellationToken.ThrowIfCancellationRequested();
+
 		var started = Array.Empty<Microsoft.Extensions.Hosting.IHostedService>();
 		var exitCode = 0;
 		try
@@ -291,7 +295,9 @@ public sealed class ReplApp : IReplApp
 		catch (HostedServiceLifecycleException ex)
 		{
 			await ReplSessionIO.Output.WriteLineAsync($"Error: {ex.Message}").ConfigureAwait(false);
-			exitCode = 1;
+			// A hosting failure is a framework error, so it goes through the same exit-code policy as
+			// every other outcome rather than hard-coding a code the application cannot configure.
+			exitCode = _core.ResolveHostingFailureExitCode();
 		}
 		finally
 		{
@@ -303,7 +309,7 @@ public sealed class ReplApp : IReplApp
 			catch (HostedServiceLifecycleException ex)
 			{
 				await ReplSessionIO.Output.WriteLineAsync($"Error: {ex.Message}").ConfigureAwait(false);
-				exitCode = 1;
+				exitCode = _core.ResolveHostingFailureExitCode();
 			}
 		}
 

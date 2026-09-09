@@ -21,14 +21,6 @@ public sealed partial class CoreReplApp
 	private string[] GetDeepestContextScopePath(IReadOnlyList<string> matchedPathTokens) =>
 		Interactive.GetDeepestContextScopePath(matchedPathTokens);
 
-	private ValueTask<AmbientCommandOutcome> TryHandleAmbientCommandAsync(
-		IReadOnlyList<string> inputTokens,
-		List<string> scopeTokens,
-		IServiceProvider serviceProvider,
-		bool isInteractiveSession,
-		CancellationToken cancellationToken) =>
-		Interactive.TryHandleAmbientCommandAsync(inputTokens, scopeTokens, serviceProvider, isInteractiveSession, cancellationToken);
-
 	private static ValueTask<AmbientCommandOutcome> HandleUpAmbientCommandAsync(
 		List<string> scopeTokens,
 		bool isInteractiveSession) =>

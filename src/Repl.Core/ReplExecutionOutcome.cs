@@ -22,4 +22,13 @@ public sealed record ReplExecutionOutcome(
 	ReplExecutionOutcomeKind Kind,
 	int ExitCode,
 	object? Result = null,
-	Exception? Exception = null);
+	Exception? Exception = null)
+{
+	/// <summary>
+	/// Gets what this exit code is used for: <see cref="ReplExitCodeScope.Process"/> for the process
+	/// exit code of a run (the default, and the only value a one-shot run sees), or
+	/// <see cref="ReplExitCodeScope.ShellIntegrationMark"/> when an interactive session is computing one
+	/// command's command-end mark. See <see cref="ExitCodeOptions.Resolver"/> for the invocation contract.
+	/// </summary>
+	public ReplExitCodeScope Scope { get; init; }
+}

@@ -7,22 +7,35 @@ Nerdbank.GitVersioning at pack time; this file groups changes by theme instead o
 
 ### Added — execution outcomes and exit-code policy
 
-- Every run that reaches the core pipeline now ends in a structured `ReplExecutionOutcome` whose
-  `ReplExecutionOutcomeKind` distinguishes `Success`, `Help`, `UsageError`, `BindingError`,
-  `HandlerError`, `HandlerExitCode`, `HandlerException`, `Cancelled`, `Interrupted` (reserved for
-  process-signal bridges), and `FrameworkError`. The kind is mapped to an integer by the new
-  `ReplOptions.ExitCodes` (`ExitCodeOptions`) table, then passed to the optional
+- Every run now ends in a structured `ReplExecutionOutcome` whose `ReplExecutionOutcomeKind`
+  distinguishes `Success`, `Help`, `UsageError`, `BindingError`, `HandlerError`, `HandlerExitCode`,
+  `HandlerException`, `Cancelled`, `Interrupted`, and `FrameworkError`. The kind is mapped to an
+  integer by the new `ReplOptions.ExitCodes` (`ExitCodeOptions`) table, then passed to the optional
   `ExitCodes.Resolver` hook whose return value is the final exit code. An explicit `Results.Exit(n)`
   keeps its code verbatim (`HandlerExitCode`) but is still visible to the resolver. See
   `docs/execution-pipeline.md` (stage 12) and `docs/configuration-reference.md`.
-- `ExitCodes.Cancelled` (`int?`) turns a caller-token cancellation into an exit code instead of
-  letting `OperationCanceledException` escape `RunAsync`. It is unset by default, which preserves
-  the existing throwing behaviour.
+- `ExitCodes.Cancelled` (`int?`) turns a cancellation through the caller's own token into an exit
+  code instead of letting `OperationCanceledException` escape `RunAsync`. It is unset by default,
+  which preserves the existing throwing behaviour; setting a `Resolver` also opts in to observing
+  cancellation.
+- `ExitCodes.Interrupted` (`int?`) maps a process signal bridged into a cooperative shutdown. Unset,
+  the conventional `128 + signal` code the bridge carries is used.
+- `ReplExecutionOutcome.Scope` (`ReplExitCodeScope`) tells a resolver whether it is computing the
+  process exit code (`Process`, once per run) or one interactive command's shell-integration
+  command-end mark (`ShellIntegrationMark`, only when a mark actually carries a code — so never with
+  shell integration off, for a protocol-passthrough command, or for an abandoned prompt cycle).
+- A resolver that throws no longer escapes the run: the table-mapped code is used and one diagnostic
+  line is written to the session's error stream. Interactive sessions survive a faulty resolver, and
+  a resolver failure on a failed command never replaces the original exception.
 - `ReplExecutionContext.Result` exposes the handler's return value to middleware registered with
   `app.Use(...)`: readable and replaceable after `await next()`, settable by a short-circuiting
   middleware. `ReplNext` and the `Use` signature are unchanged.
 
 ### Changed — breaking: framework exit codes
+
+These land together in the commit closing issue #81; a consumer bisecting an exit-code change can
+anchor on that. (Package versions come from Nerdbank.GitVersioning at pack time, so this file names
+none.)
 
 - Framework refusals now exit `2` instead of `1`: unknown command, ambiguous prefix, invalid global
   or command option, option collision, context validation failure, unknown `--output` format,
@@ -31,23 +44,31 @@ Nerdbank.GitVersioning at pack time; this file groups changes by theme instead o
   converted, or resolved from context/services (`BindingError`). Handler
   failures (`Results.Error`/`Validation`/`NotFound`, exceptions) still exit `1`, help and success
   still exit `0`. Set `ExitCodes.UsageError`/`BindingError` back to `1` to restore the old numbers.
-  The interactive loop reports the same resolved codes in shell-integration `D;<code>` marks.
-- Every `Run`/`RunAsync` overload now checks the caller's `CancellationToken` before doing any work: a
-  token that is already cancelled throws `OperationCanceledException` (or returns
-  `ExitCodes.Cancelled` when mapped). Previously only `CoreReplApp.RunAsync` performed that check;
-  the `ReplApp` overloads let a token-ignoring handler run to completion.
+  The interactive loop reports the same resolved codes in shell-integration `D;<code>` marks,
+  including the mark for a command whose dispatch threw, which previously always reported `1`.
+- Every `Run`/`RunAsync` overload now checks the caller's `CancellationToken` before doing any work —
+  the hosted-service overloads before starting hosted services: a token that is already cancelled
+  throws `OperationCanceledException` (or returns `ExitCodes.Cancelled` when mapped). Previously only
+  `CoreReplApp.RunAsync` performed that check.
+- A handler that raises `OperationCanceledException` without the caller having asked for cancellation
+  is now a `HandlerException`: the message is rendered and the run exits `1`, where it previously
+  either propagated silently or, with `ExitCodes.Cancelled` mapped, returned the cancellation code
+  with no diagnostic at all. Only the caller's own token yields `Cancelled`. The interactive loop's
+  Ctrl+C semantics are unchanged.
+- Interactive `help` / `?` is now classified `Help` rather than a generic success, so an application
+  that maps `ExitCodes.Help` separately sees its own code in the command-end mark. An ambient command
+  that *failed* is still a `UsageError`, whatever it would have reported on success.
+- Hosted-service start and stop failures in `ReplApp.RunAsync` now go through the exit-code policy as
+  `FrameworkError` instead of returning a hard-coded `1`.
 
 ### Compatibility notes — exit codes
 
 - MCP tool calls (nested sub-invocations) always use the built-in exit-code defaults and ignore
   `ExitCodes.Resolver`; they only test for non-zero, so `IsError` is unaffected by the policy. The
   agent-visible failure text now reads "exit code 2" for usage and binding refusals.
-- Hosted-service start/stop failures in `ReplApp.RunAsync` (with `HostedServiceLifecycle` enabled)
-  still return `1` directly and do not pass through `ExitCodes`; routing them through the policy is
-  deferred until the pending process-signal work in the same file lands.
 - `Repl.Testing`'s per-command timeout still surfaces as `TimeoutException` when the app under test
-  maps `ExitCodes.Cancelled`: the handle checks its own timeout token after the run instead of
-  relying on the exception escaping.
+  maps `ExitCodes.Cancelled`: the handle observes the run's own outcome instead of relying on the
+  exception escaping. `RunCommandAsync` documents that exception.
 - A handler-thrown `InvalidOperationException` is still rendered as a validation message, but it
   is classified `HandlerException` (not `BindingError`); only exceptions raised while binding
   arguments are `BindingError`.
@@ -57,9 +78,13 @@ Nerdbank.GitVersioning at pack time; this file groups changes by theme instead o
 - `Repl.Testing`'s `CommandExecution.ExitCode` follows the configured policy, so application test
   suites asserting `1` for unknown commands or invalid options need to expect `2` (or configure
   `ExitCodes`).
-- `ReplExecutionOutcomeKind.Interrupted` has no table entry and is never produced by the core
-  pipeline; it is reserved for the process-signal bridge so SIGINT/SIGTERM outcomes can flow through
-  the same resolver.
+- An `IReplResult` whose `Kind` is not `text` or `success` is a `HandlerError` (exit `1`), including
+  a kind the framework does not recognize. An unclassifiable result never reports success to a
+  pipeline; use `Results.Exit(n)` to choose a code deliberately.
+- `ReplExecutionOutcomeKind.Interrupted` is never produced by the core pipeline; it exists so a
+  process-signal bridge can route SIGINT/SIGTERM outcomes through the same table and resolver.
+- Exit codes are not range-checked. Keep them within `0`-`255`: POSIX `wait` exposes only the low
+  eight bits to the parent process.
 
 ### Added — option visibility
 

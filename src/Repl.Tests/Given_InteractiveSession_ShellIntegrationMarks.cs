@@ -123,6 +123,114 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
+	[Description("Interactive help is classified Help, not a generic success, so an application that maps ExitCodes.Help separately sees its own code in the command-end mark.")]
+	public void When_HelpIsRemapped_Then_InteractiveHelpCommandEndUsesTheHelpCode()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Help = 3);
+		sut.Map("ping", () => "pong").WithDescription("Answers with pong.");
+		var harness = new TerminalHarness(cols: 80, rows: 24);
+
+		var raw = RunInteractiveSession(harness, sut, "help\rexit\r");
+
+		// help reports the Help code; the exit ambient that follows still reports Success.
+		raw.Should().Contain("]133;D;3");
+		TerminalMarks.Count(raw, "]133;D;0").Should().Be(1);
+	}
+
+	[TestMethod]
+	[Description("A help invocation that cannot render is a refusal first: the usage code wins over the Help classification the ambient entry would otherwise report.")]
+	public void When_HelpIsRemappedAndHelpFailsToRender_Then_UsageCodeStillWins()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Help = 3);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "help --output:bogus\rexit\r");
+
+		raw.Should().Contain("]133;D;2");
+		raw.Should().NotContain("]133;D;3");
+	}
+
+	[TestMethod]
+	[Description("The resolver sees Scope.ShellIntegrationMark for a command-end code and runs once per committed command, so a hook with side effects can tell a terminal decoration from a process exit.")]
+	public void When_MarksAreEnabled_Then_ResolverRunsPerCommandWithMarkScope()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var scopes = new List<ReplExitCodeScope>();
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Resolver = outcome =>
+		{
+			scopes.Add(outcome.Scope);
+			return outcome.ExitCode;
+		});
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		_ = RunInteractiveSession(harness, sut, "ping\rexit\r");
+
+		// ping and exit each carry a mark, then the session's own process exit code.
+		scopes.Should().Equal(
+			ReplExitCodeScope.ShellIntegrationMark,
+			ReplExitCodeScope.ShellIntegrationMark,
+			ReplExitCodeScope.Process);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: with shell integration off the loop emits no command-end codes, so the resolver runs once for the process exit instead of once per command.")]
+	public void When_MarksAreDisabled_Then_ResolverRunsOnlyForTheProcessExit()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var scopes = new List<ReplExitCodeScope>();
+		var sut = ReplApp.Create().UseDefaultInteractive();
+		sut.Options(options => options.ExitCodes.Resolver = outcome =>
+		{
+			scopes.Add(outcome.Scope);
+			return outcome.ExitCode;
+		});
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		_ = RunInteractiveSession(harness, sut, "ping\rexit\r");
+
+		scopes.Should().Equal(ReplExitCodeScope.Process);
+	}
+
+	[TestMethod]
+	[Description("The failed-dispatch command-end mark goes through the exit-code table like every other mark, instead of hard-coding 1.")]
+	public void When_HandlerExceptionIsRemapped_Then_FailedDispatchCommandEndUsesTheConfiguredCode()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.HandlerException = 70);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "history --limit abc\r", swallowRunExceptions: true);
+
+		raw.Should().Contain("]133;D;70");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: a resolver that throws on the command-end path must not replace the original dispatch exception, which is the signal that matters.")]
+	public void When_ResolverThrowsOnAFailedDispatch_Then_TheOriginalExceptionSurfaces()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Resolver = _ => throw new FormatException("resolver boom"));
+		sut.Map("ping", () => "pong");
+		using var writer = new StringWriter();
+
+		var captured = CaptureInteractiveRun(writer, sut, "history --limit abc\r");
+
+		captured.Should().NotBeNull();
+		captured!.Message.Should().Contain("--limit");
+	}
+
+	[TestMethod]
 	[Description("Ambient commands such as help run inside the same command lifecycle: their output lands between output-start and a successful command-end mark.")]
 	public void When_HelpAmbientCommandRuns_Then_MarksWrapHelpOutput()
 	{

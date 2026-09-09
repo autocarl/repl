@@ -144,12 +144,13 @@ of a top-level run; nested MCP sub-invocations always use the defaults and skip 
 - `BindingError` (`int`, default: `2`) — A handler argument could not be bound: token conversion failed or was missing, or a binder-resolved value (context value, `[FromServices]` dependency, typed global options service) was unavailable.
 - `HandlerError` (`int`, default: `1`) — Handler returned an error-like `IReplResult`.
 - `HandlerException` (`int`, default: `1`) — Handler or middleware threw.
-- `Cancelled` (`int?`, default: `null`) — Caller-token cancellation. `null` rethrows the `OperationCanceledException`; a value (typically `130`) is returned instead.
-- `FrameworkError` (`int`, default: `1`) — Incompatible programmatic adapter or unsupported hosting capability.
-- `Resolver` (`Func<ReplExecutionOutcome, int>?`, default: `null`) — Final interception hook. Receives the outcome with its table-mapped `ExitCode`; its return value is the process exit code. Also sees `HandlerExitCode` outcomes (explicit `Results.Exit`), which bypass the table.
+- `Cancelled` (`int?`, default: `null`) — Cancellation through the caller's own token. `null` rethrows the `OperationCanceledException` unless a `Resolver` is set; a value (typically `130`) is returned instead. A handler that raises `OperationCanceledException` without the caller having asked for cancellation is a `HandlerException`, not a cancellation.
+- `Interrupted` (`int?`, default: `null`) — A process signal (SIGINT, Ctrl+Break, SIGTERM) bridged into a cooperative shutdown. `null` uses the conventional `128 + signal` code the bridge carries; set it to publish one code for every signal. The core pipeline never produces this kind on its own.
+- `FrameworkError` (`int`, default: `1`) — Incompatible programmatic adapter, unsupported hosting capability, or a hosted-service start/stop failure.
+- `Resolver` (`Func<ReplExecutionOutcome, int>?`, default: `null`) — Final interception hook. Receives the outcome with its table-mapped `ExitCode`; its return value wins. Also sees `HandlerExitCode` outcomes (explicit `Results.Exit`), which bypass the table. `ReplExecutionOutcome.Scope` distinguishes the process exit code (`ReplExitCodeScope.Process`, once per run) from one interactive command's shell-integration mark (`ReplExitCodeScope.ShellIntegrationMark`, only when a mark actually carries a code). Setting a resolver also opts in to observing cancellation. It must not throw: an exception degrades to the table-mapped code plus one diagnostic line on the error stream.
 
-`ReplExecutionOutcomeKind.Interrupted` is reserved for process-signal bridges (SIGINT/SIGTERM) and has
-no table entry; the core pipeline never produces it.
+Codes should stay within `0`-`255` — POSIX `wait` exposes only the low eight bits to the parent
+process. Repl passes a configured code through unchanged rather than clamping it.
 
 ## AmbientCommandOptions
 

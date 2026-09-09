@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -67,21 +68,40 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		_options.Interaction.SetObserver(observer: ExecutionObserver);
 		try
 		{
-			// Inside the try so a token cancelled before the run follows the same Cancelled policy.
-			cancellationToken.ThrowIfCancellationRequested();
-			var outcome = await ExecuteCoreOutcomeAsync(args, serviceProvider, isSubInvocation, cancellationToken)
-				.ConfigureAwait(false);
+			ExecutionOutcome outcome;
+			try
+			{
+				// Inside the try so a token cancelled before the run follows the same Cancelled policy.
+				cancellationToken.ThrowIfCancellationRequested();
+				outcome = await ExecuteCoreOutcomeAsync(args, serviceProvider, isSubInvocation, cancellationToken)
+					.ConfigureAwait(false);
+			}
+			catch (OperationCanceledException ex) when (IsConvertibleCancellation(isSubInvocation, cancellationToken))
+			{
+				outcome = ExecutionOutcome.Cancelled(ex);
+			}
+
+			// Resolved outside the cancellation guard: ExitCodes.Resolver is application code, and a
+			// resolver that throws OperationCanceledException must not be mistaken for a cancelled run.
 			return ResolveExitCode(outcome, isSubInvocation);
-		}
-		catch (OperationCanceledException ex) when (!isSubInvocation && _options.ExitCodes.Cancelled is not null)
-		{
-			return ResolveExitCode(ExecutionOutcome.Cancelled(ex), isSubInvocation: false);
 		}
 		finally
 		{
 			_options.Interaction.SetObserver(observer: null);
 		}
 	}
+
+	/// <summary>
+	/// Whether an <see cref="OperationCanceledException"/> leaving the pipeline should become a
+	/// <see cref="ReplExecutionOutcomeKind.Cancelled"/> outcome rather than propagate. Only the caller's
+	/// own token counts — a handler that cancels itself is a failure, classified where it is rendered —
+	/// and an application must have asked for cancellation to be observable, through either the table
+	/// entry or the resolver.
+	/// </summary>
+	private bool IsConvertibleCancellation(bool isSubInvocation, CancellationToken cancellationToken) =>
+		!isSubInvocation
+		&& cancellationToken.IsCancellationRequested
+		&& (_options.ExitCodes.Cancelled is not null || _options.ExitCodes.Resolver is not null);
 
 	private async ValueTask<ExecutionOutcome> ExecuteCoreOutcomeAsync(
 		IReadOnlyList<string> args,
@@ -96,7 +116,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				+ "Update Repl.Mcp to the same package version.");
 			_ = await RenderOutputAsync(contractFailure, requestedFormat: null, cancellationToken)
 				.ConfigureAwait(false);
-			return ExecutionOutcome.Framework(contractFailure);
+			return ExecutionOutcome.FrameworkError(contractFailure);
 		}
 
 		var globalOptions = GlobalOptionParser.Parse(args, _options.Output, _options.Parsing);
@@ -110,21 +130,74 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	}
 
 	/// <summary>
-	/// Applies the exit-code policy exactly once per run. Sub-invocations (nested MCP tool calls) keep the
-	/// built-in defaults and skip <see cref="ExitCodeOptions.Resolver"/>: the policy describes the process
-	/// exit, and nested callers only test for non-zero.
+	/// Applies the exit-code policy to the process exit code of a run, once. Sub-invocations (nested MCP
+	/// tool calls) keep the built-in defaults and skip <see cref="ExitCodeOptions.Resolver"/>: the policy
+	/// describes the process exit, and nested callers only test for non-zero.
 	/// </summary>
-	internal int ResolveExitCode(ExecutionOutcome outcome, bool isSubInvocation)
+	internal int ResolveExitCode(ExecutionOutcome outcome, bool isSubInvocation) =>
+		isSubInvocation
+			? ExitCodeOptions.MapDefault(outcome.Kind, outcome.ExplicitExitCode)
+			: ResolveConfiguredExitCode(outcome, ReplExitCodeScope.Process);
+
+	/// <summary>
+	/// Applies the exit-code policy to a hosting failure that happened outside the command pipeline —
+	/// a hosted service that could not start or stop. Exposed so the host wrapper does not have to
+	/// hard-code a code the application cannot configure.
+	/// </summary>
+	internal int ResolveHostingFailureExitCode() =>
+		ResolveConfiguredExitCode(ExecutionOutcome.FrameworkError(rendered: null), ReplExitCodeScope.Process);
+
+	/// <summary>
+	/// Applies the exit-code policy to the code decorating one interactive command's shell-integration
+	/// command-end mark. Always uses the configured table: a mark describes that command, not the process,
+	/// so the sub-invocation shortcut of <see cref="ResolveExitCode"/> does not apply. Callers must first
+	/// check that a mark will actually carry the code — the resolver is application code and must not run
+	/// for a mark nobody writes.
+	/// </summary>
+	internal int ResolveCommandEndExitCode(ExecutionOutcome outcome) =>
+		ResolveConfiguredExitCode(outcome, ReplExitCodeScope.ShellIntegrationMark);
+
+	private int ResolveConfiguredExitCode(ExecutionOutcome outcome, ReplExitCodeScope scope)
 	{
-		if (isSubInvocation)
+		var exitCode = _options.ExitCodes.Map(outcome.Kind, outcome.ExplicitExitCode);
+		if (_options.ExitCodes.Resolver is { } resolver)
 		{
-			return ExitCodeOptions.MapDefault(outcome.Kind, outcome.ExplicitExitCode);
+			exitCode = InvokeResolver(resolver, outcome, exitCode, scope);
 		}
 
-		var exitCode = _options.ExitCodes.Map(outcome.Kind, outcome.ExplicitExitCode);
-		return _options.ExitCodes.Resolver is { } resolver
-			? resolver(new ReplExecutionOutcome(outcome.Kind, exitCode, outcome.Result, outcome.Exception))
-			: exitCode;
+		if (scope == ReplExitCodeScope.Process)
+		{
+			ExecutionObserver?.OnOutcome(outcome.Kind, exitCode);
+		}
+
+		return exitCode;
+	}
+
+	[SuppressMessage(
+		"Design",
+		"CA1031:Do not catch general exception types",
+		Justification = "A faulty exit-code resolver must not replace the run's own outcome; it degrades to the table-mapped code.")]
+	private static int InvokeResolver(
+		Func<ReplExecutionOutcome, int> resolver,
+		ExecutionOutcome outcome,
+		int mappedExitCode,
+		ReplExitCodeScope scope)
+	{
+		try
+		{
+			return resolver(
+				new ReplExecutionOutcome(outcome.Kind, mappedExitCode, outcome.Result, outcome.Exception) { Scope = scope });
+		}
+		catch (Exception ex)
+		{
+			// The resolver is application code on the way out of a run; a throw here would replace a real
+			// outcome with an unrelated failure, so it degrades to the table code and says so once.
+#pragma warning disable MA0045 // Intentionally synchronous — the exit-code policy resolves on non-async members
+			ReplSessionIO.Error.WriteLine(
+				$"Error: ExitCodes.Resolver threw {ex.GetType().Name} ({ex.Message}); using exit code {mappedExitCode.ToString(CultureInfo.InvariantCulture)}.");
+#pragma warning restore MA0045
+			return mappedExitCode;
+		}
 	}
 
 	private async ValueTask<ExecutionOutcome> ExecuteParsedCoreAsync(
@@ -309,7 +382,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				$"Command '{match.Route.Template.Template}' is protocol passthrough and requires a handler parameter of type IReplIoContext in hosted sessions.");
 			_ = await RenderOutputAsync(refusal, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return ExecutionOutcome.Framework(refusal);
+			return ExecutionOutcome.FrameworkError(refusal);
 		}
 
 		using var protocolPassthroughScope = ReplSessionIO.PushProtocolPassthrough();
@@ -406,8 +479,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 		return ambientOutcome switch
 		{
-			AmbientCommandOutcome.Exit => ExecutionOutcome.Success,
-			AmbientCommandOutcome.Handled => ExecutionOutcome.Success,
+			AmbientCommandOutcome.Exit or AmbientCommandOutcome.Handled => ExecutionOutcome.Success,
 			AmbientCommandOutcome.HandledError => ExecutionOutcome.Usage(),
 			_ => null,
 		};
@@ -610,6 +682,20 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				// RenderOutputAsync returns false only for an unknown requested output format: a usage mistake.
 				return (rendered ? ClassifyResult(normalizedResult) : ExecutionOutcome.Usage(normalizedResult), false);
 		}
+		catch (OperationCanceledException ex) when (scopeTokens is null && !cancellationToken.IsCancellationRequested)
+		{
+			// One-shot, and nobody asked for this run to stop: the handler cancelled itself, which is a
+			// failure like any other exception. Rendering it is the point — a bare rethrow here used to
+			// exit silently, leaving a caller who mapped ExitCodes.Cancelled unable to tell a real
+			// failure from an operator abort. The interactive loop keeps its own Ctrl+C semantics.
+			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
+			_ = await RenderOutputAsync(
+					Results.Error("execution_error", ex.Message),
+					globalOptions.OutputFormat,
+					cancellationToken)
+				.ConfigureAwait(false);
+			return (ExecutionOutcome.HandlerException(ex), false);
+		}
 		catch (OperationCanceledException)
 		{
 			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
@@ -620,7 +706,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
 			_ = await RenderOutputAsync(Results.Validation(ex.Message), globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return (bound ? ExecutionOutcome.Thrown(ex) : ExecutionOutcome.Binding(ex), false);
+			return (bound ? ExecutionOutcome.HandlerException(ex) : ExecutionOutcome.Binding(ex), false);
 		}
 		catch (Exception ex)
 		{
@@ -631,7 +717,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 					globalOptions.OutputFormat,
 					cancellationToken)
 				.ConfigureAwait(false);
-			return (bound ? ExecutionOutcome.Thrown(unwrapped) : ExecutionOutcome.Binding(unwrapped), false);
+			return (bound ? ExecutionOutcome.HandlerException(unwrapped) : ExecutionOutcome.Binding(unwrapped), false);
 		}
 	}
 
@@ -737,7 +823,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		var kind = replResult.Kind.ToLowerInvariant();
 		return kind is "text" or "success"
 			? new ExecutionOutcome(ReplExecutionOutcomeKind.Success, replResult)
-			: ExecutionOutcome.Handler(replResult);
+			: ExecutionOutcome.HandlerError(replResult);
 	}
 
 	internal async ValueTask<bool> RenderOutputAsync(

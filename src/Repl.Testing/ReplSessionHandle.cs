@@ -44,6 +44,10 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 	/// <param name="commandText">The command text to execute.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>The execution result.</returns>
+	/// <exception cref="TimeoutException">
+	/// The command exceeded <see cref="ReplScenarioOptions.CommandTimeout"/>, whether the app let the
+	/// cancellation propagate or mapped it to an exit code through <c>ReplOptions.ExitCodes.Cancelled</c>.
+	/// </exception>
 	public ValueTask<CommandExecution> RunCommandAsync(
 		string commandText,
 		CancellationToken cancellationToken = default) =>
@@ -98,12 +102,7 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 				_app.Core.ExecutionObserver = null;
 			}
 
-			// An app that maps ReplOptions.ExitCodes.Cancelled returns a code instead of throwing; the
-			// timeout must still surface as a diagnostic rather than as an ordinary exit code.
-			if (IsCommandTimeout(timeout, cancellationToken))
-			{
-				throw CreateTimeoutException(commandText);
-			}
+			ThrowIfCancelledByTimeout(observer, timeout, commandText, cancellationToken);
 
 			var outputText = output.ToString();
 			if (_options.NormalizeAnsi)
@@ -242,8 +241,23 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 		return timeline;
 	}
 
-	// The timeout fired (and not the caller's own token) — whether the run threw or, with a mapped
-	// ExitCodes.Cancelled, returned an exit code.
+	// An app that maps ReplOptions.ExitCodes.Cancelled returns a code instead of throwing, so the
+	// exception filter around the run never fires. Gated on the run having actually reported a
+	// cancellation, because the timeout token can also elapse while an already-completed run tears down;
+	// that window is a race, hence covered by reasoning rather than by a test.
+	private void ThrowIfCancelledByTimeout(
+		SessionExecutionObserver observer,
+		CancellationTokenSource? timeout,
+		string commandText,
+		CancellationToken cancellationToken)
+	{
+		if (observer.WasCancelled && IsCommandTimeout(timeout, cancellationToken))
+		{
+			throw CreateTimeoutException(commandText);
+		}
+	}
+
+	// The timeout fired, and not the caller's own token.
 	private static bool IsCommandTimeout(CancellationTokenSource? timeout, CancellationToken cancellationToken) =>
 		timeout is not null && timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
 
@@ -333,7 +347,16 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 
 		public IReadOnlyList<ReplInteractionEvent> Events => _events;
 
+		/// <summary>
+		/// Whether the run ended in a cancellation. Lets the handle tell a command the timeout actually
+		/// interrupted from one that finished while the timeout token happened to elapse.
+		/// </summary>
+		public bool WasCancelled { get; private set; }
+
 		public void OnResult(object? result) => LastResult = result;
+
+		public void OnOutcome(ReplExecutionOutcomeKind kind, int exitCode) =>
+			WasCancelled = kind is ReplExecutionOutcomeKind.Cancelled or ReplExecutionOutcomeKind.Interrupted;
 
 		public void OnInteractionEvent(ReplInteractionEvent evt)
 		{

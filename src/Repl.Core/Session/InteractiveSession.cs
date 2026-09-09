@@ -191,7 +191,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		return line;
 	}
 
-	private async ValueTask<(AmbientCommandOutcome Outcome, int ExitCode)> DispatchInteractiveCommandAsync(
+	private async ValueTask<(AmbientCommandOutcome Outcome, ExecutionOutcome Execution)> DispatchInteractiveCommandAsync(
 		CommittedResolution resolution,
 		IReadOnlyList<string> inputTokens,
 		PromptCycleContext cycle,
@@ -199,17 +199,21 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	{
 		if (resolution.Kind == CommittedKind.Ambient)
 		{
-			var ambientOutcome = await TryHandleAmbientCommandAsync(
+			var (ambientOutcome, successKind) = await TryHandleAmbientCommandAsync(
 					inputTokens,
 					cycle.ScopeTokens,
 					cycle.ServiceProvider,
 					isInteractiveSession: true,
 					cancellationToken)
 				.ConfigureAwait(false);
+			// The failure arm comes first: an ambient command that failed is a usage error whatever kind
+			// it would have reported on success (a help invocation that cannot render is still a refusal).
 			var ambientExecution = ambientOutcome == AmbientCommandOutcome.HandledError
 				? ExecutionOutcome.Usage()
-				: ExecutionOutcome.Success;
-			return (ambientOutcome, app.ResolveExitCode(ambientExecution, isSubInvocation: false));
+				: successKind == ReplExecutionOutcomeKind.Help
+					? ExecutionOutcome.Help
+					: ExecutionOutcome.Success;
+			return (ambientOutcome, ambientExecution);
 		}
 
 		if (resolution.Kind == CommittedKind.Ambiguous)
@@ -219,17 +223,17 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			var ambiguous = RoutingEngine.CreateAmbiguousPrefixResult(resolution.Prefix);
 			_ = await app.RenderOutputAsync(ambiguous, resolution.Options.OutputFormat, cancellationToken, isInteractive: true)
 				.ConfigureAwait(false);
-			return (AmbientCommandOutcome.Handled, app.ResolveExitCode(ExecutionOutcome.Usage(ambiguous), isSubInvocation: false));
+			return (AmbientCommandOutcome.Handled, ExecutionOutcome.Usage(ambiguous));
 		}
 
 		// Help or Routed: both flow through the command-cancellation scope so Ctrl-C and
-		// exit-code computation behave identically; the pre-resolved graph/match is reused.
-		var exitCode = await ExecuteWithCancellationAsync(resolution, cycle, cancellationToken)
+		// outcome classification behave identically; the pre-resolved graph/match is reused.
+		var execution = await ExecuteWithCancellationAsync(resolution, cycle, cancellationToken)
 			.ConfigureAwait(false);
-		return (AmbientCommandOutcome.Handled, exitCode);
+		return (AmbientCommandOutcome.Handled, execution);
 	}
 
-	private async ValueTask<int> ExecuteWithCancellationAsync(
+	private async ValueTask<ExecutionOutcome> ExecuteWithCancellationAsync(
 		CommittedResolution resolution,
 		PromptCycleContext cycle,
 		CancellationToken cancellationToken)
@@ -250,9 +254,8 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			// shell-integration marks decorate it as interrupted rather than failed. An
 			// outer-token cancellation (host shutdown) is NOT matched here — it propagates
 			// to ExecuteCommittedInputAsync's OCE catch, which closes the cycle with an
-			// aborted D (no exit code) rather than a failure. The exit-code table and resolver
-			// apply like for any other outcome; ExitCodes.Cancelled overrides the convention.
-			return app.ResolveExitCode(ExecutionOutcome.Cancelled(ex, conventionalExitCode: 130), isSubInvocation: false);
+			// aborted D (no exit code) rather than a failure.
+			return ExecutionOutcome.Cancelled(ex, conventionalExitCode: 130);
 		}
 		finally
 		{
@@ -289,10 +292,10 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		}
 
 		AmbientCommandOutcome outcome;
-		int exitCode;
+		ExecutionOutcome execution;
 		try
 		{
-			(outcome, exitCode) = await DispatchInteractiveCommandAsync(resolution, inputTokens, cycle, cancellationToken)
+			(outcome, execution) = await DispatchInteractiveCommandAsync(resolution, inputTokens, cycle, cancellationToken)
 				.ConfigureAwait(false);
 		}
 		catch when (isProtocolPassthrough)
@@ -307,12 +310,13 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			await TryWriteCommandEndAsync(marks, exitCode: null).ConfigureAwait(false);
 			throw;
 		}
-		catch
+		catch (Exception ex)
 		{
-			// Close the lifecycle before the exception propagates so the terminal never
-			// keeps an unterminated command segment. Best-effort: a failing mark write
-			// (e.g. a torn-down transport) must not replace the original exception.
-			await TryWriteCommandEndAsync(marks, exitCode: 1).ConfigureAwait(false);
+			// Close the lifecycle before the exception propagates so the terminal never keeps an
+			// unterminated command segment. Best-effort over the resolve as well as the write: the
+			// exit-code table and ExitCodes.Resolver are application code, and neither they nor a
+			// failing mark write (e.g. a torn-down transport) may replace the original exception.
+			await TryWriteResolvedCommandEndAsync(marks, ExecutionOutcome.HandlerException(ex)).ConfigureAwait(false);
 			throw;
 		}
 
@@ -323,12 +327,32 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			// no mark may trail it — whatever the outcome.
 			marks.AbandonCycle();
 		}
-		else
+		else if (marks.WillWriteCommandEnd)
 		{
-			await marks.WriteCommandEndAsync(exitCode).ConfigureAwait(false);
+			// The single resolve point for a committed command. Guarded because ExitCodes.Resolver is
+			// application code: it must not run to produce a code no mark will carry.
+			await marks.WriteCommandEndAsync(app.ResolveCommandEndExitCode(execution)).ConfigureAwait(false);
 		}
 
 		return outcome;
+	}
+
+	// Best-effort resolved command-end for the dispatch-failure path: same swallow contract as
+	// TryWriteCommandEndAsync, extended over the resolve because the exit-code table and
+	// ExitCodes.Resolver are application code that must not replace the original exception.
+	private async ValueTask TryWriteResolvedCommandEndAsync(ShellIntegrationMarkEmitter marks, ExecutionOutcome outcome)
+	{
+		try
+		{
+			if (marks.WillWriteCommandEnd)
+			{
+				await marks.WriteCommandEndAsync(app.ResolveCommandEndExitCode(outcome)).ConfigureAwait(false);
+			}
+		}
+		catch
+		{
+			// Intentionally swallowed — see caller.
+		}
 	}
 
 	// Best-effort command-end used on exception paths: the original exception is the
@@ -363,10 +387,15 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		bool IsInteractiveSession,
 		CancellationToken CancellationToken);
 
-	/// <summary>One ambient command: its match rule and its handler.</summary>
+	/// <summary>
+	/// One ambient command: its match rule, its handler, and the outcome kind a successful invocation
+	/// reports. The kind travels with the entry rather than being re-derived from the tokens at dispatch,
+	/// so reordering the table cannot silently change how a command is classified.
+	/// </summary>
 	private sealed record AmbientCommandEntry(
 		Func<InteractiveSession, IReadOnlyList<string>, bool> Matches,
-		Func<InteractiveSession, AmbientCommandInvocation, ValueTask<AmbientCommandOutcome>> HandleAsync);
+		Func<InteractiveSession, AmbientCommandInvocation, ValueTask<AmbientCommandOutcome>> HandleAsync,
+		ReplExecutionOutcomeKind SuccessKind = ReplExecutionOutcomeKind.Success);
 
 	// The single table driving BOTH classification (IsAmbientCommandInvocation) and
 	// dispatch (TryHandleAmbientCommandAsync): a new ambient command is one entry, so a
@@ -376,7 +405,8 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	private static readonly AmbientCommandEntry[] AmbientCommands =
 	[
 		new(static (_, tokens) => CoreReplApp.IsHelpToken(tokens[0]),
-			static (session, invocation) => session.HandleHelpAmbientAsync(invocation)),
+			static (session, invocation) => session.HandleHelpAmbientAsync(invocation),
+			ReplExecutionOutcomeKind.Help),
 		new(static (_, tokens) => tokens.Count == 1 && string.Equals(tokens[0], UpAmbientToken, StringComparison.Ordinal),
 			static (_, invocation) => HandleUpAmbientCommandAsync(invocation.ScopeTokens, invocation.IsInteractiveSession)),
 		new(static (_, tokens) => tokens.Count == 1 && string.Equals(tokens[0], ExitAmbientToken, StringComparison.OrdinalIgnoreCase),
@@ -464,7 +494,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		}
 	}
 
-	private async ValueTask<int> ExecuteInteractiveInputAsync(
+	private async ValueTask<ExecutionOutcome> ExecuteInteractiveInputAsync(
 		CommittedResolution committed,
 		PromptCycleContext cycle,
 		CancellationToken cancellationToken)
@@ -473,7 +503,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		if (globalOptions.HelpRequested)
 		{
 			var rendered = await app.RenderHelpAsync(globalOptions, cancellationToken).ConfigureAwait(false);
-			return app.ResolveExitCode(rendered ? ExecutionOutcome.Help : ExecutionOutcome.Usage(), isSubInvocation: false);
+			return rendered ? ExecutionOutcome.Help : ExecutionOutcome.Usage();
 		}
 
 		// Reuse the single routing-graph snapshot and route resolution captured in
@@ -489,13 +519,12 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				// Same execution contract as the CLI one-shot path — hosted-capability guard,
 				// protocol-passthrough scope, and stream isolation — so a handler probing
 				// IsProtocolPassthrough observes the same value in both modes.
-				var passthroughOutcome = await app.ExecuteProtocolPassthroughCommandAsync(match, globalOptions, cycle.ServiceProvider, cancellationToken)
+				return await app.ExecuteProtocolPassthroughCommandAsync(match, globalOptions, cycle.ServiceProvider, cancellationToken)
 					.ConfigureAwait(false);
-				return app.ResolveExitCode(passthroughOutcome, isSubInvocation: false);
 			}
 
 			var (outcome, _) = await app.ExecuteMatchedCommandAsync(match, globalOptions, cycle.ServiceProvider, cycle.ScopeTokens, cancellationToken).ConfigureAwait(false);
-			return app.ResolveExitCode(outcome, isSubInvocation: false);
+			return outcome;
 		}
 
 		return await HandleUnmatchedInteractiveInputAsync(activeGraph, resolution, globalOptions, cycle, cancellationToken)
@@ -506,7 +535,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	/// Handles a committed input that matched no route: context navigation when the tokens
 	/// name a context, a route-resolution failure otherwise.
 	/// </summary>
-	private async ValueTask<int> HandleUnmatchedInteractiveInputAsync(
+	private async ValueTask<ExecutionOutcome> HandleUnmatchedInteractiveInputAsync(
 		ActiveRoutingGraph activeGraph,
 		RouteResolver.RouteResolutionResult resolution,
 		GlobalInvocationOptions globalOptions,
@@ -527,7 +556,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 						cancellationToken,
 						isInteractive: true)
 					.ConfigureAwait(false);
-				return app.ResolveExitCode(ExecutionOutcome.Usage(contextValidation.Failure), isSubInvocation: false);
+				return ExecutionOutcome.Usage(contextValidation.Failure);
 			}
 
 			cycle.ScopeTokens.Clear();
@@ -538,7 +567,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				await app.InvokeBannerAsync(contextBanner, serviceProvider, cancellationToken).ConfigureAwait(false);
 			}
 
-			return app.ResolveExitCode(ExecutionOutcome.Success, isSubInvocation: false);
+			return ExecutionOutcome.Success;
 		}
 
 		var failure = app.CreateRouteResolutionFailureResult(
@@ -551,10 +580,15 @@ internal sealed class InteractiveSession(CoreReplApp app)
 				cancellationToken,
 				isInteractive: true)
 			.ConfigureAwait(false);
-		return app.ResolveExitCode(ExecutionOutcome.Usage(failure), isSubInvocation: false);
+		return ExecutionOutcome.Usage(failure);
 	}
 
-	internal async ValueTask<AmbientCommandOutcome> TryHandleAmbientCommandAsync(
+	/// <summary>
+	/// Dispatches an ambient command, reporting both its outcome and the kind a success should be
+	/// classified as (so interactive <c>help</c> is <see cref="ReplExecutionOutcomeKind.Help"/> rather
+	/// than a generic success). <see cref="AmbientCommandOutcome.NotHandled"/> carries no meaningful kind.
+	/// </summary>
+	private async ValueTask<(AmbientCommandOutcome Outcome, ReplExecutionOutcomeKind SuccessKind)> TryHandleAmbientCommandAsync(
 		IReadOnlyList<string> inputTokens,
 		List<string> scopeTokens,
 		IServiceProvider serviceProvider,
@@ -563,7 +597,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	{
 		if (inputTokens.Count == 0)
 		{
-			return AmbientCommandOutcome.NotHandled;
+			return (AmbientCommandOutcome.NotHandled, ReplExecutionOutcomeKind.Success);
 		}
 
 		foreach (var entry in AmbientCommands)
@@ -572,11 +606,12 @@ internal sealed class InteractiveSession(CoreReplApp app)
 			{
 				var invocation = new AmbientCommandInvocation(
 					inputTokens, scopeTokens, serviceProvider, isInteractiveSession, cancellationToken);
-				return await entry.HandleAsync(this, invocation).ConfigureAwait(false);
+				var outcome = await entry.HandleAsync(this, invocation).ConfigureAwait(false);
+				return (outcome, entry.SuccessKind);
 			}
 		}
 
-		return AmbientCommandOutcome.NotHandled;
+		return (AmbientCommandOutcome.NotHandled, ReplExecutionOutcomeKind.Success);
 	}
 
 	private async ValueTask<AmbientCommandOutcome> HandleHelpAmbientAsync(AmbientCommandInvocation invocation)

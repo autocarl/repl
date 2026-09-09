@@ -263,8 +263,13 @@ app.Options(options =>
 });
 ```
 
-- Keep usage errors (`2` by default) distinct from handler failures (`1`) so a pipeline can tell
-  "the invocation was wrong" from "the tool broke".
+- Keep usage errors (`2` by default) distinct from handler failures (`1`) so a pipeline can tell a
+  refused invocation from a tool that broke. Note that `BindingError` shares that `2`, and it also
+  covers values the binder resolves itself — a missing DI registration or an unresolvable
+  `[FromServices]` dependency is an application-wiring defect, not a caller mistake. Give it its own
+  code if your contract needs to separate the two.
+- Keep codes within `0`-`255`: POSIX `wait` exposes only the low eight bits, so `300` reaches a shell
+  as `44`.
 - Map `Help` to a non-zero code when a bare invocation must not pass a CI step that forgot its
   arguments.
 - Use `Results.Exit(code)` for codes a specific command owns; use `ExitCodes.Resolver` to apply an

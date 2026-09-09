@@ -25,17 +25,17 @@ internal readonly record struct ExecutionOutcome(
 
 	public static ExecutionOutcome Binding(Exception exception) => new(ReplExecutionOutcomeKind.BindingError, Exception: exception);
 
-	public static ExecutionOutcome Handler(object? result) => new(ReplExecutionOutcomeKind.HandlerError, result);
+	public static ExecutionOutcome HandlerError(object? result) => new(ReplExecutionOutcomeKind.HandlerError, result);
 
 	public static ExecutionOutcome Exit(IExitResult exitResult) =>
 		new(ReplExecutionOutcomeKind.HandlerExitCode, exitResult, ExplicitExitCode: exitResult.ExitCode);
 
-	public static ExecutionOutcome Thrown(Exception exception) => new(ReplExecutionOutcomeKind.HandlerException, Exception: exception);
+	public static ExecutionOutcome HandlerException(Exception exception) => new(ReplExecutionOutcomeKind.HandlerException, Exception: exception);
 
 	public static ExecutionOutcome Cancelled(Exception exception, int? conventionalExitCode = null) =>
 		new(ReplExecutionOutcomeKind.Cancelled, Exception: exception, ExplicitExitCode: conventionalExitCode);
 
-	public static ExecutionOutcome Framework(object? rendered) => new(ReplExecutionOutcomeKind.FrameworkError, rendered);
+	public static ExecutionOutcome FrameworkError(object? rendered) => new(ReplExecutionOutcomeKind.FrameworkError, rendered);
 
 	/// <summary>
 	/// True when the outcome should not prevent an automatic transition into the interactive loop.

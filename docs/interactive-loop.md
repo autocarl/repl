@@ -26,7 +26,7 @@ app.Map("setup", () => Results.EnterInteractive()); // explicit transition
 5. Execute the command through the pipeline.
 6. Repeat until exit.
 
-When [terminal shell integration](terminal-shell-integration.md) is enabled, the loop brackets each cycle with semantic marks: prompt start before step 1, input start before step 2, the command-line report (VS Code) and output start between steps 3 and 5, and a single command-end mark carrying the exit code (resolved through `ReplOptions.ExitCodes`, like a one-shot run) after step 5.
+When [terminal shell integration](terminal-shell-integration.md) is enabled, the loop brackets each cycle with semantic marks: prompt start before step 1, input start before step 2, the command-line report (VS Code) and output start between steps 3 and 5, and a single command-end mark carrying the exit code (resolved through `ReplOptions.ExitCodes`, like a one-shot run) after step 5. The code is computed only when a mark will actually carry it, so an application's `ExitCodes.Resolver` is not invoked per command when shell integration is off.
 
 ## Prompt and Autocompletion
 
