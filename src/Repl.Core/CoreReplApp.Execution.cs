@@ -142,9 +142,15 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	/// entry or the resolver.
 	/// </summary>
 	private bool IsConvertibleCancellation(bool isSubInvocation, CancellationToken cancellationToken) =>
-		!isSubInvocation
-		&& cancellationToken.IsCancellationRequested
-		&& (_options.ExitCodes.Cancelled is not null || _options.ExitCodes.Resolver is not null);
+		!isSubInvocation && cancellationToken.IsCancellationRequested && ConvertsCancellationToExitCode;
+
+	/// <summary>
+	/// Whether the application asked for a caller-token cancellation to become an exit code instead of
+	/// propagating — through the table entry or through the resolver. Exposed so a host wrapper that
+	/// catches a wrapped cancellation of its own applies the same default as the pipeline.
+	/// </summary>
+	internal bool ConvertsCancellationToExitCode =>
+		_options.ExitCodes.Cancelled is not null || _options.ExitCodes.Resolver is not null;
 
 	private async ValueTask<ExecutionOutcome> ExecuteCoreOutcomeAsync(
 		IReadOnlyList<string> args,
@@ -709,13 +715,20 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				{
 					if (enterInteractive.Payload is not null)
 					{
-						_ = await RenderOutputAsync(
+						var payloadRendered = await RenderOutputAsync(
 								enterInteractive.Payload,
 								globalOptions.OutputFormat,
 								cancellationToken,
 								scopeTokens is not null,
 								globalOptions.ResultFlow)
 							.ConfigureAwait(false);
+						if (!payloadRendered)
+						{
+							// The requested output format is unknown: a usage mistake, reported like it is on
+							// every other result path. Entering the loop after refusing the output would leave
+							// the caller waiting at a prompt for a run that already failed.
+							return (ExecutionOutcome.Usage(enterInteractive.Payload), false);
+						}
 					}
 
 					return (ExecutionOutcome.Success, true);

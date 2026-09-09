@@ -366,6 +366,28 @@ public sealed class Given_HostedServicesLifecycle
 		observed.Exception.Should().NotBeNull();
 	}
 
+	[TestMethod]
+	[Description("Regression guard: verifies a startup cancelled through the caller's token still propagates the OperationCanceledException when no cancellation policy is configured, so the head-lifecycle overload keeps the same default as every other path.")]
+	public async Task When_HeadLifecycleStartupIsCancelledByCallerAndNoPolicyIsSet_Then_OperationCanceledExceptionPropagates()
+	{
+		using var cts = new CancellationTokenSource();
+		var services = new ServiceCollection()
+			.AddSingleton<CancellationTokenSource>(cts)
+			.AddSingleton<IHostedService, CallerCancellingHostedService>();
+		using var provider = services.BuildServiceProvider();
+
+		var sut = ReplApp.Create();
+		sut.Map("status", () => "ok");
+
+		Func<Task> act = () => sut.RunAsync(
+			["status", "--no-logo"],
+			provider,
+			new ReplRunOptions { HostedServiceLifecycle = HostedServiceLifecycleMode.Head },
+			cts.Token).AsTask();
+
+		await act.Should().ThrowAsync<OperationCanceledException>();
+	}
+
 	// Cancels the caller's token from inside StartAsync, then observes it: the shape that reaches
 	// ReplApp as a HostedServiceLifecycleException wrapping an OperationCanceledException.
 	private sealed class CallerCancellingHostedService(CancellationTokenSource callerTokenSource) : IHostedService

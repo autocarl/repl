@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -300,12 +301,7 @@ public sealed class ReplApp : IReplApp
 		catch (HostedServiceLifecycleException ex)
 		{
 			await ReplSessionIO.Output.WriteLineAsync($"Error: {ex.Message}").ConfigureAwait(false);
-			// The coordinator wraps whatever a hosted service threw, cancellation included. A startup the
-			// caller cancelled is a cancellation, not a framework defect, so it follows ExitCodes.Cancelled
-			// like any other caller-token cancellation.
-			outcome = ex.InnerException is OperationCanceledException && cancellationToken.IsCancellationRequested
-				? ExecutionOutcome.Cancelled(ex)
-				: ExecutionOutcome.FrameworkError(rendered: null, exception: ex);
+			outcome = ClassifyStartupFailure(ex, cancellationToken);
 		}
 		finally
 		{
@@ -327,6 +323,30 @@ public sealed class ReplApp : IReplApp
 		// Resolved once, after the whole lifecycle: a hosting failure is a framework error like any
 		// other outcome, and a consumer must observe exactly one outcome per run.
 		return _core.ResolveExitCode(outcome, isSubInvocation: false);
+	}
+
+	/// <summary>
+	/// Classifies a hosted-service startup failure. The coordinator wraps whatever the service threw,
+	/// cancellation included, so a startup the caller cancelled is a cancellation rather than a framework
+	/// defect and follows the same policy as any other caller-token cancellation — including the default,
+	/// where an application that opted into no conversion sees the <see cref="OperationCanceledException"/>
+	/// instead of an exit code.
+	/// </summary>
+	private ExecutionOutcome ClassifyStartupFailure(
+		HostedServiceLifecycleException ex,
+		CancellationToken cancellationToken)
+	{
+		if (ex.InnerException is not OperationCanceledException canceled || !cancellationToken.IsCancellationRequested)
+		{
+			return ExecutionOutcome.FrameworkError(rendered: null, exception: ex);
+		}
+
+		if (!_core.ConvertsCancellationToExitCode)
+		{
+			ExceptionDispatchInfo.Capture(canceled).Throw();
+		}
+
+		return ExecutionOutcome.Cancelled(ex);
 	}
 
 	/// <summary>

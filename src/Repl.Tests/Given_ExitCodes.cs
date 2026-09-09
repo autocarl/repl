@@ -631,6 +631,20 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies an EnterInteractive payload that cannot be rendered is a UsageError and does not enter the loop, so a refused output never leaves the caller waiting at a prompt.")]
+	public void When_EnterInteractivePayloadCannotBeRendered_Then_KindIsUsageErrorAndTheLoopIsNotEntered()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("shell", () => Results.EnterInteractive(new { Name = "world" }));
+
+		var exitCode = Run(sut, ["shell", "--output:toml"], out _);
+
+		exitCode.Should().Be(2);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies a one-shot run reports Scope.Process so that a resolver can tell the process exit code from a per-command shell-integration mark.")]
 	public void When_OneShotRunResolves_Then_ScopeIsProcess()
 	{
