@@ -60,6 +60,10 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 	/// <param name="answers">Prompt answers keyed by prompt name. Overrides session-level answers for the same name.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>The execution result.</returns>
+	/// <exception cref="TimeoutException">
+	/// The command exceeded <see cref="ReplScenarioOptions.CommandTimeout"/>, whether the app let the
+	/// cancellation propagate or mapped it to an exit code through <c>ReplOptions.ExitCodes.Cancelled</c>.
+	/// </exception>
 	public ValueTask<CommandExecution> RunCommandAsync(
 		string commandText,
 		IReadOnlyDictionary<string, string> answers,
@@ -243,8 +247,7 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 
 	// An app that maps ReplOptions.ExitCodes.Cancelled returns a code instead of throwing, so the
 	// exception filter around the run never fires. Gated on the run having actually reported a
-	// cancellation, because the timeout token can also elapse while an already-completed run tears down;
-	// that window is a race, hence covered by reasoning rather than by a test.
+	// cancellation, because the timeout token can also elapse while an already-completed run tears down.
 	private void ThrowIfCancelledByTimeout(
 		SessionExecutionObserver observer,
 		CancellationTokenSource? timeout,
@@ -355,7 +358,7 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 
 		public void OnResult(object? result) => LastResult = result;
 
-		public void OnOutcome(ReplExecutionOutcomeKind kind, int exitCode) =>
+		public void OnOutcome(ReplExecutionOutcomeKind kind) =>
 			WasCancelled = kind is ReplExecutionOutcomeKind.Cancelled or ReplExecutionOutcomeKind.Interrupted;
 
 		public void OnInteractionEvent(ReplInteractionEvent evt)

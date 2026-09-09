@@ -67,7 +67,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	{
 		// Resolved outside the cancellation guard: ExitCodes.Resolver is application code, and a
 		// resolver that throws OperationCanceledException must not be mistaken for a cancelled run.
-		var outcome = await ExecuteCoreOutcomeWithCancellationPolicyAsync(
+		var outcome = await RunUnderCancellationPolicyAsync(
 				args,
 				serviceProvider,
 				isSubInvocation,
@@ -84,7 +84,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		string[] args,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken = default) =>
-		ExecuteCoreOutcomeWithCancellationPolicyAsync(args, serviceProvider, isSubInvocation: false, cancellationToken);
+		RunUnderCancellationPolicyAsync(args, serviceProvider, isSubInvocation: false, cancellationToken);
 
 	/// <summary>
 	/// Converts an already-cancelled caller token into a <see cref="ReplExecutionOutcomeKind.Cancelled"/>
@@ -107,7 +107,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		return ExecutionOutcome.Cancelled(new OperationCanceledException(cancellationToken));
 	}
 
-	private async ValueTask<ExecutionOutcome> ExecuteCoreOutcomeWithCancellationPolicyAsync(
+	private async ValueTask<ExecutionOutcome> RunUnderCancellationPolicyAsync(
 		IReadOnlyList<string> args,
 		IServiceProvider serviceProvider,
 		bool isSubInvocation,
@@ -220,7 +220,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 		if (scope == ReplExitCodeScope.Process)
 		{
-			ExecutionObserver?.OnOutcome(outcome.Kind, exitCode);
+			ExecutionObserver?.OnOutcome(outcome.Kind);
 		}
 
 		return exitCode;
@@ -924,8 +924,11 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			return result is null ? ExecutionOutcome.Success : new ExecutionOutcome(ReplExecutionOutcomeKind.Success, result);
 		}
 
-		var kind = replResult.Kind.ToLowerInvariant();
-		return kind is "text" or "success"
+		// Compared case-insensitively rather than lowercased: every result now routes through here, and
+		// a per-classification string allocation buys nothing.
+		var kind = replResult.Kind;
+		return string.Equals(kind, "text", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(kind, "success", StringComparison.OrdinalIgnoreCase)
 			? new ExecutionOutcome(ReplExecutionOutcomeKind.Success, replResult)
 			: ExecutionOutcome.HandlerError(replResult);
 	}

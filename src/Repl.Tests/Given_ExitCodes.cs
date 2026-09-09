@@ -134,12 +134,15 @@ public sealed class Given_ExitCodes
 	{
 		var recorder = new OutcomeRecorder();
 		var sut = CreateApp(recorder);
+		// Every row named explicitly: a fall-through arm would let a mistyped [DataRow] pass while
+		// asserting a different result kind.
 		sut.Map("fail", () => kind switch
 		{
 			"error" => Results.Error("boom", "failed"),
 			"validation" => Results.Validation("invalid"),
 			"not_found" => Results.NotFound("missing"),
-			_ => Results.Cancelled("stopped"),
+			"cancelled" => Results.Cancelled("stopped"),
+			_ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "unmapped DataRow"),
 		});
 
 		var exitCode = Run(sut, ["fail"], out _);
@@ -837,8 +840,6 @@ public sealed class Given_ExitCodes
 		private readonly List<ReplExecutionOutcome> _observed = [];
 
 		public ReplExecutionOutcome? Last => _observed.Count == 0 ? null : _observed[^1];
-
-		public IReadOnlyList<ReplExecutionOutcome> Observed => _observed;
 
 		public int Count => _observed.Count;
 

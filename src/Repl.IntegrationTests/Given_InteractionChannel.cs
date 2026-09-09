@@ -286,6 +286,10 @@ public sealed class Given_InteractionChannel
 		{
 		}
 
+		public void OnOutcome(ReplExecutionOutcomeKind kind)
+		{
+		}
+
 		public void OnInteractionEvent(ReplInteractionEvent evt) => Interactions.Add(evt);
 	}
 

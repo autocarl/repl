@@ -206,13 +206,15 @@ internal sealed class InteractiveSession(CoreReplApp app)
 					isInteractiveSession: true,
 					cancellationToken)
 				.ConfigureAwait(false);
-			// The failure arm comes first: an ambient command that failed is a usage error whatever kind
-			// it would have reported on success (a help invocation that cannot render is still a refusal).
-			var ambientExecution = ambientOutcome == AmbientCommandOutcome.HandledError
-				? ExecutionOutcome.UsageError()
-				: successKind == ReplExecutionOutcomeKind.Help
-					? ExecutionOutcome.Help
-					: ExecutionOutcome.Success;
+			// Arm order is load-bearing, which is why this is a switch and not nested conditionals: an
+			// ambient command that failed is a usage error whatever kind it would have reported on
+			// success, so a help invocation that cannot render stays a refusal (`D;2`, not `D;0`).
+			var ambientExecution = ambientOutcome switch
+			{
+				AmbientCommandOutcome.HandledError => ExecutionOutcome.UsageError(),
+				_ when successKind == ReplExecutionOutcomeKind.Help => ExecutionOutcome.Help,
+				_ => ExecutionOutcome.Success,
+			};
 			return (ambientOutcome, ambientExecution);
 		}
 
@@ -338,9 +340,8 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		return outcome;
 	}
 
-	// Best-effort resolved command-end for the dispatch-failure path: same swallow contract as
-	// TryWriteCommandEndAsync, extended over the resolve because the exit-code table and
-	// ExitCodes.Resolver are application code that must not replace the original exception.
+	// Resolved command-end for the dispatch-failure path — see caller for the swallow contract, which
+	// this one extends over the resolve as well as the write.
 	private async ValueTask TryWriteResolvedCommandEndAsync(ShellIntegrationMarkEmitter marks, ExecutionOutcome outcome)
 	{
 		try
@@ -356,8 +357,9 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		}
 	}
 
-	// Best-effort command-end used on exception paths: the original exception is the
-	// signal that matters, so a mark-write failure here is swallowed rather than masking it.
+	// Best-effort command-end used on exception paths: the original exception is the signal that
+	// matters, so a failure here — a torn-down transport, or application code in the exit-code table
+	// and ExitCodes.Resolver — is swallowed rather than allowed to mask it.
 	private static async ValueTask TryWriteCommandEndAsync(ShellIntegrationMarkEmitter marks, int? exitCode)
 	{
 		try
