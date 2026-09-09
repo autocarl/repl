@@ -17,9 +17,11 @@ Nerdbank.GitVersioning at pack time; this file groups changes by theme instead o
 - `ExitCodes.Cancelled` (`int?`) turns a cancellation through the caller's own token into an exit
   code instead of letting `OperationCanceledException` escape `RunAsync`. It is unset by default,
   which preserves the existing throwing behaviour; setting a `Resolver` also opts in to observing
-  cancellation.
-- `ExitCodes.Interrupted` (`int?`) maps a process signal bridged into a cooperative shutdown. Unset,
-  the conventional `128 + signal` code the bridge carries is used.
+  cancellation, and the code the resolver is then handed is `130` (`128 + SIGINT`), not the
+  framework-error code — an aborted run stays distinguishable from a broken one.
+- `ExitCodes.Interrupted` (`int?`) maps a process signal turned into a cooperative shutdown by a
+  process-signal handler; the core pipeline never produces this kind. Unset, the conventional
+  `128 + signal` code the handler supplies is used, falling back to `130` when it supplies none.
 - `ReplExecutionOutcome.Scope` (`ReplExitCodeScope`) tells a resolver whether it is computing the
   process exit code (`Process`, once per run) or one interactive command's shell-integration
   command-end mark (`ShellIntegrationMark`, only when a mark actually carries a code — so never with
@@ -33,9 +35,9 @@ Nerdbank.GitVersioning at pack time; this file groups changes by theme instead o
 
 ### Changed — breaking: framework exit codes
 
-These land together in the commit closing issue #81; a consumer bisecting an exit-code change can
-anchor on that. (Package versions come from Nerdbank.GitVersioning at pack time, so this file names
-none.)
+These land together in **PR #85**, closing issue #81 — a consumer whose pipeline started seeing
+exit `2` can search for either. (Package versions come from Nerdbank.GitVersioning at pack time, so
+this file cannot name the build; the PR and issue numbers are the durable anchors.)
 
 - Framework refusals now exit `2` instead of `1`: unknown command, ambiguous prefix, invalid global
   or command option, option collision, context validation failure, unknown `--output` format,
@@ -46,10 +48,15 @@ none.)
   still exit `0`. Set `ExitCodes.UsageError`/`BindingError` back to `1` to restore the old numbers.
   The interactive loop reports the same resolved codes in shell-integration `D;<code>` marks,
   including the mark for a command whose dispatch threw, which previously always reported `1`.
-- Every `Run`/`RunAsync` overload now checks the caller's `CancellationToken` before doing any work —
-  the hosted-service overloads before starting hosted services: a token that is already cancelled
-  throws `OperationCanceledException` (or returns `ExitCodes.Cancelled` when mapped). Previously only
-  `CoreReplApp.RunAsync` performed that check.
+- The `RunAsync` overloads that receive an already-built service provider now observe an
+  already-cancelled caller `CancellationToken` before doing any work of their own —
+  `ReplApp.RunAsync(args, IServiceProvider, …)` before starting hosted services, and
+  `ReplApp.RunAsync(args, IReplHost, IServiceProvider, …)` before opening the session. A cancelled
+  token throws `OperationCanceledException` (or returns `ExitCodes.Cancelled` when mapped, and `130`
+  when only a `Resolver` is set). Previously only `CoreReplApp.RunAsync` performed that check. The
+  overloads that build the shared provider themselves (`Run(args)`, `RunAsync(args, options, …)`) or
+  that install a session and terminal overrides first (`RunAsync(args, IReplHost, …)`) do that work
+  before the check reached further down the chain; the guarantee is per-overload, not blanket.
 - A handler that raises `OperationCanceledException` without the caller having asked for cancellation
   is now a `HandlerException`: the message is rendered and the run exits `1`, where it previously
   either propagated silently or, with `ExitCodes.Cancelled` mapped, returned the cancellation code
@@ -68,11 +75,21 @@ none.)
 - A hosted-service failure carries its exception in the outcome, and a startup stopped by the
   caller's own token is a `Cancelled` outcome rather than a `FrameworkError`: it prints no startup
   error and, with no cancellation policy configured, propagates the `OperationCanceledException` like
-  every other path. A shutdown that fails still outranks everything the run produced, including a
-  cancellation the pipeline was propagating.
+  every other path. A shutdown that fails still outranks everything the run produced, including any
+  exception the pipeline was propagating — but that exception is no longer discarded: the outcome
+  then carries an `AggregateException` of the stop failure and the suppressed cause, in that order,
+  and both are reported.
+- Hosted-lifecycle diagnostics (`Error: Failed to start/stop hosted service …`) now go to **stderr**
+  instead of stdout, and are written on a best-effort basis. A framework error on stdout corrupts the
+  machine-readable payload of a headless run, and a torn-down transport could previously turn a
+  reportable shutdown failure into an escaping write with no exit code at all. A test asserting these
+  lines on a merged stdout capture needs to read stderr.
 - An unknown `--output` format is a `UsageError` on every path, including while a failure was being
-  reported and for an `EnterInteractive` payload — the interactive loop is then not entered. A
-  diagnostic the caller never saw cannot stand as the run's outcome.
+  reported, for an `EnterInteractive` payload — the interactive loop is then not entered — and for a
+  hosted protocol-passthrough refusal, which previously reported `FrameworkError` regardless. A
+  diagnostic the caller never saw cannot stand as the run's outcome. When the usage error displaces a
+  failure that was already being reported, `ReplExecutionOutcome.Exception` now carries that original
+  failure, so a caller-chosen output format cannot erase why the run ended.
 - `ReplApp.RunAsync(args, IReplHost, IServiceProvider, …)` observes an already-cancelled token before
   opening the session, so the caller's service factories are not resolved for a run nobody awaits.
 
@@ -97,7 +114,7 @@ none.)
   a kind the framework does not recognize. An unclassifiable result never reports success to a
   pipeline; use `Results.Exit(n)` to choose a code deliberately.
 - `ReplExecutionOutcomeKind.Interrupted` is never produced by the core pipeline; it exists so a
-  process-signal bridge can route SIGINT/SIGTERM outcomes through the same table and resolver.
+  process-signal handler can route SIGINT/SIGTERM outcomes through the same table and resolver.
 - Exit codes are not range-checked. Keep them within `0`-`255`: POSIX `wait` exposes only the low
   eight bits to the parent process.
 

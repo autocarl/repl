@@ -238,21 +238,31 @@ mapped to an integer by `ReplOptions.ExitCodes` (`ExitCodeOptions`), then handed
 |---|---|---|
 | `Success` | success-like handler result (`text`/`success`, plain data, `void`), ambient commands (`exit`, `..`) that did their job, clean interactive exit | `0` |
 | `Help` | `--help`, bare invocation that prints help, scoped-context help, interactive `help` / `?` | `0` |
-| `UsageError` | unknown command, ambiguous prefix, invalid global or command option, context validation failure, an ambient command that failed, and any unknown `--output` format — which outranks whatever was being reported, since a diagnostic the caller never saw cannot stand as the run's outcome | `2` |
-| `BindingError` | a handler argument could not be bound: token conversion failed or was missing, or a binder-resolved value (context value, `[FromServices]` dependency, typed global options service) was unavailable — including a service factory that threw, so a failure before the handler ran is never reported as a handler failure | `2` |
+| `UsageError` | unknown command, ambiguous prefix, invalid global or command option, context validation failure, an ambient command that failed, and any unknown `--output` format — which outranks whatever was being reported, since a diagnostic the caller never saw cannot stand as the run's outcome. When it displaces a failure already being reported, the outcome still carries that failure's `Exception` and `Result` | `2` |
+| `BindingError` | a handler argument could not be bound: token conversion failed or was missing, or a binder-resolved value (context value, `[FromServices]` dependency, typed global options service) was unavailable — including a service factory that threw. The discriminator is whether argument **binding** completed, not whether the handler body ran: a validator, banner or middleware that throws after binding is a `HandlerException` | `2` |
 | `HandlerError` | handler returned `Results.Error` / `Validation` / `NotFound` / `Cancelled`, or any `IReplResult` whose kind the framework does not recognize as success-like | `1` |
 | `HandlerExitCode` | handler returned an `IExitResult` — its code is used verbatim, the table is bypassed | `IExitResult.ExitCode` |
 | `HandlerException` | the handler, a middleware, or user code running after binding threw — including a handler that raised `OperationCanceledException` without the caller having asked for cancellation | `1` |
-| `Cancelled` | the caller's own `CancellationToken` stopped the run — during the command, or while hosted services were starting (in the interactive loop, also Ctrl+C during a command and a cancelled prompt) | unmapped: the exception propagates unless `ExitCodes.Cancelled` or a `Resolver` is set; `130` is the usual convention |
-| `Interrupted` | a process signal (SIGINT, Ctrl+Break, SIGTERM) bridged into a cooperative shutdown; the core pipeline never produces it on its own | the `128 + signal` code the bridge carries, or `ExitCodes.Interrupted` |
+| `Cancelled` | the caller's own `CancellationToken` stopped the run — already cancelled at the call, during the command, or while hosted services were starting | unmapped: the exception propagates unless `ExitCodes.Cancelled` or a `Resolver` is set, and a `Resolver` alone is handed `130` |
+| `Interrupted` | a process signal (SIGINT, Ctrl+Break, SIGTERM) turned into a cooperative shutdown by a process-signal handler; the core pipeline never produces it | `ExitCodes.Interrupted`, else the `128 + signal` code the handler supplies, else `130` |
 | `FrameworkError` | incompatible programmatic adapter, unsupported hosting capability, hosted-service start or stop failure | `1` |
 
+The table is the **process** exit code. Ctrl+C during an interactive command is also a `Cancelled`
+outcome, but it decorates that command's shell-integration command-end mark and the loop continues —
+the session itself still exits `Success`, so a headless reader should not expect a process code from
+it. See [Terminal & Shell Integration](terminal-shell-integration.md) and `ReplExitCodeScope` below.
+
 A hosted-service failure is resolved once, after the whole lifecycle, and the outcome carries the
-exception. A shutdown that fails outranks everything the run had produced — including a cancellation
+exception. A shutdown that fails outranks everything the run had produced — including any exception
 the pipeline was propagating — because the process is leaving dirty; a consumer still observes
-exactly one outcome per run. A startup the caller cancelled is the one case that is not a hosting
-defect: it is a `Cancelled` outcome, it prints no startup error, and with no cancellation policy
-configured it propagates the `OperationCanceledException` like every other path.
+exactly one outcome per run. The suppressed cause is not lost: with a propagating exception in
+flight, the outcome carries an `AggregateException` of the stop failure and that exception, in that
+order, and both are named on stderr. A startup the caller cancelled is the one case that is not a
+hosting defect: it is a `Cancelled` outcome, it prints no startup error, and with no cancellation
+policy configured it propagates the `OperationCanceledException` like every other path.
+
+Framework diagnostics from the hosted lifecycle go to **stderr**, so a headless run's stdout carries
+the command payload alone.
 
 Exit codes should stay within `0`-`255`: POSIX `wait` exposes only the low eight bits to the parent
 process, so `Help = 300` reaches a shell as `44`. Repl does not clamp — a code outside the range is
@@ -270,7 +280,9 @@ app.Options(options =>
 ```
 
 The resolver receives a `ReplExecutionOutcome` (`Kind`, table-mapped `ExitCode`, the final `Result`
-object when one exists, the `Exception` that ended the run when applicable, and a `Scope`).
+object when one exists, the `Exception` that ended the run when applicable, and a `Scope`). `Scope`
+is an init-only property rather than a positional parameter, so it is not part of the record's
+generated `Deconstruct` — read it by name.
 
 `Scope` says what the code is for, so a hook with side effects can tell one from the other:
 

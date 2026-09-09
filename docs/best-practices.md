@@ -280,7 +280,21 @@ app.Options(options =>
 - Set `ExitCodes.Cancelled` when the caller owns a `CancellationToken` and wants an integer rather
   than an `OperationCanceledException` escaping `RunAsync`. Installing a `Resolver` opts in to the
   same thing: cancellation then reaches the hook instead of propagating, so a resolver written to map
-  "every final outcome" really sees every one.
+  "every final outcome" really sees every one. With only a resolver installed, the code it is handed
+  for a cancellation is `130` — never `1` — so `outcome.ExitCode` stays distinguishable from a handler
+  failure even without a table entry.
+- `ExitCodes.Resolver` is the only public seam that observes the outcome *kind*: middleware runs
+  before classification, so a resolver is where an audit trail of exit codes belongs. It does not fire
+  for a run that ends by propagating an exception, nor for nested MCP sub-invocations.
+
+```csharp
+options.ExitCodes.Resolver = outcome =>
+{
+    logger.LogInformation(
+        "run ended {Kind} → {ExitCode} ({Scope})", outcome.Kind, outcome.ExitCode, outcome.Scope);
+    return outcome.ExitCode;   // observe without changing the contract
+};
+```
 
 ## Write deterministic tests
 

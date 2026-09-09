@@ -243,8 +243,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 		catch (Exception ex)
 		{
-			// The resolver is application code on the way out of a run; a throw here would replace a real
-			// outcome with an unrelated failure, so it degrades to the table code and says so once.
+			// Rationale in this method's CA1031 justification; ExitCodeOptions.Resolver documents the
+			// contract for the application author.
 			TryWriteResolverDiagnostic(ex, mappedExitCode);
 			return mappedExitCode;
 		}
@@ -762,16 +762,15 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				// RenderOutputAsync returns false only for an unknown requested output format: a usage mistake.
 				return (rendered ? ClassifyResult(normalizedResult) : ExecutionOutcome.UsageError(normalizedResult), false);
 		}
-		// The ambient runtime state, not scopeTokens: a protocol-passthrough command always passes
-		// scopeTokens: null, interactive or not, so it is not a mode discriminator.
+		// Gated on the ambient runtime state, not on scopeTokens: a protocol-passthrough command always
+		// passes scopeTokens: null, interactive or not, so it is no mode discriminator.
 		catch (OperationCanceledException ex) when (!IsInteractiveSession && !cancellationToken.IsCancellationRequested)
 		{
 			// One-shot, and nobody asked for this run to stop: the handler cancelled itself, which is a
-			// failure like any other exception. Rendering it is the point — a bare rethrow here used to
-			// exit silently, leaving a caller who mapped ExitCodes.Cancelled unable to tell a real
-			// failure from an operator abort. The interactive loop keeps its own Ctrl+C semantics.
-			// A service factory can cancel before the handler ever runs, so this is a binding failure
-			// unless binding already completed.
+			// failure like any other exception and is rendered as one, so a caller who mapped
+			// ExitCodes.Cancelled can still tell a failure from an operator abort. RenderFailureAsync
+			// keys on `bound`, so a service factory that cancels before binding completes is a
+			// BindingError. The interactive loop keeps its own Ctrl+C semantics.
 			return (await RenderFailureAsync(
 					Results.Error("execution_error", ex.Message), ex, bound, globalOptions, serviceProvider, cancellationToken)
 				.ConfigureAwait(false), false);
