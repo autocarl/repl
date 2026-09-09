@@ -381,6 +381,44 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies a service factory that cancels during binding is a BindingError, not a HandlerException: the handler never ran, so the binding policy must still apply.")]
+	public void When_ServiceFactoryCancelsDuringBinding_Then_KindIsBindingError()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = ReplApp.Create(services =>
+			services.AddSingleton<IMissingDependency>(_ => throw new OperationCanceledException("factory gave up")));
+		sut.Options(options =>
+		{
+			options.Interactive.InteractivePolicy = InteractivePolicy.Prevent;
+			options.Output.BannerEnabled = false;
+			options.ExitCodes.BindingError = 9;
+			options.ExitCodes.Resolver = recorder.Record;
+		});
+		sut.Map("show", ([FromServices] IMissingDependency dependency) => dependency.ToString());
+
+		var exitCode = Run(sut, ["show"], out _);
+
+		exitCode.Should().Be(9);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.BindingError);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a binding refusal hands the rendered result to the resolver alongside the exception, so the documented Result contract holds for every refusal and not only routing ones.")]
+	public void When_BindingFails_Then_OutcomeCarriesBothTheRenderedResultAndTheException()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("set", (int value) => value);
+
+		_ = Run(sut, ["set"], out _);
+
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.BindingError);
+		recorder.Last.Result.Should().BeAssignableTo<IReplResult>()
+			.Which.Kind.Should().Be("validation");
+		recorder.Last.Exception.Should().NotBeNull();
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies every outcome kind maps to its own configured entry so that swapping two arms of the table, or adding a kind without an entry, cannot pass unnoticed.")]
 	public void When_EveryKindIsMapped_Then_EachKindReturnsItsOwnConfiguredCode()
 	{

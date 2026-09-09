@@ -23,7 +23,8 @@ internal readonly record struct ExecutionOutcome(
 
 	public static ExecutionOutcome Usage(object? rendered = null) => new(ReplExecutionOutcomeKind.UsageError, rendered);
 
-	public static ExecutionOutcome Binding(Exception exception) => new(ReplExecutionOutcomeKind.BindingError, Exception: exception);
+	public static ExecutionOutcome Binding(Exception exception, object? rendered = null) =>
+		new(ReplExecutionOutcomeKind.BindingError, rendered, exception);
 
 	public static ExecutionOutcome HandlerError(object? result) => new(ReplExecutionOutcomeKind.HandlerError, result);
 

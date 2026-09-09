@@ -278,26 +278,29 @@ public sealed class ReplApp : IReplApp
 			return await _core.RunWithServicesAsync(args, services, cancellationToken).ConfigureAwait(false);
 		}
 
-		// Checked before starting hosted services so an already-cancelled caller token stops this
-		// overload as early as it stops the others, instead of after a full start/stop cycle.
-		cancellationToken.ThrowIfCancellationRequested();
+		// Routed through the policy before starting hosted services, so an already-cancelled caller token
+		// stops this overload as early as it stops the others and still honours ExitCodes.Cancelled.
+		if (_core.TryObserveCallerCancellation(cancellationToken) is { } cancelled)
+		{
+			return _core.ResolveExitCode(cancelled, isSubInvocation: false);
+		}
 
 		var started = Array.Empty<Microsoft.Extensions.Hosting.IHostedService>();
-		var exitCode = 0;
+		// Replaced on every path below; the initial value only satisfies definite assignment.
+		var outcome = ExecutionOutcome.Success;
 		try
 		{
 			started = [..
 				await HostedServiceLifecycleCoordinator.StartAsync(services, cancellationToken)
 					.ConfigureAwait(false),
 			];
-			exitCode = await _core.RunWithServicesAsync(args, services, cancellationToken).ConfigureAwait(false);
+			outcome = await _core.RunOutcomeWithServicesAsync(args, services, cancellationToken)
+				.ConfigureAwait(false);
 		}
 		catch (HostedServiceLifecycleException ex)
 		{
 			await ReplSessionIO.Output.WriteLineAsync($"Error: {ex.Message}").ConfigureAwait(false);
-			// A hosting failure is a framework error, so it goes through the same exit-code policy as
-			// every other outcome rather than hard-coding a code the application cannot configure.
-			exitCode = _core.ResolveHostingFailureExitCode();
+			outcome = ExecutionOutcome.FrameworkError(rendered: null);
 		}
 		finally
 		{
@@ -309,11 +312,14 @@ public sealed class ReplApp : IReplApp
 			catch (HostedServiceLifecycleException ex)
 			{
 				await ReplSessionIO.Output.WriteLineAsync($"Error: {ex.Message}").ConfigureAwait(false);
-				exitCode = _core.ResolveHostingFailureExitCode();
+				// A failed shutdown outranks whatever the command reported: the process is leaving dirty.
+				outcome = ExecutionOutcome.FrameworkError(rendered: null);
 			}
 		}
 
-		return exitCode;
+		// Resolved once, after the whole lifecycle: a hosting failure is a framework error like any
+		// other outcome, and a consumer must observe exactly one outcome per run.
+		return _core.ResolveExitCode(outcome, isSubInvocation: false);
 	}
 
 	/// <summary>

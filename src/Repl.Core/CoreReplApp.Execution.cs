@@ -65,25 +65,68 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		bool isSubInvocation = false,
 		CancellationToken cancellationToken = default)
 	{
+		// Resolved outside the cancellation guard: ExitCodes.Resolver is application code, and a
+		// resolver that throws OperationCanceledException must not be mistaken for a cancelled run.
+		var outcome = await ExecuteCoreOutcomeWithCancellationPolicyAsync(
+				args,
+				serviceProvider,
+				isSubInvocation,
+				cancellationToken)
+			.ConfigureAwait(false);
+		return ResolveExitCode(outcome, isSubInvocation);
+	}
+
+	/// <summary>
+	/// Runs the pipeline and reports the outcome without resolving an exit code, so a host wrapper that
+	/// has its own teardown to run can resolve once, at the end, instead of once per stage.
+	/// </summary>
+	internal ValueTask<ExecutionOutcome> RunOutcomeWithServicesAsync(
+		string[] args,
+		IServiceProvider serviceProvider,
+		CancellationToken cancellationToken = default) =>
+		ExecuteCoreOutcomeWithCancellationPolicyAsync(args, serviceProvider, isSubInvocation: false, cancellationToken);
+
+	/// <summary>
+	/// Converts an already-cancelled caller token into a <see cref="ReplExecutionOutcomeKind.Cancelled"/>
+	/// outcome, so a host wrapper can apply the policy before doing any work of its own. Returns
+	/// <see langword="null"/> when the token is not cancelled, and throws when the application configured
+	/// no way to observe cancellation — the same contract the pipeline itself follows.
+	/// </summary>
+	internal ExecutionOutcome? TryObserveCallerCancellation(CancellationToken cancellationToken)
+	{
+		if (!cancellationToken.IsCancellationRequested)
+		{
+			return null;
+		}
+
+		if (!IsConvertibleCancellation(isSubInvocation: false, cancellationToken))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+		}
+
+		return ExecutionOutcome.Cancelled(new OperationCanceledException(cancellationToken));
+	}
+
+	private async ValueTask<ExecutionOutcome> ExecuteCoreOutcomeWithCancellationPolicyAsync(
+		IReadOnlyList<string> args,
+		IServiceProvider serviceProvider,
+		bool isSubInvocation,
+		CancellationToken cancellationToken)
+	{
 		_options.Interaction.SetObserver(observer: ExecutionObserver);
 		try
 		{
-			ExecutionOutcome outcome;
 			try
 			{
 				// Inside the try so a token cancelled before the run follows the same Cancelled policy.
 				cancellationToken.ThrowIfCancellationRequested();
-				outcome = await ExecuteCoreOutcomeAsync(args, serviceProvider, isSubInvocation, cancellationToken)
+				return await ExecuteCoreOutcomeAsync(args, serviceProvider, isSubInvocation, cancellationToken)
 					.ConfigureAwait(false);
 			}
 			catch (OperationCanceledException ex) when (IsConvertibleCancellation(isSubInvocation, cancellationToken))
 			{
-				outcome = ExecutionOutcome.Cancelled(ex);
+				return ExecutionOutcome.Cancelled(ex);
 			}
-
-			// Resolved outside the cancellation guard: ExitCodes.Resolver is application code, and a
-			// resolver that throws OperationCanceledException must not be mistaken for a cancelled run.
-			return ResolveExitCode(outcome, isSubInvocation);
 		}
 		finally
 		{
@@ -138,14 +181,6 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		isSubInvocation
 			? ExitCodeOptions.MapDefault(outcome.Kind, outcome.ExplicitExitCode)
 			: ResolveConfiguredExitCode(outcome, ReplExitCodeScope.Process);
-
-	/// <summary>
-	/// Applies the exit-code policy to a hosting failure that happened outside the command pipeline —
-	/// a hosted service that could not start or stop. Exposed so the host wrapper does not have to
-	/// hard-code a code the application cannot configure.
-	/// </summary>
-	internal int ResolveHostingFailureExitCode() =>
-		ResolveConfiguredExitCode(ExecutionOutcome.FrameworkError(rendered: null), ReplExitCodeScope.Process);
 
 	/// <summary>
 	/// Applies the exit-code policy to the code decorating one interactive command's shell-integration
@@ -689,12 +724,14 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			// exit silently, leaving a caller who mapped ExitCodes.Cancelled unable to tell a real
 			// failure from an operator abort. The interactive loop keeps its own Ctrl+C semantics.
 			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
-			_ = await RenderOutputAsync(
-					Results.Error("execution_error", ex.Message),
-					globalOptions.OutputFormat,
-					cancellationToken)
+			var cancellationFailure = Results.Error("execution_error", ex.Message);
+			_ = await RenderOutputAsync(cancellationFailure, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return (ExecutionOutcome.HandlerException(ex), false);
+			// A service factory can cancel before the handler ever runs, so this is a binding failure
+			// unless binding already completed.
+			return (bound
+				? ExecutionOutcome.HandlerException(ex)
+				: ExecutionOutcome.Binding(ex, cancellationFailure), false);
 		}
 		catch (OperationCanceledException)
 		{
@@ -704,20 +741,23 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		catch (InvalidOperationException ex)
 		{
 			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
-			_ = await RenderOutputAsync(Results.Validation(ex.Message), globalOptions.OutputFormat, cancellationToken)
+			var validationFailure = Results.Validation(ex.Message);
+			_ = await RenderOutputAsync(validationFailure, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return (bound ? ExecutionOutcome.HandlerException(ex) : ExecutionOutcome.Binding(ex), false);
+			return (bound
+				? ExecutionOutcome.HandlerException(ex)
+				: ExecutionOutcome.Binding(ex, validationFailure), false);
 		}
 		catch (Exception ex)
 		{
 			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
 			var unwrapped = ex is TargetInvocationException { InnerException: { } inner } ? inner : ex;
-			_ = await RenderOutputAsync(
-					Results.Error("execution_error", unwrapped.Message),
-					globalOptions.OutputFormat,
-					cancellationToken)
+			var executionFailure = Results.Error("execution_error", unwrapped.Message);
+			_ = await RenderOutputAsync(executionFailure, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return (bound ? ExecutionOutcome.HandlerException(unwrapped) : ExecutionOutcome.Binding(unwrapped), false);
+			return (bound
+				? ExecutionOutcome.HandlerException(unwrapped)
+				: ExecutionOutcome.Binding(unwrapped, executionFailure), false);
 		}
 	}
 

@@ -59,7 +59,12 @@ none.)
   that maps `ExitCodes.Help` separately sees its own code in the command-end mark. An ambient command
   that *failed* is still a `UsageError`, whatever it would have reported on success.
 - Hosted-service start and stop failures in `ReplApp.RunAsync` now go through the exit-code policy as
-  `FrameworkError` instead of returning a hard-coded `1`.
+  `FrameworkError` instead of returning a hard-coded `1`. The code is resolved once, after the whole
+  lifecycle, so a failed shutdown outranks the command's own outcome and a resolver is handed exactly
+  one outcome per run. An already-cancelled caller token also follows `ExitCodes.Cancelled` on that
+  overload, without starting hosted services.
+- A binding failure now carries the rendered refusal in `ReplExecutionOutcome.Result` alongside the
+  `Exception`, matching the documented contract; previously only routing refusals did.
 
 ### Compatibility notes — exit codes
 
