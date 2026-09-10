@@ -290,7 +290,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 						serviceProvider,
 						cancellationToken)
 					.ConfigureAwait(false);
-			if (ambiguousOutcome is not null) return ambiguousOutcome.Value;
+			if (ambiguousOutcome is not null)
+			{
+				return ambiguousOutcome.Value;
+			}
 
 			var preResolvedRouteResolution = TryPreResolveRouteForBanner(resolvedGlobalOptions);
 			if (!ShouldSuppressGlobalBanner(resolvedGlobalOptions, preResolvedRouteResolution?.Match))
@@ -303,7 +306,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 						serviceProvider,
 						cancellationToken)
 					.ConfigureAwait(false);
-			if (preExecutionOutcome is not null) return preExecutionOutcome.Value;
+			if (preExecutionOutcome is not null)
+			{
+				return preExecutionOutcome.Value;
+			}
 
 			var resolution = preResolvedRouteResolution
 				?? ResolveWithDiagnostics(resolvedGlobalOptions.RemainingTokens);
@@ -921,7 +927,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 		if (result is not IReplResult replResult)
 		{
-			return result is null ? ExecutionOutcome.Success : new ExecutionOutcome(ReplExecutionOutcomeKind.Success, result);
+			return result is null ? ExecutionOutcome.Success : ExecutionOutcome.Success with { Result = result };
 		}
 
 		// Compared case-insensitively rather than lowercased: every result now routes through here, and
@@ -929,7 +935,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		var kind = replResult.Kind;
 		return string.Equals(kind, "text", StringComparison.OrdinalIgnoreCase)
 			|| string.Equals(kind, "success", StringComparison.OrdinalIgnoreCase)
-			? new ExecutionOutcome(ReplExecutionOutcomeKind.Success, replResult)
+			? ExecutionOutcome.Success with { Result = replResult }
 			: ExecutionOutcome.HandlerError(replResult);
 	}
 
@@ -955,8 +961,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			: requestedFormat;
 		if (!_options.Output.Transformers.TryGetValue(format, out var transformer))
 		{
-			// Unknown format is a user-facing validation issue; avoid silent failures from exception swallowing.
-			await ReplSessionIO.Output.WriteLineAsync($"Error: unknown output format '{format}'.").ConfigureAwait(false);
+			// A framework refusal, not command output: it goes to Error so a headless run's stdout keeps
+			// carrying only the payload a parent process parses. Reported rather than swallowed, because
+			// this refusal is what makes the run a UsageError.
+			await ReplSessionIO.Error.WriteLineAsync($"Error: unknown output format '{format}'.").ConfigureAwait(false);
 			return false;
 		}
 

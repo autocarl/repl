@@ -320,7 +320,7 @@ public sealed class ReplApp : IReplApp
 				if (startupOutcome.Kind == ReplExecutionOutcomeKind.FrameworkError)
 				{
 					// Only a real hosting defect is a startup error; a caller cancellation is not.
-					await TryWriteLifecycleDiagnosticAsync($"Error: {ex.Message}").ConfigureAwait(false);
+					await TryWriteLifecycleFailureAsync(ex).ConfigureAwait(false);
 				}
 			}
 			else
@@ -351,10 +351,12 @@ public sealed class ReplApp : IReplApp
 	/// <summary>
 	/// Stops the hosted services that started, reporting a failure as the run's outcome. Returns
 	/// <see langword="null"/> when shutdown was clean. A failed shutdown outranks both the command's own
-	/// outcome and any exception the pipeline was propagating, because the process is leaving dirty — so
-	/// the suppressed cause travels on the outcome beside the stop failure rather than being lost. Not
-	/// reclassified as a cancellation: shutdown runs on <see cref="CancellationToken.None"/>, so a
-	/// cancellation surfacing here is the service's own.
+	/// outcome and any exception the pipeline was propagating, because the process is leaving dirty. An
+	/// exception it outranks travels on the outcome beside the stop failure rather than being lost; an
+	/// <em>outcome</em> it outranks is replaced, so a command that had chosen its own code through
+	/// <c>Results.Exit(n)</c> reports the shutdown failure instead. Not reclassified as a
+	/// cancellation: shutdown runs on <see cref="CancellationToken.None"/>, so a cancellation surfacing
+	/// here is the service's own.
 	/// </summary>
 	private static async ValueTask<ExecutionOutcome?> TryStopHostedServicesAsync(
 		IReadOnlyList<IHostedService> started,
@@ -368,14 +370,14 @@ public sealed class ReplApp : IReplApp
 		}
 		catch (HostedServiceLifecycleException ex)
 		{
-			await TryWriteLifecycleDiagnosticAsync($"Error: {ex.Message}").ConfigureAwait(false);
+			await TryWriteLifecycleFailureAsync(ex).ConfigureAwait(false);
 			if (propagating is null)
 			{
 				return ExecutionOutcome.FrameworkError(rendered: null, exception: ex);
 			}
 
 			await TryWriteLifecycleDiagnosticAsync(
-					$"Error: the shutdown failure suppressed {propagating.GetType().Name}: {propagating.Message}")
+					$"Error: the shutdown failure suppressed {Describe(propagating)}")
 				.ConfigureAwait(false);
 
 			// Two causes, so both travel: the same shape CoreReplApp uses for routing-invalidation
@@ -387,6 +389,16 @@ public sealed class ReplApp : IReplApp
 					[ex, propagating]));
 		}
 	}
+
+	// The coordinator's message names only which service failed; the reason it gives is the exception it
+	// wrapped, which is non-null by HostedServiceLifecycleException's constructor. Both are needed: an
+	// operator reading stderr alone would otherwise get the service and not the cause.
+	private static ValueTask TryWriteLifecycleFailureAsync(HostedServiceLifecycleException failure) =>
+		TryWriteLifecycleDiagnosticAsync($"Error: {failure.Message} {Describe(failure.InnerException)}");
+
+	// Type plus message, the shape TryWriteResolverDiagnostic already uses for a reported exception.
+	private static string Describe(Exception? exception) =>
+		exception is null ? "(no inner exception)" : $"{exception.GetType().Name}: {exception.Message}";
 
 	[SuppressMessage(
 		"Design",
@@ -499,19 +511,21 @@ public sealed class ReplApp : IReplApp
 		ArgumentNullException.ThrowIfNull(host);
 		ArgumentNullException.ThrowIfNull(services);
 
-		// Before opening the session: the overlay resolves presenter, interaction handlers and TimeProvider
-		// from the caller's provider, so an already-cancelled token must stop here rather than letting user
-		// service factories run for a request nobody is waiting on.
-		if (_core.TryObserveCallerCancellation(cancellationToken) is { } cancelled)
-		{
-			return _core.ResolveProcessExitCode(cancelled);
-		}
-
 		var runOptions = options ?? new ReplRunOptions();
 		var sessionHost = host as IReplSessionHost;
 		using (ReplSessionIO.SetSession(host.Output, host.Input, runOptions.AnsiSupport, sessionHost?.SessionId))
 		{
 			ApplyTerminalOverrides(runOptions);
+
+			// Before building the overlay, which resolves the presenter, the interaction handlers and
+			// TimeProvider from the caller's provider: an already-cancelled token must stop here rather
+			// than letting user service factories run for a request nobody is waiting on. Inside the
+			// session, so a resolver and its diagnostic reach the host's writers and not Console.Error.
+			if (_core.TryObserveCallerCancellation(cancellationToken) is { } cancelled)
+			{
+				return _core.ResolveProcessExitCode(cancelled);
+			}
+
 			var sessionProvider = CreateSessionOverlay(services);
 			return await _core.RunWithServicesAsync(args, sessionProvider, cancellationToken)
 				.ConfigureAwait(false);

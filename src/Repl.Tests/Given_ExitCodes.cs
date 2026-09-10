@@ -582,8 +582,8 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies a hosted protocol-passthrough refusal is a FrameworkError so that hosting-capability gaps are not reported as usage mistakes.")]
-	public void When_ProtocolPassthroughIsRefusedInHostedSession_Then_KindIsFrameworkError()
+	[Description("Regression guard: verifies the hosted protocol-passthrough refusal is a FrameworkError when reached through the IReplHost facade, which builds its own session rather than inheriting an ambient one.")]
+	public void When_ProtocolPassthroughIsRefusedViaReplHost_Then_KindIsFrameworkError()
 	{
 		var recorder = new OutcomeRecorder();
 		var sut = CreateApp(recorder);
@@ -744,8 +744,8 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
-	[Description("Regression guard: verifies the hosted protocol-passthrough refusal is a FrameworkError when the caller saw it, so a hosting-capability mismatch keeps reporting as a framework problem.")]
-	public void When_HostedPassthroughLacksIoContext_Then_KindIsFrameworkError()
+	[Description("Regression guard: verifies the hosted protocol-passthrough refusal is a FrameworkError when the caller saw it, so a hosting-capability mismatch keeps reporting as a framework problem rather than a usage mistake.")]
+	public void When_HostedPassthroughLacksIoContextAndRefusalIsRendered_Then_KindIsFrameworkError()
 	{
 		var recorder = new OutcomeRecorder();
 		var sut = CreateApp(recorder);

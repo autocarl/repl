@@ -332,8 +332,7 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		}
 		else if (marks.WillWriteCommandEnd)
 		{
-			// The single resolve point for a committed command. Guarded because ExitCodes.Resolver is
-			// application code: it must not run to produce a code no mark will carry.
+			// The single resolve point for a committed command.
 			await marks.WriteCommandEndAsync(app.ResolveCommandEndExitCode(execution)).ConfigureAwait(false);
 		}
 
@@ -358,8 +357,8 @@ internal sealed class InteractiveSession(CoreReplApp app)
 	}
 
 	// Best-effort command-end used on exception paths: the original exception is the signal that
-	// matters, so a failure here — a torn-down transport, or application code in the exit-code table
-	// and ExitCodes.Resolver — is swallowed rather than allowed to mask it.
+	// matters, so a mark-write failure here (e.g. a torn-down transport) is swallowed rather than
+	// masking it. Takes an already-resolved code, so no application code runs on this path.
 	private static async ValueTask TryWriteCommandEndAsync(ShellIntegrationMarkEmitter marks, int? exitCode)
 	{
 		try

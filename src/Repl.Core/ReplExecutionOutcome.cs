@@ -11,9 +11,9 @@ namespace Repl;
 /// </param>
 /// <param name="Result">
 /// Final result object when one exists: the normalized handler result, or the <see cref="IReplResult"/>
-/// the framework produced for a refusal. Normally that refusal was rendered to the caller; the one
-/// exception is a <see cref="ReplExecutionOutcomeKind.UsageError"/> raised *because* rendering failed
-/// (an unknown <c>--output</c> format), which carries the diagnostic the caller never saw.
+/// the framework produced for a refusal. Do not read it as proof the caller saw that refusal — several
+/// paths report a <see cref="ReplExecutionOutcomeKind.UsageError"/> carrying a diagnostic whose
+/// rendering was refused or never checked, an unknown <c>--output</c> format being the common cause.
 /// </param>
 /// <param name="Exception">Exception that ended the run, when the outcome was caused by one.</param>
 /// <remarks>

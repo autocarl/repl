@@ -264,7 +264,10 @@ app.Options(options =>
 ```
 
 - Keep usage errors (`2` by default) distinct from handler failures (`1`) so a pipeline can tell a
-  refused invocation from a tool that broke. Note that `BindingError` shares that `2`, and it also
+  refused invocation from a tool that broke. Note the other side of that default: `HandlerError`,
+  `HandlerException` and `FrameworkError` all map to `1`, so "the command failed" and "the framework
+  failed" are indistinguishable out of the box — give `ExitCodes.FrameworkError` its own code if a
+  broken tool must alert differently from a failing command. Note that `BindingError` shares that `2`, and it also
   covers values the binder resolves itself — a missing DI registration or an unresolvable
   `[FromServices]` dependency is an application-wiring defect, not a caller mistake. Give it its own
   code if your contract needs to separate the two.

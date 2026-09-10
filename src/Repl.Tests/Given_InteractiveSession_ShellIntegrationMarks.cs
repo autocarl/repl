@@ -76,7 +76,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("The command-end mark follows the configured exit-code table, so an application that remaps usage errors sees its own code in the terminal decoration.")]
+	[Description("Regression guard: verifies the command-end mark follows the configured exit-code table, so an application that remaps usage errors sees its own code in the terminal decoration.")]
 	public void When_UsageErrorIsRemapped_Then_CommandEndMarkFollowsTable()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
@@ -91,7 +91,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("The command-end mark goes through ExitCodes.Resolver, so an application-wide exit-code convention is visible in the terminal decoration too.")]
+	[Description("Regression guard: verifies the command-end mark goes through ExitCodes.Resolver, so an application-wide exit-code convention is visible in the terminal decoration too.")]
 	public void When_ResolverIsConfigured_Then_CommandEndMarkUsesItsReturnValue()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
@@ -107,8 +107,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("A configured ExitCodes.Cancelled replaces the conventional 130 in the command-end mark of a cancelled interactive command.")]
-	public void When_CancelledIsConfigured_Then_CancelledCommandEndMarkUsesConfiguredCode()
+	[Description("Regression guard: verifies a configured ExitCodes.Cancelled replaces the conventional 130 in the command-end mark. The handler raises OperationCanceledException itself; the interactive loop deliberately treats that as an abort, unlike the one-shot path.")]
+	public void When_HandlerRaisesCancellationAndCancelledIsConfigured_Then_MarkUsesConfiguredCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var sut = CreateMarkedApp();
@@ -123,7 +123,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("Interactive help is classified Help, not a generic success, so an application that maps ExitCodes.Help separately sees its own code in the command-end mark.")]
+	[Description("Regression guard: verifies interactive help is classified Help, not a generic success, so an application that maps ExitCodes.Help separately sees its own code in the command-end mark.")]
 	public void When_HelpIsRemapped_Then_InteractiveHelpCommandEndUsesTheHelpCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
@@ -140,7 +140,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("A help invocation that cannot render is a refusal first: the usage code wins over the Help classification the ambient entry would otherwise report.")]
+	[Description("Regression guard: verifies a help invocation that cannot render is a refusal first: the usage code wins over the Help classification the ambient entry would otherwise report.")]
 	public void When_HelpIsRemappedAndHelpFailsToRender_Then_UsageCodeStillWins()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
@@ -156,7 +156,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("The resolver sees Scope.ShellIntegrationMark for a command-end code and runs once per committed command, so a hook with side effects can tell a terminal decoration from a process exit.")]
+	[Description("Regression guard: verifies the resolver sees Scope.ShellIntegrationMark for a command-end code and runs once per committed command, so a hook with side effects can tell a terminal decoration from a process exit.")]
 	public void When_MarksAreEnabled_Then_ResolverRunsPerCommandWithMarkScope()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
@@ -200,7 +200,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("The failed-dispatch command-end mark goes through the exit-code table like every other mark, instead of hard-coding 1.")]
+	[Description("Regression guard: verifies the failed-dispatch command-end mark goes through the exit-code table like every other mark, instead of hard-coding 1.")]
 	public void When_HandlerExceptionIsRemapped_Then_FailedDispatchCommandEndUsesTheConfiguredCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
@@ -231,7 +231,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("Ambient commands such as help run inside the same command lifecycle: their output lands between output-start and a successful command-end mark.")]
+	[Description("Regression guard: verifies ambient commands such as help run inside the same command lifecycle: their output lands between output-start and a successful command-end mark.")]
 	public void When_HelpAmbientCommandRuns_Then_MarksWrapHelpOutput()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
@@ -300,7 +300,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("A handler cancelled mid-command keeps the Cancelled. message and reports exit code 130 (128+SIGINT), the shell convention terminals interpret as an interrupted command.")]
+	[Description("Regression guard: verifies an OperationCanceledException escaping an interactive command keeps the Cancelled. message and reports 130 (128+SIGINT), the shell convention terminals read as interrupted. The handler raises it itself: interactively that is an abort by design, where a one-shot run would render it as a handler failure. Real Ctrl+C reaches the same arm.")]
 	public void When_HandlerThrowsOperationCanceled_Then_CancelledLineIsPrintedAndExitCodeIs130()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);

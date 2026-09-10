@@ -26,7 +26,7 @@ Nerdbank.GitVersioning at pack time; this file groups changes by theme instead o
   process exit code (`Process`, once per run) or one interactive command's shell-integration
   command-end mark (`ShellIntegrationMark`, only when a mark actually carries a code — so never with
   shell integration off, for a protocol-passthrough command, or for an abandoned prompt cycle).
-- A resolver that throws no longer escapes the run: the table-mapped code is used and one diagnostic
+- A resolver that throws does not escape the run: the table-mapped code is used and one diagnostic
   line is written to the session's error stream. Interactive sessions survive a faulty resolver, and
   a resolver failure on a failed command never replaces the original exception.
 - `ReplExecutionContext.Result` exposes the handler's return value to middleware registered with
@@ -70,8 +70,8 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
   lifecycle, so a failed shutdown outranks the command's own outcome and a resolver is handed exactly
   one outcome per run. An already-cancelled caller token also follows `ExitCodes.Cancelled` on that
   overload, without starting hosted services.
-- A binding failure now carries the rendered refusal in `ReplExecutionOutcome.Result` alongside the
-  `Exception`, matching the documented contract; previously only routing refusals did.
+- A binding failure carries the rendered refusal in `ReplExecutionOutcome.Result` alongside the
+  `Exception`, as routing refusals do.
 - A hosted-service failure carries its exception in the outcome, and a startup stopped by the
   caller's own token is a `Cancelled` outcome rather than a `FrameworkError`: it prints no startup
   error and, with no cancellation policy configured, propagates the `OperationCanceledException` like
@@ -79,19 +79,18 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
   exception the pipeline was propagating — but that exception is no longer discarded: the outcome
   then carries an `AggregateException` of the stop failure and the suppressed cause, in that order,
   and both are reported.
-- Hosted-lifecycle diagnostics (`Error: Failed to start/stop hosted service …`) now go to **stderr**
-  instead of stdout, and are written on a best-effort basis. A framework error on stdout corrupts the
+- Framework diagnostics now go to **stderr** instead of stdout: the hosted-lifecycle failures
+  (`Error: Failed to start/stop hosted service …`, which also name the wrapped cause) and the
+  `Error: unknown output format '…'` refusal. The lifecycle writes are best-effort. A framework error on stdout corrupts the
   machine-readable payload of a headless run, and a torn-down transport could previously turn a
   reportable shutdown failure into an escaping write with no exit code at all. A test asserting these
   lines on a merged stdout capture needs to read stderr.
 - An unknown `--output` format is a `UsageError` on every path, including while a failure was being
   reported, for an `EnterInteractive` payload — the interactive loop is then not entered — and for a
-  hosted protocol-passthrough refusal, which previously reported `FrameworkError` regardless. A
-  diagnostic the caller never saw cannot stand as the run's outcome. When the usage error displaces a
+  hosted protocol-passthrough refusal. A diagnostic the caller never saw cannot stand as the run's
+  outcome. When the usage error displaces a
   failure that was already being reported, `ReplExecutionOutcome.Exception` now carries that original
   failure, so a caller-chosen output format cannot erase why the run ended.
-- `ReplApp.RunAsync(args, IReplHost, IServiceProvider, …)` observes an already-cancelled token before
-  opening the session, so the caller's service factories are not resolved for a run nobody awaits.
 
 ### Compatibility notes — exit codes
 
@@ -113,8 +112,10 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
 - An `IReplResult` whose `Kind` is not `text` or `success` is a `HandlerError` (exit `1`), including
   a kind the framework does not recognize. An unclassifiable result never reports success to a
   pipeline; use `Results.Exit(n)` to choose a code deliberately.
-- `ReplExecutionOutcomeKind.Interrupted` is never produced by the core pipeline; it exists so a
-  process-signal handler can route SIGINT/SIGTERM outcomes through the same table and resolver.
+- `ReplExecutionOutcomeKind.Interrupted` and `ExitCodes.Interrupted` are **inert in this release**:
+  no public API produces that kind, and an application cannot supply an outcome to the table from
+  outside the framework. They ship now so in-framework signal handling (#80) can route SIGINT/SIGTERM
+  through the same table and resolver without adding public API after these packages are published.
 - Exit codes are not range-checked. Keep them within `0`-`255`: POSIX `wait` exposes only the low
   eight bits to the parent process.
 

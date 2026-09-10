@@ -244,13 +244,21 @@ mapped to an integer by `ReplOptions.ExitCodes` (`ExitCodeOptions`), then handed
 | `HandlerExitCode` | handler returned an `IExitResult` — its code is used verbatim, the table is bypassed | `IExitResult.ExitCode` |
 | `HandlerException` | the handler, a middleware, or user code running after binding threw — including a handler that raised `OperationCanceledException` without the caller having asked for cancellation | `1` |
 | `Cancelled` | the caller's own `CancellationToken` stopped the run — already cancelled at the call, during the command, or while hosted services were starting | unmapped: the exception propagates unless `ExitCodes.Cancelled` or a `Resolver` is set, and a `Resolver` alone is handed `130` |
-| `Interrupted` | a process signal (SIGINT, Ctrl+Break, SIGTERM) turned into a cooperative shutdown by a process-signal handler; the core pipeline never produces it | `ExitCodes.Interrupted`, else the `128 + signal` code the handler supplies, else `130` |
+| `Interrupted` | a process signal (SIGINT, Ctrl+Break, SIGTERM) turned into a cooperative shutdown by a process-signal handler. **No public API produces this kind today** — reserved for in-framework signal handling (issue #80), so `ExitCodes.Interrupted` is inert until that lands | `ExitCodes.Interrupted`, else the `128 + signal` code the handler supplies, else `130` |
 | `FrameworkError` | incompatible programmatic adapter, unsupported hosting capability, hosted-service start or stop failure | `1` |
 
 The table is the **process** exit code. Ctrl+C during an interactive command is also a `Cancelled`
 outcome, but it decorates that command's shell-integration command-end mark and the loop continues —
 the session itself still exits `Success`, so a headless reader should not expect a process code from
 it. See [Terminal & Shell Integration](terminal-shell-integration.md) and `ReplExitCodeScope` below.
+
+The two modes draw the `Cancelled` line differently, deliberately. A one-shot run reserves it for the
+caller's own token: a handler that raises `OperationCanceledException` on its own account is a
+`HandlerException`, rendered and exiting `1`, so a real failure cannot pass for an operator abort. An
+interactive session treats **every** `OperationCanceledException` escaping a command as an abort —
+Ctrl+C and a self-cancelling handler alike: it prints `Cancelled.`, decorates the mark with the
+`Cancelled` code, and does not render the exception. An abandoned prompt (empty line, Escape, end of
+input) is not `Cancelled` at all; it emits an aborted mark carrying no code.
 
 A hosted-service failure is resolved once, after the whole lifecycle, and the outcome carries the
 exception. A shutdown that fails outranks everything the run had produced — including any exception
@@ -261,8 +269,8 @@ order, and both are named on stderr. A startup the caller cancelled is the one c
 hosting defect: it is a `Cancelled` outcome, it prints no startup error, and with no cancellation
 policy configured it propagates the `OperationCanceledException` like every other path.
 
-Framework diagnostics from the hosted lifecycle go to **stderr**, so a headless run's stdout carries
-the command payload alone.
+Framework diagnostics go to **stderr** — the hosted-lifecycle failures and the unknown-`--output`
+refusal alike — so a headless run's stdout carries the command payload alone.
 
 Exit codes should stay within `0`-`255`: POSIX `wait` exposes only the low eight bits to the parent
 process, so `Help = 300` reaches a shell as `44`. Repl does not clamp — a code outside the range is
@@ -317,12 +325,9 @@ Errors at each stage produce targeted diagnostics:
 - **Handler exceptions** — caught and unwrapped from `TargetInvocationException`,
   then rendered as an error to stderr.
 - **Cancellation** — in one-shot mode the caller's own token produces
-  `ReplExecutionOutcomeKind.Cancelled`, which propagates the `OperationCanceledException` unless
-  `ReplOptions.ExitCodes.Cancelled` or a `Resolver` is set. A handler that raises
-  `OperationCanceledException` on its own account is a failure instead: it is rendered and classified
-  `HandlerException`, so a mapped cancellation code can never make a real failure look like an
-  operator abort. The interactive loop keeps its own Ctrl+C semantics and renders a cancellation
-  message.
+  `ReplExecutionOutcomeKind.Cancelled`; a handler that raises `OperationCanceledException` on its own
+  account is a `HandlerException` instead. The interactive loop treats both as an abort and prints
+  `Cancelled.`. Stage 12 above carries the full contract, including when the exception propagates.
 
 ## Interactive Session Loop
 
