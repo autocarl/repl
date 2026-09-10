@@ -938,16 +938,24 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 	/// <summary>
 	/// Whether an exception raised while rendering a result should leave that result's explicit exit
-	/// code in force. Only a cancellation the run itself owns qualifies: the handler decided its code
-	/// and merely showing the payload was interrupted. A transformer that raises
+	/// code in force. Three conditions, and each excludes a way of getting this wrong.
+	/// <list type="bullet">
+	/// <item>An <see cref="IExitResult"/>, because only that carries a code of the handler's choosing.</item>
+	/// <item>A <em>non-zero</em> one. A zero code reports nothing, so preserving it would let a cancelled
+	/// run exit successfully — swallowing the cancellation instead of propagating it or applying
+	/// <see cref="ExitCodeOptions.Cancelled"/>. <c>IsSuccessLike</c> is what draws that line, the same
+	/// one a process signal uses when it decides whether to reclassify a run as interrupted.</item>
+	/// <item>A cancellation the run itself owns. A transformer raising
 	/// <see cref="OperationCanceledException"/> on its own account is a broken renderer, not an
-	/// intentional exit, and must stay a failure like any other transformer fault.
+	/// intentional exit, and stays a failure like any other transformer fault.</item>
+	/// </list>
 	/// </summary>
 	private static bool PreservesExplicitExitCode(
 		ExecutionOutcome classified,
 		Exception exception,
 		CancellationToken cancellationToken) =>
 		classified.Kind == ReplExecutionOutcomeKind.HandlerExitCode
+		&& !classified.IsSuccessLike
 		&& IsCallerCancellation(exception, cancellationToken);
 
 	/// <summary>

@@ -11,20 +11,20 @@ namespace Repl;
 internal static class ConsoleCancelKeyCoordinator
 {
 	private static readonly Lock Gate = new();
-	private static readonly Dictionary<long, Func<ConsoleCancelKeyHandlingResult>> InteractiveHandlers = [];
-	private static readonly Dictionary<long, Func<ConsoleCancelKeyHandlingResult>> StandaloneHandlers = [];
+	private static readonly Dictionary<long, Func<ConsoleSpecialKey, ConsoleCancelKeyHandlingResult>> InteractiveHandlers = [];
+	private static readonly Dictionary<long, Func<ConsoleSpecialKey, ConsoleCancelKeyHandlingResult>> StandaloneHandlers = [];
 	private static long s_nextRegistrationId;
 	private static long s_registrationVersion;
 	private static bool s_isSubscribed;
 
-	internal static IDisposable RegisterInteractive(Func<ConsoleCancelKeyHandlingResult> handler) =>
+	internal static IDisposable RegisterInteractive(Func<ConsoleSpecialKey, ConsoleCancelKeyHandlingResult> handler) =>
 		Register(handler, isInteractive: true);
 
-	internal static IDisposable RegisterStandalone(Func<ConsoleCancelKeyHandlingResult> handler) =>
+	internal static IDisposable RegisterStandalone(Func<ConsoleSpecialKey, ConsoleCancelKeyHandlingResult> handler) =>
 		Register(handler, isInteractive: false);
 
 	private static Registration Register(
-		Func<ConsoleCancelKeyHandlingResult> handler,
+		Func<ConsoleSpecialKey, ConsoleCancelKeyHandlingResult> handler,
 		bool isInteractive)
 	{
 		ArgumentNullException.ThrowIfNull(handler);
@@ -77,7 +77,7 @@ internal static class ConsoleCancelKeyCoordinator
 
 		var selection = CaptureSelection();
 		afterInitialSelection?.Invoke();
-		return Invoke(RevalidateSelection(selection).Handlers);
+		return Invoke(RevalidateSelection(selection).Handlers, specialKey);
 	}
 
 	private static bool IsHandledCancelKey(ConsoleSpecialKey specialKey, bool isWindows) =>
@@ -111,12 +111,13 @@ internal static class ConsoleCancelKeyCoordinator
 	}
 
 	private static ConsoleCancelKeyHandlingResult Invoke(
-		IReadOnlyList<Func<ConsoleCancelKeyHandlingResult>> handlers)
+		IReadOnlyList<Func<ConsoleSpecialKey, ConsoleCancelKeyHandlingResult>> handlers,
+		ConsoleSpecialKey specialKey)
 	{
 		var result = ConsoleCancelKeyHandlingResult.NotHandled;
 		foreach (var handler in handlers)
 		{
-			result = handler() switch
+			result = handler(specialKey) switch
 			{
 				ConsoleCancelKeyHandlingResult.SuppressProcessTermination =>
 					ConsoleCancelKeyHandlingResult.SuppressProcessTermination,
@@ -132,7 +133,7 @@ internal static class ConsoleCancelKeyCoordinator
 
 	private readonly record struct DispatchSelection(
 		long Version,
-		IReadOnlyList<Func<ConsoleCancelKeyHandlingResult>> Handlers);
+		IReadOnlyList<Func<ConsoleSpecialKey, ConsoleCancelKeyHandlingResult>> Handlers);
 
 	private sealed class Registration(long registrationId, bool isInteractive) : IDisposable
 	{

@@ -345,6 +345,107 @@ public sealed class Given_ProcessSignalExitCodePolicy
 			isTvOS: false).Should().BeFalse();
 	}
 
+	[TestMethod]
+	[Description("Regression guard: verifies a caller cancellation is not swallowed by a zero exit result. Preserving every explicit code let a cancelled run exit 0, reporting success for a run that was asked to stop, with no signal handling to correct it afterwards.")]
+	public async Task When_AZeroExitResultRenderIsCancelledByTheCaller_Then_CancellationWins()
+	{
+		using var cts = new CancellationTokenSource();
+		ReplExecutionOutcome? observed = null;
+		var app = ReplApp.Create();
+		app.Options(options =>
+		{
+			options.Output.BannerEnabled = false;
+			options.Interactive.InteractivePolicy = InteractivePolicy.Prevent;
+			options.Output.AddTransformer("cancelling", new CallerCancellingTransformer(cts));
+			options.ExitCodes.Cancelled = 66;
+			options.ExitCodes.Resolver = outcome =>
+			{
+				observed = outcome;
+				return outcome.ExitCode;
+			};
+		});
+		app.Map("work", () => Results.Exit(0, "payload"));
+
+		using var writer = new StringWriter();
+		using var session = ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
+
+		// No signal handling: nothing downstream reclassifies a zero exit, so the predicate itself has
+		// to refuse to preserve it.
+		var exitCode = await app.RunAsync(
+				["work", "--output:cancelling"],
+				new ReplRunOptions { ProcessSignalHandling = ProcessSignalHandlingMode.None },
+				cts.Token)
+			.ConfigureAwait(false);
+
+		exitCode.Should().Be(66);
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.Cancelled);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a non-zero exit result still survives a caller cancellation during its payload render, so narrowing the predicate to non-zero codes did not undo the preservation it exists for.")]
+	public async Task When_ANonZeroExitResultRenderIsCancelledByTheCaller_Then_TheHandlerCodeWins()
+	{
+		using var cts = new CancellationTokenSource();
+		ReplExecutionOutcome? observed = null;
+		var app = ReplApp.Create();
+		app.Options(options =>
+		{
+			options.Output.BannerEnabled = false;
+			options.Interactive.InteractivePolicy = InteractivePolicy.Prevent;
+			options.Output.AddTransformer("cancelling", new CallerCancellingTransformer(cts));
+			options.ExitCodes.Cancelled = 66;
+			options.ExitCodes.Resolver = outcome =>
+			{
+				observed = outcome;
+				return outcome.ExitCode;
+			};
+		});
+		app.Map("work", () => Results.Exit(4, "payload"));
+
+		using var writer = new StringWriter();
+		using var session = ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
+
+		var exitCode = await app.RunAsync(
+				["work", "--output:cancelling"],
+				new ReplRunOptions { ProcessSignalHandling = ProcessSignalHandlingMode.None },
+				cts.Token)
+			.ConfigureAwait(false);
+
+		exitCode.Should().Be(4);
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerExitCode);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies Ctrl+Break is reported by its own name. Windows routes both keys through one console callback, which hard-coded SIGINT and so contradicted the distinction this mode documents.")]
+	public async Task When_CtrlBreakIsDelivered_Then_TheDiagnosticNamesIt()
+	{
+		using var isolation = ProcessSignalCoordinator.IsolateRegistrationsForTesting();
+		using var writer = new StringWriter();
+		using var session = ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
+		await using var scope = new ProcessSignalCancellationScope(default);
+
+		var result = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting(
+			specialKey: ConsoleSpecialKey.ControlBreak,
+			isWindows: true);
+
+		result.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
+		writer.ToString().Should().Contain("Ctrl+Break").And.NotContain("Received SIGINT");
+	}
+
+	// Cancels the caller's token and observes it, so the cancellation belongs to the run rather than
+	// being the transformer's own defect.
+	private sealed class CallerCancellingTransformer(CancellationTokenSource cts) : IOutputTransformer
+	{
+		public string Name => "cancelling";
+
+		public async ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default)
+		{
+			await cts.CancelAsync().ConfigureAwait(false);
+			cancellationToken.ThrowIfCancellationRequested();
+			return string.Empty;
+		}
+	}
+
 	private static ReplApp CreateSignalledApp(
 		Action<ReplExecutionOutcome> observe,
 		Action<ReplOptions>? configure = null)

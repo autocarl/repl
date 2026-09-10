@@ -17,7 +17,8 @@ internal sealed class CancelKeyHandler : IDisposable
 	{
 		if (!ReplSessionIO.IsSessionActive)
 		{
-			_registration = ConsoleCancelKeyCoordinator.RegisterInteractive(TryHandleCancelKey);
+			// The key is irrelevant here: Ctrl+C and Ctrl+Break cancel the active command the same way.
+			_registration = ConsoleCancelKeyCoordinator.RegisterInteractive(_ => TryHandleCancelKey());
 		}
 	}
 

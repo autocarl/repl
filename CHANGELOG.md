@@ -135,10 +135,10 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
 - An `IReplResult` whose `Kind` is not `text` or `success` is a `HandlerError` (exit `1`), including
   a kind the framework does not recognize. An unclassifiable result never reports success to a
   pipeline; use `Results.Exit(n)` to choose a code deliberately.
-- `ReplExecutionOutcomeKind.Interrupted` and `ExitCodes.Interrupted` are **inert in this release**:
-  no public API produces that kind, and an application cannot supply an outcome to the table from
-  outside the framework. They ship now so in-framework signal handling (#80) can route SIGINT/SIGTERM
-  through the same table and resolver without adding public API after these packages are published.
+- `ReplExecutionOutcomeKind.Interrupted` and `ExitCodes.Interrupted` are produced by automatic
+  process-signal handling, described under *Added — standalone process signals* below. They are not
+  reachable any other way: an application cannot supply an outcome to the table from outside the
+  framework, so the kind only appears for a signal the framework itself claimed.
 - Exit codes are not range-checked. Keep them within `0`-`255`: POSIX `wait` exposes only the low
   eight bits to the parent process.
 

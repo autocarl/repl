@@ -115,7 +115,7 @@ internal static class ProcessSignalCoordinator
 			ThrowIfFaultInjected(afterSigTermRegistration: true);
 
 			cancelKeyRegistration = ConsoleCancelKeyCoordinator.RegisterStandalone(
-				() => HandleSigInt(generation));
+				specialKey => HandleConsoleCancelKey(generation, specialKey));
 			s_sigTermRegistration = sigTermRegistration;
 			s_cancelKeyRegistration = cancelKeyRegistration;
 			s_registrationsInitialized = true;
@@ -184,8 +184,15 @@ internal static class ProcessSignalCoordinator
 		return cancellationCallbackException;
 	}
 
-	private static ConsoleCancelKeyHandlingResult HandleSigInt(int generation) =>
-		TryClaimSignal(generation, "SIGINT", SigIntExitCode);
+	// Both keys cancel and both exit 130; only the operator-facing name differs, and reporting
+	// Ctrl+Break as SIGINT contradicted the distinction this mode documents.
+	private static ConsoleCancelKeyHandlingResult HandleConsoleCancelKey(
+		int generation,
+		ConsoleSpecialKey specialKey) =>
+		TryClaimSignal(
+			generation,
+			specialKey == ConsoleSpecialKey.ControlBreak ? "Ctrl+Break" : "SIGINT",
+			SigIntExitCode);
 
 	private static void HandleSigTerm(int generation, PosixSignalContext e)
 	{
