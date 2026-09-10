@@ -258,7 +258,7 @@ public sealed class Given_ProcessSignalCancellationScope
 
 		signalResult.Should().Be(ConsoleCancelKeyHandlingResult.SuppressProcessTermination);
 		executionToken.IsCancellationRequested.Should().BeTrue();
-		scope.ResolveExitCode(runExitCode: 0).Should().Be(130);
+		scope.ExitCode.Should().Be(130);
 	}
 
 	[TestMethod]
@@ -315,8 +315,9 @@ public sealed class Given_ProcessSignalCancellationScope
 		ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting();
 		await scope.DisposeAsync().ConfigureAwait(false);
 
-		scope.ResolveExitCode(runExitCode: 2).Should().Be(2);
-		scope.ResolveExitCode(runExitCode: 0).Should().Be(ProcessSignalCoordinator.SigIntExitCode);
+		// The precedence between a claimed signal and a run's own outcome is asserted kind-by-kind in
+		// Given_ProcessSignalExitCodePolicy, on the predicate that now carries it.
+		scope.ExitCode.Should().Be(ProcessSignalCoordinator.SigIntExitCode);
 	}
 
 	[TestMethod]

@@ -145,7 +145,7 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
 ### Added — standalone process signals
 
 - `ReplRunOptions.ProcessSignalHandling` and `ProcessSignalHandlingMode` let internally configured standalone `Run`/`RunAsync` calls opt into or out of cooperative process-signal handling. The nullable option inherits the active profile default: CLI and default-interactive profiles use `Automatic`; an unprofiled `ReplApp.Create()` and `UseEmbeddedConsoleProfile()` use `None`, preserving caller-owned shutdown unless a process-owning profile is selected.
-- In automatic mode, the first Ctrl+C console event—or Ctrl+Break on Windows—cancels all overlapping standalone runs in one process-wide ownership epoch and resolves a successful or cancelled run to exit code `130`. On supported Unix platforms, SIGTERM behaves the same way with exit code `143`. A subsequent signal uses the operating-system default, and stderr diagnostics identify both steps. Explicit non-zero handler exit codes remain authoritative.
+- In automatic mode, the first Ctrl+C console event—or Ctrl+Break on Windows—cancels all overlapping standalone runs in one process-wide ownership epoch and reports a successful or cancelled run as `ReplExecutionOutcomeKind.Interrupted`, which resolves through `ExitCodes.Interrupted` and defaults to exit code `130`. On supported Unix platforms, SIGTERM behaves the same way with `143`. A run that already produced a refusal or a failure keeps reporting it. A subsequent signal uses the operating-system default, and stderr diagnostics identify both steps. Explicit non-zero handler exit codes remain authoritative.
 
 ### Changed — process signal ownership
 
@@ -154,7 +154,8 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
   `ProcessSignalHandlingMode.None` restores the previous behavior:
   - **Exit codes.** A run interrupted by Ctrl+C, Ctrl+Break on Windows, or SIGTERM on Unix now resolves
     to `130` or `143` where it previously produced whatever the operating-system default termination
-    yielded. A wrapper script or CI step that treats any non-zero code as a failure will start seeing
+    yielded. The interruption goes through the exit-code policy, so `ExitCodes.Interrupted` overrides
+    those defaults and `ExitCodes.Resolver` observes it like any other outcome. A wrapper script or CI step that treats any non-zero code as a failure will start seeing
     these on interruption. An explicit non-zero handler exit code still takes precedence.
   - **Handler token identity.** One-shot handlers now receive a run-scoped token linked to the caller
     token instead of the caller token itself, and Repl disposes it when the run ends. No token Repl

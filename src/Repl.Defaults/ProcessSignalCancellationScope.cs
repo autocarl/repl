@@ -43,12 +43,6 @@ internal sealed class ProcessSignalCancellationScope : IAsyncDisposable
 		}
 	}
 
-	public int ResolveExitCode(int runExitCode)
-	{
-		var signalExitCode = ExitCode;
-		return runExitCode != 0 || signalExitCode is null ? runExitCode : signalExitCode.Value;
-	}
-
 	public ValueTask DisposeAsync() => DisposeCoreAsync(afterWinningDisposal: null);
 
 	internal ValueTask DisposeForTestingAsync(Action afterWinningDisposal)

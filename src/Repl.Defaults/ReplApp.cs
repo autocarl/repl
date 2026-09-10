@@ -244,13 +244,12 @@ public sealed class ReplApp : IReplApp
 		}
 
 		var signals = new ProcessSignalCancellationScope(cancellationToken);
-		var runExitCode = 0;
+		ExecutionOutcome? outcome = null;
 		OperationCanceledException? cancellationException = null;
 		try
 		{
 			var provider = EnsureSharedProvider();
-			runExitCode = await RunWithServicesAsync(args, provider, runOptions, signals.Token)
-				.ConfigureAwait(false);
+			outcome = await RunOutcomeAsync(args, provider, runOptions, signals.Token).ConfigureAwait(false);
 		}
 		catch (OperationCanceledException ex)
 		{
@@ -265,10 +264,13 @@ public sealed class ReplApp : IReplApp
 		{
 			// Scope disposal must finish before deciding whether cancellation came from a claimed
 			// process signal; ExceptionDispatchInfo preserves the original cancellation stack.
-			System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cancellationException).Throw();
+			ExceptionDispatchInfo.Capture(cancellationException).Throw();
 		}
 
-		return signals.ResolveExitCode(runExitCode);
+		// One resolve for the whole run, on the outcome the signal may have reclassified — rather than
+		// overwriting an already-resolved number, which would hand a resolver two outcomes for one run
+		// and leave ExitCodes.Interrupted with nothing to govern.
+		return _core.ResolveProcessExitCode(ApplySignalInterruption(outcome, cancellationException, signals));
 	}
 
 	/// <summary>
@@ -278,6 +280,39 @@ public sealed class ReplApp : IReplApp
 	/// <param name="cancellationToken">Caller-owned cancellation token. Automatic signal mode injects a linked, run-scoped token; caller-owned mode passes this token through directly.</param>
 	public ValueTask<int> RunAsync(string[] args, CancellationToken cancellationToken) =>
 		RunAsync(args, options: null, cancellationToken);
+
+	/// <summary>
+	/// Reclassifies a run as <see cref="ReplExecutionOutcomeKind.Interrupted"/> when a process signal was
+	/// claimed while it ran, so the interruption travels through <see cref="ExitCodeOptions"/> and reaches
+	/// <see cref="ExitCodeOptions.Resolver"/> like any other outcome. The conventional <c>128 + signal</c>
+	/// code the signal carries becomes the outcome's own code, which the table honours unless
+	/// <see cref="ExitCodeOptions.Interrupted"/> overrides it.
+	/// </summary>
+	private static ExecutionOutcome ApplySignalInterruption(
+		ExecutionOutcome? outcome,
+		OperationCanceledException? cancellationException,
+		ProcessSignalCancellationScope signals)
+	{
+		if (signals.ExitCode is not { } signalExitCode)
+		{
+			// No signal was claimed. A null outcome here means the run threw a cancellation that the
+			// rethrow above already handled, so this is only reached with one in hand.
+			return outcome ?? ExecutionOutcome.FrameworkError(rendered: null);
+		}
+
+		// A run that produced its own refusal or failure keeps reporting it; the signal arrived after the
+		// fact and replacing a usage error with 130 would hide why the command was wrong.
+		if (outcome is { } produced && !produced.IsInterruptible)
+		{
+			return produced;
+		}
+
+		// No token here: the scope is disposed by now and reading Token would throw. The exception is
+		// informational for a resolver, so a plain one stands in when the run returned instead of throwing.
+		return ExecutionOutcome.Interrupted(
+			cancellationException ?? new OperationCanceledException(),
+			signalExitCode);
+	}
 
 	/// <summary>
 	/// Runs using an externally managed service provider; standalone signal bridging and cancellation remain caller-owned. Interactive mode retains its own Ctrl+C policy.
@@ -330,19 +365,36 @@ public sealed class ReplApp : IReplApp
 		ReplRunOptions runOptions,
 		CancellationToken cancellationToken)
 	{
+		var outcome = await RunOutcomeAsync(args, services, runOptions, cancellationToken)
+			.ConfigureAwait(false);
+		return _core.ResolveProcessExitCode(outcome);
+	}
+
+	/// <summary>
+	/// Runs and reports the outcome without resolving an exit code, so a wrapper with teardown of its own
+	/// — the hosted lifecycle, or a process-signal scope that may reclassify the run as interrupted —
+	/// resolves once at the end instead of once per stage.
+	/// </summary>
+	private async ValueTask<ExecutionOutcome> RunOutcomeAsync(
+		string[] args,
+		IServiceProvider services,
+		ReplRunOptions runOptions,
+		CancellationToken cancellationToken)
+	{
 		if (runOptions.HostedServiceLifecycle is HostedServiceLifecycleMode.None or HostedServiceLifecycleMode.Guest)
 		{
-			return await _core.RunWithServicesAsync(args, services, cancellationToken).ConfigureAwait(false);
+			return await _core.RunOutcomeWithServicesAsync(args, services, cancellationToken)
+				.ConfigureAwait(false);
 		}
 
 		// Routed through the policy before starting hosted services, so an already-cancelled caller token
 		// stops this overload as early as it stops the others and still honours ExitCodes.Cancelled.
 		if (_core.TryObserveCallerCancellation(cancellationToken) is { } cancelled)
 		{
-			return _core.ResolveProcessExitCode(cancelled);
+			return cancelled;
 		}
 
-		return await RunWithHostedLifecycleAsync(args, services, cancellationToken).ConfigureAwait(false);
+		return await RunHostedLifecycleOutcomeAsync(args, services, cancellationToken).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -350,7 +402,7 @@ public sealed class ReplApp : IReplApp
 	/// lifecycle. A failure the pipeline propagates is held rather than lost, because hosted services
 	/// still have to be stopped and a failed shutdown outranks whatever the command reported.
 	/// </summary>
-	private async ValueTask<int> RunWithHostedLifecycleAsync(
+	private async ValueTask<ExecutionOutcome> RunHostedLifecycleOutcomeAsync(
 		string[] args,
 		IServiceProvider services,
 		CancellationToken cancellationToken)
@@ -398,10 +450,10 @@ public sealed class ReplApp : IReplApp
 			ExceptionDispatchInfo.Capture(propagating).Throw();
 		}
 
-		// Resolved once, after the whole lifecycle: a consumer must observe exactly one outcome per run.
-		// A null here would mean a catch arm above set neither an outcome nor a propagating exception,
-		// which is a framework defect and must not be reported as a clean run.
-		return _core.ResolveProcessExitCode(outcome ?? ExecutionOutcome.FrameworkError(rendered: null));
+		// Reported once, after the whole lifecycle, and resolved by the caller: a consumer must observe
+		// exactly one outcome per run. A null here would mean a catch arm above set neither an outcome nor
+		// a propagating exception, which is a framework defect and must not be reported as a clean run.
+		return outcome ?? ExecutionOutcome.FrameworkError(rendered: null);
 	}
 
 	/// <summary>
