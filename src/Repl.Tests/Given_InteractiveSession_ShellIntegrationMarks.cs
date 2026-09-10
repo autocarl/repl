@@ -140,6 +140,21 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies a malformed global option is refused in the interactive loop as it is in a one-shot run, so the command-end mark carries the usage code instead of the help or success code. The loop parses globals per command and used to check them on no path at all.")]
+	public void When_InteractiveInputHasAMalformedGlobal_Then_MarkReportsUsageError()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Map("hello", () => "world");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "hello --help --result:page-size\rexit\r");
+
+		raw.Should().Contain("]133;D;2");
+		raw.Should().NotContain("]133;D;0\u001b]133;A", "the malformed global must not report a successful command");
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies a help invocation that cannot render is a refusal first: the usage code wins over the Help classification the ambient entry would otherwise report.")]
 	public void When_HelpIsRemappedAndHelpFailsToRender_Then_UsageCodeStillWins()
 	{

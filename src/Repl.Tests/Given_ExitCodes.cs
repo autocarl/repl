@@ -613,6 +613,39 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies a scoped-context invocation that does not enter interactive mode rejects an unknown --output format. It writes human help directly, the sibling of the bare-invocation path, and used to report Help with the format never mentioned.")]
+	public void When_ScopedContextHelpRequestsAnUnknownFormat_Then_KindIsUsageError()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Context("contact", contact => contact.Map("list", () => "list"));
+		using var session = OpenSplitSession(out var output, out var error);
+
+		var exitCode = sut.Run(["contact", "--output:toml"]);
+
+		exitCode.Should().Be(2);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+		error.ToString().Should().Contain("unknown output format 'toml'");
+		output.ToString().Should().NotContain("list", "the scoped help must not be printed as if the format were accepted");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a transformer that raises OperationCanceledException on its own account, with the caller token untouched, is treated as a failing transformer rather than escaping. The cancellation policy cannot convert it, so letting it through left the run with no outcome at all.")]
+	public void When_TheTransformerRaisesCancellationItself_Then_TheRunIsStillClassified()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder, options => options.Output.AddTransformer("selfcancel", new SelfCancellingTransformer()));
+		sut.Map("work", () => "payload");
+		using var session = OpenSplitSession(out _, out var error);
+
+		var exitCode = sut.Run(["work", "--output:selfcancel"]);
+
+		exitCode.Should().Be(1);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerException);
+		error.ToString().Should().Contain("the output transformer also failed");
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies a bare non-interactive invocation rejects an unknown --output format instead of printing help and exiting Help. That path writes human help directly, bypassing the renderer that reports the refusal everywhere else.")]
 	public void When_BareInvocationRequestsAnUnknownFormat_Then_KindIsUsageError()
 	{
@@ -988,6 +1021,16 @@ public sealed class Given_ExitCodes
 
 		public ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default) =>
 			throw new InvalidOperationException("transformer is broken");
+	}
+
+	// Raises cancellation on its own account, with nothing having asked the run to stop: the pipeline
+	// cannot convert it, so the reporter has to treat it as an ordinary transformer failure.
+	private sealed class SelfCancellingTransformer : IOutputTransformer
+	{
+		public string Name => "selfcancel";
+
+		public ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default) =>
+			throw new OperationCanceledException("transformer gave up");
 	}
 
 	// Fails the first render, then cancels the caller's token and observes it on the fallback render —

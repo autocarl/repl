@@ -502,6 +502,16 @@ internal sealed class InteractiveSession(CoreReplApp app)
 		CancellationToken cancellationToken)
 	{
 		var globalOptions = committed.Options;
+
+		// Before help and before routing, which is where the one-shot pipeline rejects them: the
+		// interactive loop parses globals per command, so nothing else on this path would notice a
+		// malformed one and the command-end mark would report the help or success code instead.
+		if (globalOptions.HasErrors)
+		{
+			return await app.RefuseGlobalOptionErrorsAsync(globalOptions, cancellationToken)
+				.ConfigureAwait(false);
+		}
+
 		if (globalOptions.HelpRequested)
 		{
 			var rendered = await app.RenderHelpAsync(globalOptions, cancellationToken).ConfigureAwait(false);

@@ -505,20 +505,33 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			return await RunInteractiveSessionAsync([], serviceProvider, cancellationToken).ConfigureAwait(false);
 		}
 
-		// This path writes human help directly rather than going through RenderOutputAsync, so the
-		// requested format would otherwise never be validated and a bare `--output:bogus` would exit
-		// Help. Only the refusal is handled here: `--output` selects a format for a command result, and
-		// a bare invocation produces none, so a valid format still yields the human help.
-		var format = ResolveOutputFormat(globalOptions.OutputFormat);
-		if (!_options.Output.Transformers.ContainsKey(format))
+		if (await TryRefuseUnknownHelpFormatAsync(globalOptions.OutputFormat).ConfigureAwait(false) is { } refusal)
 		{
-			await WriteUnknownFormatRefusalAsync(format).ConfigureAwait(false);
-			return ExecutionOutcome.UsageError();
+			return refusal;
 		}
 
 		var helpText = BuildHumanHelp([]);
 		await ReplSessionIO.Output.WriteLineAsync(helpText).ConfigureAwait(false);
 		return ExecutionOutcome.Help;
+	}
+
+	/// <summary>
+	/// Validates the requested output format for a path that writes human help directly instead of
+	/// going through the output pipeline — a bare invocation and a scoped-context invocation that does
+	/// not enter interactive mode. Returns the refusal when the format cannot be honoured, and
+	/// <see langword="null"/> to carry on: <c>--output</c> selects a format for a command result, and
+	/// neither of these produces one, so a valid format still yields the human help.
+	/// </summary>
+	private async ValueTask<ExecutionOutcome?> TryRefuseUnknownHelpFormatAsync(string? requestedFormat)
+	{
+		var format = ResolveOutputFormat(requestedFormat);
+		if (_options.Output.Transformers.ContainsKey(format))
+		{
+			return null;
+		}
+
+		await WriteUnknownFormatRefusalAsync(format).ConfigureAwait(false);
+		return ExecutionOutcome.UsageError();
 	}
 
 	private string ResolveOutputFormat(string? requestedFormat) =>
@@ -652,6 +665,11 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 		if (!ShouldEnterInteractive(globalOptions, allowAuto: true))
 		{
+			if (await TryRefuseUnknownHelpFormatAsync(globalOptions.OutputFormat).ConfigureAwait(false) is { } refusal)
+			{
+				return refusal;
+			}
+
 			var helpText = BuildHumanHelp(globalOptions.RemainingTokens);
 			await ReplSessionIO.Output.WriteLineAsync(helpText).ConfigureAwait(false);
 			return ExecutionOutcome.Help;
@@ -871,21 +889,28 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			_ = await RenderOutputAsync(failure, format, cancellationToken).ConfigureAwait(false);
 			return FailureReport.Rendered;
 		}
-		catch (Exception renderFailure) when (renderFailure is not OperationCanceledException)
+		catch (Exception renderFailure) when (!IsCallerCancellation(renderFailure, cancellationToken))
 		{
 			// A custom transformer that throws consistently would throw again here, from inside the catch
 			// block that is reporting its first failure — escaping the pipeline and leaving the run with no
 			// outcome and no exit code. The message still has to reach the caller, so it degrades to an
-			// unformatted line. Reported, hence rendered: the run keeps its classified failure.
+			// unformatted line.
 			//
-			// Cancellation is excluded and propagates: converting it here would report a handler failure
-			// for a run that was asked to stop, bypassing ExitCodes.Cancelled and, interactively, marking
-			// the command as failed instead of interrupted. It reaches the cancellation policy in
-			// RunUnderCancellationPolicyAsync like any other, which is why nothing is reported for it.
+			// Only the caller's own cancellation is let through, because only that one belongs to the
+			// cancellation policy: converting it would report a failure for a run that was asked to stop,
+			// bypassing ExitCodes.Cancelled and marking an interactive command failed rather than
+			// interrupted. A transformer raising OperationCanceledException on its own account is just
+			// another failing transformer — RunUnderCancellationPolicyAsync could not convert it anyway,
+			// so letting it through would leave the run with no outcome at all.
 			await TryWriteUnformattedFailureAsync(failure, renderFailure).ConfigureAwait(false);
 			return FailureReport.Degraded;
 		}
 	}
+
+	// The seventh place this question is asked with its own predicate; see the follow-up on giving
+	// cancellation classification an owning type.
+	private static bool IsCallerCancellation(Exception exception, CancellationToken cancellationToken) =>
+		exception is OperationCanceledException && cancellationToken.IsCancellationRequested;
 
 	/// <summary>
 	/// Turns a reported failure into an outcome. Pure by design: every fallible step happened in
@@ -916,6 +941,23 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	/// well the diagnostic could be formatted does not change that — which is why the report value is
 	/// deliberately discarded here and inspected only where it can change the kind.
 	/// </summary>
+	/// <summary>
+	/// Reports the first global-option error as a refusal. Shared with the interactive loop, which parses
+	/// globals per command and so reaches this without passing through the one-shot diagnostics stage.
+	/// </summary>
+	internal async ValueTask<ExecutionOutcome> RefuseGlobalOptionErrorsAsync(
+		GlobalInvocationOptions globalOptions,
+		CancellationToken cancellationToken)
+	{
+		var firstError = globalOptions.Diagnostics
+			.First(diagnostic => diagnostic.Severity == ParseDiagnosticSeverity.Error);
+		return await RefuseAsync(
+				Results.Validation(firstError.Message),
+				globalOptions.OutputFormat,
+				cancellationToken)
+			.ConfigureAwait(false);
+	}
+
 	private async ValueTask<ExecutionOutcome> RefuseAsync(
 		IReplResult refusal,
 		string? requestedFormat,
@@ -1211,11 +1253,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			return null;
 		}
 
-		var firstError = globalOptions.Diagnostics
-			.First(diagnostic => diagnostic.Severity == ParseDiagnosticSeverity.Error);
-		var globalFailure = Results.Validation(firstError.Message);
-		return await RefuseAsync(globalFailure, globalOptions.OutputFormat, cancellationToken)
-			.ConfigureAwait(false);
+		return await RefuseGlobalOptionErrorsAsync(globalOptions, cancellationToken).ConfigureAwait(false);
 	}
 
 	private static ValueTask<string> TransformPagerPageAsync(

@@ -106,7 +106,11 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
   hosted protocol-passthrough refusal, and for a bare non-interactive invocation, which used to print
   help and exit `Help` without reporting the format at all. A bare invocation with a *valid* format
   still prints the human help: `--output` selects a format for a command result, and a bare
-  invocation produces none. A diagnostic the caller never saw cannot stand as the run's
+  invocation produces none. The same now holds for a scoped-context invocation that does not enter
+  interactive mode (`contact --no-interactive --output:bogus`), its sibling path.
+- A malformed global option is refused in the interactive loop as it is in a one-shot run. The loop
+  parses globals per command and checked them on no path at all, so `hello --help --result:page-size`
+  rendered help and reported the help code in its shell-integration mark. A diagnostic the caller never saw cannot stand as the run's
   outcome. When the usage error displaces a
   failure that was already being reported, `ReplExecutionOutcome.Exception` now carries that original
   failure, so a caller-chosen output format cannot erase why the run ended.
