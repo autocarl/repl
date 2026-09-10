@@ -454,7 +454,7 @@ public sealed class Given_ProcessSignalCancellationScope
 		ProcessSignalCoordinator.IsSignalBridgeSupportedForTesting(
 			isAndroid: false,
 			isBrowser: false,
-			isIOS: false,
+			isIOSOrMacCatalyst: false,
 			isTvOS: false).Should().BeTrue();
 	}
 

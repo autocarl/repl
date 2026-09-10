@@ -221,6 +221,36 @@ public sealed class Given_ProcessSignalExitCodePolicy
 		ProcessSignalCoordinator.WriteDiagnostic("diagnostic that cannot be written");
 	}
 
+	// Signals only while rendering the exit result's own payload, so the cancellation lands on the
+	// element that carries the code. A signal during an earlier element is a different case: the exit
+	// result has not been classified yet, so reporting the interruption there is correct.
+	private sealed class SignallingOnPayloadTransformer : IOutputTransformer
+	{
+		public string Name => "signalling";
+
+		public ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default)
+		{
+			if (!string.Equals(value as string, "exit-payload", StringComparison.Ordinal))
+			{
+				return ValueTask.FromResult(string.Empty);
+			}
+
+			_ = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting();
+			cancellationToken.ThrowIfCancellationRequested();
+			return ValueTask.FromResult(string.Empty);
+		}
+	}
+
+	// Raises cancellation on its own account, with nothing having asked the run to stop: a broken
+	// renderer, which must not be mistaken for the handler's intentional exit.
+	private sealed class SelfCancellingTransformer : IOutputTransformer
+	{
+		public string Name => "selfcancel";
+
+		public ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default) =>
+			throw new OperationCanceledException("transformer gave up");
+	}
+
 	// Raises the signal from inside the transformer, so the cancellation surfaces while the handler's
 	// payload is being rendered — after its exit code was decided.
 	private sealed class SignallingTransformer : IOutputTransformer
@@ -241,6 +271,78 @@ public sealed class Given_ProcessSignalExitCodePolicy
 		public override void WriteLine(string? value) => throw new InvalidOperationException("writer refuses");
 
 		public override void Write(string? value) => throw new InvalidOperationException("writer refuses");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a transformer that raises cancellation on its own account, while rendering an exit result's payload, is still a failure. Keying only on the outcome kind made a broken renderer pass for an intentional exit and kept the handler's code.")]
+	public void When_AnExitResultPayloadTransformerSelfCancels_Then_ItIsAFailureNotAnExit()
+	{
+		ReplExecutionOutcome? observed = null;
+		var app = ReplApp.Create();
+		app.Options(options =>
+		{
+			options.Output.BannerEnabled = false;
+			options.Interactive.InteractivePolicy = InteractivePolicy.Prevent;
+			options.Output.AddTransformer("selfcancel", new SelfCancellingTransformer());
+			options.ExitCodes.Resolver = outcome =>
+			{
+				observed = outcome;
+				return outcome.ExitCode;
+			};
+		});
+		app.Map("work", () => Results.Exit(3, "payload"));
+
+		using var writer = new StringWriter();
+		using var session = ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
+
+		// No signal handling and nothing cancelled: the transformer's cancellation is its own defect.
+		var exitCode = app.Run(["work", "--output:selfcancel"]);
+
+		exitCode.Should().Be(1);
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerException);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a tuple whose last element is an exit result keeps its code when a signal interrupts that element's rendering. The tuple renderer classified after rendering, so only the scalar path had been fixed.")]
+	public async Task When_ATupleExitResultPayloadRenderIsInterrupted_Then_TheHandlerCodeStillWins()
+	{
+		using var isolation = ProcessSignalCoordinator.IsolateRegistrationsForTesting();
+		ReplExecutionOutcome? observed = null;
+		var app = ReplApp.Create();
+		app.Options(options =>
+		{
+			options.Output.BannerEnabled = false;
+			options.Interactive.InteractivePolicy = InteractivePolicy.Prevent;
+			options.Output.AddTransformer("signalling", new SignallingOnPayloadTransformer());
+			options.ExitCodes.Resolver = outcome =>
+			{
+				observed = outcome;
+				return outcome.ExitCode;
+			};
+		});
+		app.Map("work", () => ("first", Results.Exit(7, "exit-payload")));
+
+		using var writer = new StringWriter();
+		using var session = ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
+
+		var exitCode = await app.RunAsync(
+				["work", "--output:signalling"],
+				new ReplRunOptions { ProcessSignalHandling = ProcessSignalHandlingMode.Automatic })
+			.ConfigureAwait(false);
+
+		exitCode.Should().Be(7);
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerExitCode);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies Mac Catalyst is named in the signal-bridge platform predicate, which this PR documents as unsupported, rather than being left to depend on whether one platform predicate implies the other.")]
+	public void When_MacCatalystIsReported_Then_TheSignalBridgeIsUnsupported()
+	{
+		ProcessSignalCoordinator.IsSignalBridgeSupportedForTesting(
+			isAndroid: false,
+			isBrowser: false,
+			isIOSOrMacCatalyst: true,
+			isTvOS: false).Should().BeFalse();
 	}
 
 	private static ReplApp CreateSignalledApp(

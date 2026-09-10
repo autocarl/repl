@@ -256,17 +256,20 @@ internal static class ProcessSignalCoordinator
 		IsSignalBridgeSupportedForTesting(
 			OperatingSystem.IsAndroid(),
 			OperatingSystem.IsBrowser(),
-			OperatingSystem.IsIOS(),
+			// Named explicitly rather than relied upon through IsIOS: Mac Catalyst is documented here as
+			// unsupported, and OperatingSystem exposes it as its own guard, so the check states what it
+			// means instead of resting on whether one platform predicate implies the other.
+			OperatingSystem.IsIOS() || OperatingSystem.IsMacCatalyst(),
 			OperatingSystem.IsTvOS());
 
 	internal static bool IsSignalBridgeSupportedForTesting(
 		bool isAndroid,
 		bool isBrowser,
-		bool isIOS,
+		bool isIOSOrMacCatalyst,
 		bool isTvOS) =>
 		!isAndroid
 		&& !isBrowser
-		&& !isIOS
+		&& !isIOSOrMacCatalyst
 		&& !isTvOS;
 
 	[SuppressMessage(
