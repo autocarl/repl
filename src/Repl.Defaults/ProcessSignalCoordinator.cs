@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 namespace Repl;
@@ -268,6 +269,10 @@ internal static class ProcessSignalCoordinator
 		&& !isIOS
 		&& !isTvOS;
 
+	[SuppressMessage(
+		"Design",
+		"CA1031:Do not catch general exception types",
+		Justification = "This runs inside a signal callback, before it returns its suppression decision: any escaping exception replaces cooperative cleanup with immediate process termination, so a caller-supplied writer's failure of any type must be contained.")]
 	internal static void WriteDiagnostic(string message)
 	{
 		try
@@ -276,9 +281,11 @@ internal static class ProcessSignalCoordinator
 			ReplSessionIO.Error.WriteLine(message);
 #pragma warning restore MA0045
 		}
-		catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+		catch
 		{
-			// Signal delivery must not fail merely because the diagnostic stream is unavailable.
+			// Signal delivery must not fail because the diagnostic stream is unavailable — nor because
+			// an application-supplied TextWriter threw something else. The suppression decision this
+			// callback still owes the operating system matters more than the message.
 		}
 	}
 

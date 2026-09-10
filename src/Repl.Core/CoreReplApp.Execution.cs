@@ -794,15 +794,34 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 				var normalizedResult = ApplyNavigationResult(result, scopeTokens);
 				ExecutionObserver?.OnResult(normalizedResult);
-				var rendered = await RenderOutputAsync(
-						normalizedResult,
-						globalOptions.OutputFormat,
-						cancellationToken,
-						scopeTokens is not null,
-						globalOptions.ResultFlow)
-					.ConfigureAwait(false);
+
+				// Classified before rendering, so an explicit exit code is already in hand if rendering
+				// its payload is then cancelled. Without that, a cancellation arriving mid-render lost
+				// the handler's own code and the run reported the cancellation's instead.
+				var classified = ClassifyResult(normalizedResult);
+				bool rendered;
+				try
+				{
+					rendered = await RenderOutputAsync(
+							normalizedResult,
+							globalOptions.OutputFormat,
+							cancellationToken,
+							scopeTokens is not null,
+							globalOptions.ResultFlow)
+						.ConfigureAwait(false);
+				}
+				catch (OperationCanceledException)
+					when (classified.Kind == ReplExecutionOutcomeKind.HandlerExitCode)
+				{
+					// The handler had already chosen its exit code; only showing its payload was
+					// interrupted. The code stays authoritative, which is what IExitResult promises and
+					// what the process-signal contract documents for a non-zero one.
+					await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
+					return (classified, false);
+				}
+
 				// RenderOutputAsync returns false only for an unknown requested output format: a usage mistake.
-				return (rendered ? ClassifyResult(normalizedResult) : ExecutionOutcome.UsageError(normalizedResult), false);
+				return (rendered ? classified : ExecutionOutcome.UsageError(normalizedResult), false);
 		}
 		// Gated on the ambient runtime state, not on scopeTokens: a protocol-passthrough command always
 		// passes scopeTokens: null, interactive or not, so it is no mode discriminator.

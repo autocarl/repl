@@ -236,6 +236,19 @@ public sealed class ReplApp : IReplApp
 		ArgumentNullException.ThrowIfNull(args);
 		var runOptions = options ?? new ReplRunOptions();
 		var processSignalHandling = options?.ProcessSignalHandling ?? _defaultProcessSignalHandling;
+
+		// Rejected rather than treated as Automatic. Numeric configuration or deserialization can produce
+		// an undefined value, and taking process-wide signal ownership — which also swaps the handler's
+		// token for a run-scoped one — is too consequential to acquire by falling through a negative
+		// test. The profile default is framework-set and always defined, so a bad value came from here.
+		if (processSignalHandling is not (ProcessSignalHandlingMode.None or ProcessSignalHandlingMode.Automatic))
+		{
+			throw new ArgumentOutOfRangeException(
+				nameof(options),
+				processSignalHandling,
+				$"ReplRunOptions.{nameof(ReplRunOptions.ProcessSignalHandling)} is not a defined {nameof(ProcessSignalHandlingMode)}.");
+		}
+
 		if (processSignalHandling == ProcessSignalHandlingMode.None)
 		{
 			var provider = EnsureSharedProvider();

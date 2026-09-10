@@ -128,6 +128,121 @@ public sealed class Given_ProcessSignalExitCodePolicy
 		public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 	}
 
+	[TestMethod]
+	[Description("Regression guard: verifies an explicit exit code survives its payload rendering being cancelled. The result was classified after rendering, so a signal arriving mid-render lost the handler's own code and the run reported the interruption's instead, against the documented precedence.")]
+	public async Task When_AnExitResultPayloadRenderIsInterrupted_Then_TheHandlerCodeStillWins()
+	{
+		using var isolation = ProcessSignalCoordinator.IsolateRegistrationsForTesting();
+		ReplExecutionOutcome? observed = null;
+		var app = ReplApp.Create();
+		app.Options(options =>
+		{
+			options.Output.BannerEnabled = false;
+			options.Interactive.InteractivePolicy = InteractivePolicy.Prevent;
+			options.Output.AddTransformer("signalling", new SignallingTransformer());
+			options.ExitCodes.Resolver = outcome =>
+			{
+				observed = outcome;
+				return outcome.ExitCode;
+			};
+		});
+
+		// The handler has already decided its code; only showing the payload gets interrupted.
+		app.Map("work", () => Results.Exit(3, "payload"));
+
+		using var writer = new StringWriter();
+		using var session = ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
+
+		var exitCode = await app.RunAsync(
+				["work", "--output:signalling"],
+				new ReplRunOptions { ProcessSignalHandling = ProcessSignalHandlingMode.Automatic })
+			.ConfigureAwait(false);
+
+		exitCode.Should().Be(3);
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerExitCode);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies an exit code of zero still yields to an interruption, so the precedence covers only a code the handler actually used to report something.")]
+	public async Task When_AZeroExitResultPayloadRenderIsInterrupted_Then_TheInterruptionWins()
+	{
+		using var isolation = ProcessSignalCoordinator.IsolateRegistrationsForTesting();
+		ReplExecutionOutcome? observed = null;
+		var app = ReplApp.Create();
+		app.Options(options =>
+		{
+			options.Output.BannerEnabled = false;
+			options.Interactive.InteractivePolicy = InteractivePolicy.Prevent;
+			options.Output.AddTransformer("signalling", new SignallingTransformer());
+			options.ExitCodes.Resolver = outcome =>
+			{
+				observed = outcome;
+				return outcome.ExitCode;
+			};
+		});
+		app.Map("work", () => Results.Exit(0, "payload"));
+
+		using var writer = new StringWriter();
+		using var session = ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
+
+		var exitCode = await app.RunAsync(
+				["work", "--output:signalling"],
+				new ReplRunOptions { ProcessSignalHandling = ProcessSignalHandlingMode.Automatic })
+			.ConfigureAwait(false);
+
+		exitCode.Should().Be(ProcessSignalCoordinator.SigIntExitCode);
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.Interrupted);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies an undefined ProcessSignalHandlingMode is rejected instead of falling through a negative test into automatic mode, where it would silently take process-wide signal ownership and swap the handler's token.")]
+	public async Task When_TheSignalModeIsUndefined_Then_TheRunIsRejected()
+	{
+		var app = ReplApp.Create();
+		app.Options(options => options.Interactive.InteractivePolicy = InteractivePolicy.Prevent);
+		app.Map("work", () => "ok");
+
+		Func<Task> act = () => app.RunAsync(
+				["work"],
+				new ReplRunOptions { ProcessSignalHandling = (ProcessSignalHandlingMode)42 })
+			.AsTask();
+
+		await act.Should().ThrowAsync<ArgumentOutOfRangeException>().ConfigureAwait(false);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a diagnostic writer that throws anything at all cannot escape a signal callback. It runs before the callback returns its suppression decision, so an escaping exception replaces cooperative cleanup with immediate process termination.")]
+	public void When_TheDiagnosticWriterThrows_Then_SignalDeliveryIsUnaffected()
+	{
+		using var writer = new AlwaysThrowingWriter();
+		using var session = ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
+
+		// The whole behaviour under test: this must not throw.
+		ProcessSignalCoordinator.WriteDiagnostic("diagnostic that cannot be written");
+	}
+
+	// Raises the signal from inside the transformer, so the cancellation surfaces while the handler's
+	// payload is being rendered — after its exit code was decided.
+	private sealed class SignallingTransformer : IOutputTransformer
+	{
+		public string Name => "signalling";
+
+		public ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default)
+		{
+			_ = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting();
+			cancellationToken.ThrowIfCancellationRequested();
+			return ValueTask.FromResult(string.Empty);
+		}
+	}
+
+	// Fails every write with something the narrow catch would not have contained.
+	private sealed class AlwaysThrowingWriter : StringWriter
+	{
+		public override void WriteLine(string? value) => throw new InvalidOperationException("writer refuses");
+
+		public override void Write(string? value) => throw new InvalidOperationException("writer refuses");
+	}
+
 	private static ReplApp CreateSignalledApp(
 		Action<ReplExecutionOutcome> observe,
 		Action<ReplOptions>? configure = null)
