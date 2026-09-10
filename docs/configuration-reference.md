@@ -133,6 +133,25 @@ Accessed via `ReplOptions.Capabilities`.
 
 - `SupportsAnsi` (`bool`, default: `true`) — Declare whether the terminal supports ANSI escape sequences.
 
+## ExitCodeOptions
+
+Accessed via `ReplOptions.ExitCodes`. Maps each `ReplExecutionOutcomeKind` to the process exit code
+of a top-level run; nested MCP sub-invocations always use the defaults and skip the resolver.
+
+- `Success` (`int`, default: `0`) — Success-like handler result or clean interactive exit.
+- `Help` (`int`, default: `0`) — `--help`, a bare invocation that prints help, scoped-context help.
+- `UsageError` (`int`, default: `2`) — Unknown command, ambiguous prefix, invalid option, context validation failure, unknown output format.
+- `BindingError` (`int`, default: `2`) — A handler argument could not be bound: token conversion failed or was missing, or a binder-resolved value (context value, `[FromServices]` dependency, typed global options service) was unavailable.
+- `HandlerError` (`int`, default: `1`) — Handler returned an error-like `IReplResult`.
+- `HandlerException` (`int`, default: `1`) — Handler or middleware threw.
+- `Cancelled` (`int?`, default: `null`) — Cancellation through the caller's own token, during the command or while hosted services were starting. `null` rethrows the `OperationCanceledException` unless a `Resolver` is set, in which case the resolver is handed `130` (`128 + SIGINT`); a value is returned instead. A handler that raises `OperationCanceledException` without the caller having asked for cancellation is a `HandlerException`, not a cancellation.
+- `Interrupted` (`int?`, default: `null`) — **Inert in this release.** No public API produces `ReplExecutionOutcomeKind.Interrupted`: the core pipeline never emits it, and an application cannot supply an outcome to this table from outside the framework. Reserved for in-framework signal handling (#80), after which `null` will use the conventional `128 + signal` code the handler supplies, falling back to `130` when it supplies none; setting it publishes one code for every signal.
+- `FrameworkError` (`int`, default: `1`) — Incompatible programmatic adapter, unsupported hosting capability, or a hosted-service start/stop failure. The outcome carries the exception that caused it; when a shutdown failure suppressed an exception the run was propagating, that is an `AggregateException` of both. Neither a cancellation nor an interruption falls back to this code.
+- `Resolver` (`Func<ReplExecutionOutcome, int>?`, default: `null`) — Final interception hook. Receives the outcome with its table-mapped `ExitCode`; its return value wins. Also sees `HandlerExitCode` outcomes (explicit `Results.Exit`), which bypass the table. `ReplExecutionOutcome.Scope` distinguishes the process exit code (`ReplExitCodeScope.Process`, once per run) from one interactive command's shell-integration mark (`ReplExitCodeScope.ShellIntegrationMark`, only when a mark actually carries a code). Setting a resolver also opts in to observing cancellation. It must not throw: an exception degrades to the table-mapped code plus one diagnostic line on the error stream.
+
+Codes should stay within `0`-`255` — POSIX `wait` exposes only the low eight bits to the parent
+process. Repl passes a configured code through unchanged rather than clamping it.
+
 ## AmbientCommandOptions
 
 Accessed via `ReplOptions.AmbientCommands`.

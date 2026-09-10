@@ -44,6 +44,10 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 	/// <param name="commandText">The command text to execute.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>The execution result.</returns>
+	/// <exception cref="TimeoutException">
+	/// The command exceeded <see cref="ReplScenarioOptions.CommandTimeout"/>, whether the app let the
+	/// cancellation propagate or mapped it to an exit code through <c>ReplOptions.ExitCodes.Cancelled</c>.
+	/// </exception>
 	public ValueTask<CommandExecution> RunCommandAsync(
 		string commandText,
 		CancellationToken cancellationToken = default) =>
@@ -56,6 +60,10 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 	/// <param name="answers">Prompt answers keyed by prompt name. Overrides session-level answers for the same name.</param>
 	/// <param name="cancellationToken">Cancellation token.</param>
 	/// <returns>The execution result.</returns>
+	/// <exception cref="TimeoutException">
+	/// The command exceeded <see cref="ReplScenarioOptions.CommandTimeout"/>, whether the app let the
+	/// cancellation propagate or mapped it to an exit code through <c>ReplOptions.ExitCodes.Cancelled</c>.
+	/// </exception>
 	public ValueTask<CommandExecution> RunCommandAsync(
 		string commandText,
 		IReadOnlyDictionary<string, string> answers,
@@ -89,15 +97,16 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 			{
 				exitCode = await _app.RunAsync(args, host, _services, _runOptions, token).ConfigureAwait(false);
 			}
-			catch (OperationCanceledException) when (timeout is not null && timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+			catch (OperationCanceledException) when (IsCommandTimeout(timeout, cancellationToken))
 			{
-				throw new TimeoutException(
-					$"Command '{commandText}' exceeded timeout of {_options.CommandTimeout.TotalMilliseconds:0} ms.");
+				throw CreateTimeoutException(commandText);
 			}
 			finally
 			{
 				_app.Core.ExecutionObserver = null;
 			}
+
+			ThrowIfCancelledByTimeout(observer, timeout, commandText, cancellationToken);
 
 			var outputText = output.ToString();
 			if (_options.NormalizeAnsi)
@@ -236,6 +245,28 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 		return timeline;
 	}
 
+	// An app that maps ReplOptions.ExitCodes.Cancelled returns a code instead of throwing, so the
+	// exception filter around the run never fires. Gated on the run having actually reported a
+	// cancellation, because the timeout token can also elapse while an already-completed run tears down.
+	private void ThrowIfCancelledByTimeout(
+		SessionExecutionObserver observer,
+		CancellationTokenSource? timeout,
+		string commandText,
+		CancellationToken cancellationToken)
+	{
+		if (observer.WasCancelled && IsCommandTimeout(timeout, cancellationToken))
+		{
+			throw CreateTimeoutException(commandText);
+		}
+	}
+
+	// The timeout fired, and not the caller's own token.
+	private static bool IsCommandTimeout(CancellationTokenSource? timeout, CancellationToken cancellationToken) =>
+		timeout is not null && timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
+
+	private TimeoutException CreateTimeoutException(string commandText) =>
+		new($"Command '{commandText}' exceeded timeout of {_options.CommandTimeout.TotalMilliseconds:0} ms.");
+
 	private CancellationTokenSource? CreateTimeoutSource(CancellationToken cancellationToken)
 	{
 		if (_options.CommandTimeout <= TimeSpan.Zero || _options.CommandTimeout == Timeout.InfiniteTimeSpan)
@@ -319,7 +350,16 @@ public sealed partial class ReplSessionHandle : IAsyncDisposable
 
 		public IReadOnlyList<ReplInteractionEvent> Events => _events;
 
+		/// <summary>
+		/// Whether the run ended in a cancellation. Lets the handle tell a command the timeout actually
+		/// interrupted from one that finished while the timeout token happened to elapse.
+		/// </summary>
+		public bool WasCancelled { get; private set; }
+
 		public void OnResult(object? result) => LastResult = result;
+
+		public void OnOutcome(ReplExecutionOutcomeKind kind) =>
+			WasCancelled = kind is ReplExecutionOutcomeKind.Cancelled or ReplExecutionOutcomeKind.Interrupted;
 
 		public void OnInteractionEvent(ReplInteractionEvent evt)
 		{

@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -32,7 +33,6 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		_ = _commands.Count;
 		_ = _middleware.Count;
 		_ = _options;
-		cancellationToken.ThrowIfCancellationRequested();
 		return ExecuteCoreAsync(args, _services, cancellationToken: cancellationToken);
 	}
 
@@ -65,26 +65,68 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		bool isSubInvocation = false,
 		CancellationToken cancellationToken = default)
 	{
+		// Resolved outside the cancellation guard: ExitCodes.Resolver is application code, and a
+		// resolver that throws OperationCanceledException must not be mistaken for a cancelled run.
+		var outcome = await RunUnderCancellationPolicyAsync(
+				args,
+				serviceProvider,
+				isSubInvocation,
+				cancellationToken)
+			.ConfigureAwait(false);
+		return ResolveProcessExitCode(outcome, isSubInvocation);
+	}
+
+	/// <summary>
+	/// Runs the pipeline and reports the outcome without resolving an exit code, so a host wrapper that
+	/// has its own teardown to run can resolve once, at the end, instead of once per stage.
+	/// </summary>
+	internal ValueTask<ExecutionOutcome> RunOutcomeWithServicesAsync(
+		string[] args,
+		IServiceProvider serviceProvider,
+		CancellationToken cancellationToken = default) =>
+		RunUnderCancellationPolicyAsync(args, serviceProvider, isSubInvocation: false, cancellationToken);
+
+	/// <summary>
+	/// Converts an already-cancelled caller token into a <see cref="ReplExecutionOutcomeKind.Cancelled"/>
+	/// outcome, so a host wrapper can apply the policy before doing any work of its own. Returns
+	/// <see langword="null"/> when the token is not cancelled, and throws when the application configured
+	/// no way to observe cancellation — the same contract the pipeline itself follows.
+	/// </summary>
+	internal ExecutionOutcome? TryObserveCallerCancellation(CancellationToken cancellationToken)
+	{
+		if (!cancellationToken.IsCancellationRequested)
+		{
+			return null;
+		}
+
+		if (!IsConvertibleCancellation(isSubInvocation: false, cancellationToken))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+		}
+
+		return ExecutionOutcome.Cancelled(new OperationCanceledException(cancellationToken));
+	}
+
+	private async ValueTask<ExecutionOutcome> RunUnderCancellationPolicyAsync(
+		IReadOnlyList<string> args,
+		IServiceProvider serviceProvider,
+		bool isSubInvocation,
+		CancellationToken cancellationToken)
+	{
 		_options.Interaction.SetObserver(observer: ExecutionObserver);
 		try
 		{
-			if (ReplSessionIO.IsProgrammatic && !ReplSessionIO.HasCurrentProgrammaticInvocationContract)
+			try
 			{
-				_ = await RenderOutputAsync(
-						Results.Validation(
-							"The programmatic invocation adapter is incompatible with this Repl.Core version. "
-							+ "Update Repl.Mcp to the same package version."),
-						requestedFormat: null,
-						cancellationToken)
+				// Inside the try so a token cancelled before the run follows the same Cancelled policy.
+				cancellationToken.ThrowIfCancellationRequested();
+				return await ExecuteCoreOutcomeAsync(args, serviceProvider, isSubInvocation, cancellationToken)
 					.ConfigureAwait(false);
-				return 1;
 			}
-
-			var globalOptions = GlobalOptionParser.Parse(args, _options.Output, _options.Parsing);
-			if (await TryHandleGlobalDiagnosticsAsync(globalOptions, cancellationToken).ConfigureAwait(false) is { } globalDiagnosticsExitCode) return globalDiagnosticsExitCode;
-
-			return await ExecuteParsedCoreAsync(globalOptions, serviceProvider, isSubInvocation, cancellationToken)
-				.ConfigureAwait(false);
+			catch (OperationCanceledException ex) when (IsConvertibleCancellation(isSubInvocation, cancellationToken))
+			{
+				return ExecutionOutcome.Cancelled(ex);
+			}
 		}
 		finally
 		{
@@ -92,7 +134,142 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 	}
 
-	private async ValueTask<int> ExecuteParsedCoreAsync(
+	/// <summary>
+	/// Whether an <see cref="OperationCanceledException"/> leaving the pipeline should become a
+	/// <see cref="ReplExecutionOutcomeKind.Cancelled"/> outcome rather than propagate. Only the caller's
+	/// own token counts — a handler that cancels itself is a failure, classified where it is rendered —
+	/// and an application must have asked for cancellation to be observable, through either the table
+	/// entry or the resolver.
+	/// </summary>
+	private bool IsConvertibleCancellation(bool isSubInvocation, CancellationToken cancellationToken) =>
+		!isSubInvocation && cancellationToken.IsCancellationRequested && ConvertsCancellationToExitCode;
+
+	/// <summary>
+	/// Whether the application asked for a caller-token cancellation to become an exit code instead of
+	/// propagating — through the table entry or through the resolver. Exposed so a host wrapper that
+	/// catches a wrapped cancellation of its own applies the same default as the pipeline.
+	/// </summary>
+	internal bool ConvertsCancellationToExitCode =>
+		_options.ExitCodes.Cancelled is not null || _options.ExitCodes.Resolver is not null;
+
+	private async ValueTask<ExecutionOutcome> ExecuteCoreOutcomeAsync(
+		IReadOnlyList<string> args,
+		IServiceProvider serviceProvider,
+		bool isSubInvocation,
+		CancellationToken cancellationToken)
+	{
+		if (ReplSessionIO.IsProgrammatic && !ReplSessionIO.HasCurrentProgrammaticInvocationContract)
+		{
+			var contractFailure = Results.Validation(
+				"The programmatic invocation adapter is incompatible with this Repl.Core version. "
+				+ "Update Repl.Mcp to the same package version.");
+			// requestedFormat: null resolves to the session default, which always exists, so FormatUnknown
+			// is unreachable here. Routed through the reporter regardless: the guard against a throwing
+			// transformer belongs at every site, not only the ones a reader can prove need it.
+			var contractReport = await ReportFailureAsync(contractFailure, requestedFormat: null, cancellationToken)
+				.ConfigureAwait(false);
+			return contractReport == FailureReport.FormatUnknown
+				? ExecutionOutcome.UsageError(contractFailure)
+				: ExecutionOutcome.FrameworkError(contractFailure);
+		}
+
+		var globalOptions = GlobalOptionParser.Parse(args, _options.Output, _options.Parsing);
+		if (await TryHandleGlobalDiagnosticsAsync(globalOptions, cancellationToken).ConfigureAwait(false) is { } globalDiagnostics)
+		{
+			return globalDiagnostics;
+		}
+
+		return await ExecuteParsedCoreAsync(globalOptions, serviceProvider, isSubInvocation, cancellationToken)
+			.ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// Applies the exit-code policy to the process exit code of a run, once. Sub-invocations (nested MCP
+	/// tool calls) keep the built-in defaults and skip <see cref="ExitCodeOptions.Resolver"/>: the policy
+	/// describes the process exit, and nested callers only test for non-zero.
+	/// </summary>
+	internal int ResolveProcessExitCode(ExecutionOutcome outcome, bool isSubInvocation) =>
+		isSubInvocation
+			? ExitCodeOptions.MapDefault(outcome.Kind, outcome.ExplicitExitCode)
+			: ResolveConfiguredExitCode(outcome, ReplExitCodeScope.Process);
+
+	/// <summary>
+	/// Applies the exit-code policy to a top-level run, the only case an outer host resolves. Spelling the
+	/// sub-invocation argument once here keeps every caller outside this type from repeating it.
+	/// </summary>
+	internal int ResolveProcessExitCode(ExecutionOutcome outcome) =>
+		ResolveProcessExitCode(outcome, isSubInvocation: false);
+
+	/// <summary>
+	/// Applies the exit-code policy to the code decorating one interactive command's shell-integration
+	/// command-end mark. Always uses the configured table: a mark describes that command, not the process,
+	/// so the sub-invocation shortcut of <see cref="ResolveProcessExitCode(ExecutionOutcome, bool)"/> does
+	/// not apply. Callers must first check that a mark will actually carry the code — the resolver is
+	/// application code and must not run for a mark nobody writes.
+	/// </summary>
+	internal int ResolveCommandEndExitCode(ExecutionOutcome outcome) =>
+		ResolveConfiguredExitCode(outcome, ReplExitCodeScope.ShellIntegrationMark);
+
+	private int ResolveConfiguredExitCode(ExecutionOutcome outcome, ReplExitCodeScope scope)
+	{
+		var exitCode = _options.ExitCodes.Map(outcome.Kind, outcome.ExplicitExitCode);
+		if (_options.ExitCodes.Resolver is { } resolver)
+		{
+			exitCode = InvokeResolver(resolver, outcome, exitCode, scope);
+		}
+
+		if (scope == ReplExitCodeScope.Process)
+		{
+			ExecutionObserver?.OnOutcome(outcome.Kind);
+		}
+
+		return exitCode;
+	}
+
+	[SuppressMessage(
+		"Design",
+		"CA1031:Do not catch general exception types",
+		Justification = "A faulty exit-code resolver must not replace the run's own outcome; it degrades to the table-mapped code.")]
+	private static int InvokeResolver(
+		Func<ReplExecutionOutcome, int> resolver,
+		ExecutionOutcome outcome,
+		int mappedExitCode,
+		ReplExitCodeScope scope)
+	{
+		try
+		{
+			return resolver(
+				new ReplExecutionOutcome(outcome.Kind, mappedExitCode, outcome.Result, outcome.Exception) { Scope = scope });
+		}
+		catch (Exception ex)
+		{
+			// Rationale in this method's CA1031 justification; ExitCodeOptions.Resolver documents the
+			// contract for the application author.
+			TryWriteResolverDiagnostic(ex, mappedExitCode);
+			return mappedExitCode;
+		}
+	}
+
+	[SuppressMessage(
+		"Design",
+		"CA1031:Do not catch general exception types",
+		Justification = "Reporting a resolver failure must not itself fail the run: the error stream may be disposed or its transport already torn down.")]
+	private static void TryWriteResolverDiagnostic(Exception resolverFailure, int mappedExitCode)
+	{
+		try
+		{
+#pragma warning disable MA0045 // Intentionally synchronous — the exit-code policy resolves on non-async members
+			ReplSessionIO.Error.WriteLine(
+				$"Error: ExitCodes.Resolver threw {resolverFailure.GetType().Name} ({resolverFailure.Message}); using exit code {mappedExitCode.ToString(CultureInfo.InvariantCulture)}.");
+#pragma warning restore MA0045
+		}
+		catch
+		{
+			// Best-effort: the fallback exit code is the contract, the diagnostic is a courtesy.
+		}
+	}
+
+	private async ValueTask<ExecutionOutcome> ExecuteParsedCoreAsync(
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
 		bool isSubInvocation,
@@ -106,14 +283,17 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			using var runtimeStateScope = PushRuntimeState(serviceProvider, isInteractiveSession: false);
 			var prefixResolution = ResolveUniquePrefixes(globalOptions.RemainingTokens);
 			var resolvedGlobalOptions = globalOptions with { RemainingTokens = prefixResolution.Tokens };
-			var ambiguousExitCode = await TryHandleAmbiguousPrefixAsync(
+			var ambiguousOutcome = await TryHandleAmbiguousPrefixAsync(
 						prefixResolution,
 						globalOptions,
 						resolvedGlobalOptions,
 						serviceProvider,
 						cancellationToken)
 					.ConfigureAwait(false);
-			if (ambiguousExitCode is not null) return ambiguousExitCode.Value;
+			if (ambiguousOutcome is not null)
+			{
+				return ambiguousOutcome.Value;
+			}
 
 			var preResolvedRouteResolution = TryPreResolveRouteForBanner(resolvedGlobalOptions);
 			if (!ShouldSuppressGlobalBanner(resolvedGlobalOptions, preResolvedRouteResolution?.Match))
@@ -121,12 +301,15 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				await TryRenderBannerAsync(resolvedGlobalOptions, serviceProvider, cancellationToken).ConfigureAwait(false);
 			}
 
-			var preExecutionExitCode = await TryHandlePreExecutionAsync(
+			var preExecutionOutcome = await TryHandlePreExecutionAsync(
 						resolvedGlobalOptions,
 						serviceProvider,
 						cancellationToken)
 					.ConfigureAwait(false);
-			if (preExecutionExitCode is not null) return preExecutionExitCode.Value;
+			if (preExecutionOutcome is not null)
+			{
+				return preExecutionOutcome.Value;
+			}
 
 			var resolution = preResolvedRouteResolution
 				?? ResolveWithDiagnostics(resolvedGlobalOptions.RemainingTokens);
@@ -150,7 +333,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				.ConfigureAwait(false);
 	}
 
-	private async ValueTask<int?> TryHandleAmbiguousPrefixAsync(
+	private async ValueTask<ExecutionOutcome?> TryHandleAmbiguousPrefixAsync(
 		PrefixResolutionResult prefixResolution,
 		GlobalInvocationOptions globalOptions,
 		GlobalInvocationOptions resolvedGlobalOptions,
@@ -168,9 +351,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 
 		var ambiguous = CreateAmbiguousPrefixResult(prefixResolution);
-		_ = await RenderOutputAsync(ambiguous, globalOptions.OutputFormat, cancellationToken)
+		return await RefuseAsync(ambiguous, globalOptions.OutputFormat, cancellationToken)
 			.ConfigureAwait(false);
-		return 1;
 	}
 
 	private static bool ShouldSuppressGlobalBanner(
@@ -195,7 +377,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		return ResolveWithDiagnostics(globalOptions.RemainingTokens);
 	}
 
-	private async ValueTask<int?> TryHandlePreExecutionAsync(
+	private async ValueTask<ExecutionOutcome?> TryHandlePreExecutionAsync(
 		GlobalInvocationOptions options,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -210,7 +392,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		if (options.HelpRequested)
 		{
 			var rendered = await RenderHelpAsync(options, cancellationToken).ConfigureAwait(false);
-			return rendered ? 0 : 1;
+			return rendered ? ExecutionOutcome.Help : ExecutionOutcome.UsageError();
 		}
 
 		if (options.RemainingTokens.Count == 0)
@@ -223,7 +405,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			.ConfigureAwait(false);
 	}
 
-	private async ValueTask<int> ExecuteMatchedCommandAndMaybeEnterInteractiveAsync(
+	private async ValueTask<ExecutionOutcome> ExecuteMatchedCommandAndMaybeEnterInteractiveAsync(
 		RouteMatch match,
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
@@ -235,7 +417,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				.ConfigureAwait(false);
 		}
 
-		var (exitCode, enterInteractive) = await ExecuteMatchedCommandAsync(
+		var (outcome, enterInteractive) = await ExecuteMatchedCommandAsync(
 				match,
 				globalOptions,
 				serviceProvider,
@@ -243,7 +425,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				cancellationToken)
 			.ConfigureAwait(false);
 
-		if (enterInteractive || (exitCode == 0 && ShouldEnterInteractive(globalOptions, allowAuto: false)))
+		if (enterInteractive || (outcome.IsSuccessLike && ShouldEnterInteractive(globalOptions, allowAuto: false)))
 		{
 			var matchedPathLength = globalOptions.RemainingTokens.Count - match.RemainingTokens.Count;
 			var matchedPathTokens = globalOptions.RemainingTokens.Take(matchedPathLength).ToArray();
@@ -251,7 +433,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			return await RunInteractiveSessionAsync(interactiveScope, serviceProvider, cancellationToken).ConfigureAwait(false);
 		}
 
-		return exitCode;
+		return outcome;
 	}
 
 	/// <summary>
@@ -261,7 +443,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	/// outside hosted sessions — stdout/stderr isolation (framework output on stderr, the
 	/// handler payload alone on stdout).
 	/// </summary>
-	internal async ValueTask<int> ExecuteProtocolPassthroughCommandAsync(
+	internal async ValueTask<ExecutionOutcome> ExecuteProtocolPassthroughCommandAsync(
 		RouteMatch match,
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
@@ -269,28 +451,31 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	{
 		if (ReplSessionIO.IsHostedSession && !match.Route.Command.SupportsHostedProtocolPassthrough)
 		{
-			_ = await RenderOutputAsync(
-					Results.Error(
-						"protocol_passthrough_hosted_not_supported",
-						$"Command '{match.Route.Template.Template}' is protocol passthrough and requires a handler parameter of type IReplIoContext in hosted sessions."),
-					globalOptions.OutputFormat,
-					cancellationToken)
+			var refusal = Results.Error(
+				"protocol_passthrough_hosted_not_supported",
+				$"Command '{match.Route.Template.Template}' is protocol passthrough and requires a handler parameter of type IReplIoContext in hosted sessions.");
+			// An unknown --output format outranks the refusal: a diagnostic the caller never saw cannot
+			// stand as the run's outcome, and here the format is the caller's own mistake. A degraded report
+			// still reached the caller, so that stays a hosting defect.
+			var report = await ReportFailureAsync(refusal, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return 1;
+			return report == FailureReport.FormatUnknown
+				? ExecutionOutcome.UsageError(refusal)
+				: ExecutionOutcome.FrameworkError(refusal);
 		}
 
 		using var protocolPassthroughScope = ReplSessionIO.PushProtocolPassthrough();
 
 		if (ReplSessionIO.IsSessionActive)
 		{
-			var (exitCode, _) = await ExecuteMatchedCommandAsync(
+			var (sessionOutcome, _) = await ExecuteMatchedCommandAsync(
 					match,
 					globalOptions,
 					serviceProvider,
 					scopeTokens: null,
 					cancellationToken)
 				.ConfigureAwait(false);
-			return exitCode;
+			return sessionOutcome;
 		}
 
 		using var protocolScope = ReplSessionIO.SetSession(
@@ -300,17 +485,17 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			commandOutput: Console.Out,
 			error: Console.Error,
 			isHostedSession: false);
-		var (code, _) = await ExecuteMatchedCommandAsync(
+		var (outcome, _) = await ExecuteMatchedCommandAsync(
 				match,
 				globalOptions,
 				serviceProvider,
 				scopeTokens: null,
 				cancellationToken)
 			.ConfigureAwait(false);
-		return code;
+		return outcome;
 	}
 
-	private async ValueTask<int> HandleEmptyInvocationAsync(
+	private async ValueTask<ExecutionOutcome> HandleEmptyInvocationAsync(
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -320,12 +505,45 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			return await RunInteractiveSessionAsync([], serviceProvider, cancellationToken).ConfigureAwait(false);
 		}
 
+		if (await TryRefuseUnknownHelpFormatAsync(globalOptions.OutputFormat).ConfigureAwait(false) is { } refusal)
+		{
+			return refusal;
+		}
+
 		var helpText = BuildHumanHelp([]);
 		await ReplSessionIO.Output.WriteLineAsync(helpText).ConfigureAwait(false);
-		return 0;
+		return ExecutionOutcome.Help;
 	}
 
-	private async ValueTask<int?> TryHandleCompletionCommandAsync(
+	/// <summary>
+	/// Validates the requested output format for a path that writes human help directly instead of
+	/// going through the output pipeline — a bare invocation and a scoped-context invocation that does
+	/// not enter interactive mode. Returns the refusal when the format cannot be honoured, and
+	/// <see langword="null"/> to carry on: <c>--output</c> selects a format for a command result, and
+	/// neither of these produces one, so a valid format still yields the human help.
+	/// </summary>
+	private async ValueTask<ExecutionOutcome?> TryRefuseUnknownHelpFormatAsync(string? requestedFormat)
+	{
+		var format = ResolveOutputFormat(requestedFormat);
+		if (_options.Output.Transformers.ContainsKey(format))
+		{
+			return null;
+		}
+
+		await WriteUnknownFormatRefusalAsync(format).ConfigureAwait(false);
+		return ExecutionOutcome.UsageError();
+	}
+
+	private string ResolveOutputFormat(string? requestedFormat) =>
+		string.IsNullOrWhiteSpace(requestedFormat) ? _options.Output.DefaultFormat : requestedFormat;
+
+	// A framework refusal, not command output: it goes to Error so a headless run's stdout keeps
+	// carrying only the payload a parent process parses. Reported rather than swallowed, because this
+	// refusal is what makes the run a UsageError.
+	private static ValueTask WriteUnknownFormatRefusalAsync(string format) =>
+		new(ReplSessionIO.Error.WriteLineAsync($"Error: unknown output format '{format}'."));
+
+	private async ValueTask<ExecutionOutcome?> TryHandleCompletionCommandAsync(
 		GlobalInvocationOptions options,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -342,10 +560,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				serviceProvider: serviceProvider,
 				cancellationToken: cancellationToken)
 			.ConfigureAwait(false);
-		return completed ? 0 : 1;
+		return completed ? ExecutionOutcome.Success : ExecutionOutcome.UsageError();
 	}
 
-	private async ValueTask<int?> TryHandleAmbientInNonInteractiveAsync(
+	private async ValueTask<ExecutionOutcome?> TryHandleAmbientInNonInteractiveAsync(
 		GlobalInvocationOptions options,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
@@ -373,9 +591,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 		return ambientOutcome switch
 		{
-			AmbientCommandOutcome.Exit => 0,
-			AmbientCommandOutcome.Handled => 0,
-			AmbientCommandOutcome.HandledError => 1,
+			AmbientCommandOutcome.Exit or AmbientCommandOutcome.Handled => ExecutionOutcome.Success,
+			AmbientCommandOutcome.HandledError => ExecutionOutcome.UsageError(),
 			_ => null,
 		};
 	}
@@ -417,7 +634,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		_bannerRendered.Value = true;
 	}
 
-	private async ValueTask<int> TryHandleContextDeeplinkAsync(
+	private async ValueTask<ExecutionOutcome> TryHandleContextDeeplinkAsync(
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken,
@@ -432,28 +649,30 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				tokens: globalOptions.RemainingTokens,
 				constraintFailure,
 				missingArgumentsFailure);
-			_ = await RenderOutputAsync(failure, globalOptions.OutputFormat, cancellationToken)
+			return await RefuseAsync(failure, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return 1;
 		}
 
 		var contextValidation = await ValidateContextAsync(contextMatch, serviceProvider, cancellationToken)
 			.ConfigureAwait(false);
-		if (!contextValidation.IsValid)
+		// Matched rather than null-forgiven: ContextValidationOutcome's only producers are Success, which
+		// is valid, and FromFailure, which requires a failure — so an invalid outcome always carries one.
+		if (contextValidation is { IsValid: false, Failure: { } contextValidationFailure })
 		{
-			_ = await RenderOutputAsync(
-					contextValidation.Failure,
-					globalOptions.OutputFormat,
-					cancellationToken)
+			return await RefuseAsync(contextValidationFailure, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return 1;
 		}
 
 		if (!ShouldEnterInteractive(globalOptions, allowAuto: true))
 		{
+			if (await TryRefuseUnknownHelpFormatAsync(globalOptions.OutputFormat).ConfigureAwait(false) is { } refusal)
+			{
+				return refusal;
+			}
+
 			var helpText = BuildHumanHelp(globalOptions.RemainingTokens);
 			await ReplSessionIO.Output.WriteLineAsync(helpText).ConfigureAwait(false);
-			return 0;
+			return ExecutionOutcome.Help;
 		}
 
 		return await RunInteractiveSessionAsync(globalOptions.RemainingTokens.ToArray(), serviceProvider, cancellationToken)
@@ -464,7 +683,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		"Maintainability",
 		"MA0051:Method is too long",
 		Justification = "Execution path intentionally keeps validation, binding, middleware and rendering in one place.")]
-	internal async ValueTask<(int ExitCode, bool EnterInteractive)> ExecuteMatchedCommandAsync(
+	internal async ValueTask<(ExecutionOutcome Outcome, bool EnterInteractive)> ExecuteMatchedCommandAsync(
 		RouteMatch match,
 		GlobalInvocationOptions globalOptions,
 		IServiceProvider serviceProvider,
@@ -480,12 +699,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		var knownOptionNames = new HashSet<string>(match.Route.OptionSchema.Parameters.Keys, optionComparer);
 		if (TryFindGlobalCommandOptionCollision(globalOptions, knownOptionNames, out var collidingOption))
 		{
-			_ = await RenderOutputAsync(
-					Results.Validation($"Ambiguous option '{collidingOption}'. It is defined as both global and command option."),
-					globalOptions.OutputFormat,
-					cancellationToken)
-				.ConfigureAwait(false);
-			return (1, false);
+			var collision = Results.Validation($"Ambiguous option '{collidingOption}'. It is defined as both global and command option.");
+			return (
+				await RefuseAsync(collision, globalOptions.OutputFormat, cancellationToken).ConfigureAwait(false),
+				false);
 		}
 
 		var parsedOptions = InvocationOptionParser.Parse(
@@ -497,12 +714,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		{
 			var firstError = parsedOptions.Diagnostics
 				.First(diagnostic => diagnostic.Severity == ParseDiagnosticSeverity.Error);
-			_ = await RenderOutputAsync(
-					Results.Validation(firstError.Message),
-					globalOptions.OutputFormat,
-					cancellationToken)
-				.ConfigureAwait(false);
-			return (1, false);
+			var optionFailure = Results.Validation(firstError.Message);
+			return (
+				await RefuseAsync(optionFailure, globalOptions.OutputFormat, cancellationToken).ConfigureAwait(false),
+				false);
 		}
 		var matchedPathLength = globalOptions.RemainingTokens.Count - match.RemainingTokens.Count;
 		var matchedPathTokens = globalOptions.RemainingTokens.Take(matchedPathLength).ToArray();
@@ -515,9 +730,14 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			activeGraph.Contexts,
 			serviceProvider,
 			cancellationToken);
+		// Binding and the handler share one try so progress cleanup and rendering stay uniform; the flag
+		// tells a binder exception (InvalidOperationException, conversion FormatException, …) apart from
+		// anything thrown after binding — the handler, middleware, user validators, banners, transformers.
+		var bound = false;
 		try
 		{
 			var arguments = HandlerArgumentBinder.Bind(match.Route.Command.Handler, bindingContext);
+			bound = true;
 			var contextFailure = await ValidateContextsForMatchAsync(
 					match,
 					matchedPathTokens,
@@ -527,9 +747,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				.ConfigureAwait(false);
 			if (contextFailure is not null)
 			{
-				_ = await RenderOutputAsync(contextFailure, globalOptions.OutputFormat, cancellationToken)
-					.ConfigureAwait(false);
-				return (1, false);
+				return (
+					await RefuseAsync(contextFailure, globalOptions.OutputFormat, cancellationToken)
+						.ConfigureAwait(false),
+					false);
 			}
 
 			await TryRenderCommandBannerAsync(match.Route.Command, globalOptions.OutputFormat, serviceProvider, cancellationToken)
@@ -552,16 +773,23 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				{
 					if (enterInteractive.Payload is not null)
 					{
-						_ = await RenderOutputAsync(
+						var payloadRendered = await RenderOutputAsync(
 								enterInteractive.Payload,
 								globalOptions.OutputFormat,
 								cancellationToken,
 								scopeTokens is not null,
 								globalOptions.ResultFlow)
 							.ConfigureAwait(false);
+						if (!payloadRendered)
+						{
+							// The requested output format is unknown: a usage mistake, reported like it is on
+							// every other result path. Entering the loop after refusing the output would leave
+							// the caller waiting at a prompt for a run that already failed.
+							return (ExecutionOutcome.UsageError(enterInteractive.Payload), false);
+						}
 					}
 
-					return (0, true);
+					return (ExecutionOutcome.Success, true);
 				}
 
 				var normalizedResult = ApplyNavigationResult(result, scopeTokens);
@@ -573,7 +801,21 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 						scopeTokens is not null,
 						globalOptions.ResultFlow)
 					.ConfigureAwait(false);
-				return (rendered ? ComputeExitCode(normalizedResult) : 1, false);
+				// RenderOutputAsync returns false only for an unknown requested output format: a usage mistake.
+				return (rendered ? ClassifyResult(normalizedResult) : ExecutionOutcome.UsageError(normalizedResult), false);
+		}
+		// Gated on the ambient runtime state, not on scopeTokens: a protocol-passthrough command always
+		// passes scopeTokens: null, interactive or not, so it is no mode discriminator.
+		catch (OperationCanceledException ex) when (!IsInteractiveSession && !cancellationToken.IsCancellationRequested)
+		{
+			// One-shot, and nobody asked for this run to stop: the handler cancelled itself, which is a
+			// failure like any other exception and is rendered as one, so a caller who mapped
+			// ExitCodes.Cancelled can still tell a failure from an operator abort. RenderFailureAsync
+			// keys on `bound`, so a service factory that cancels before binding completes is a
+			// BindingError. The interactive loop keeps its own Ctrl+C semantics.
+			return (await RenderFailureAsync(
+					Results.Error("execution_error", ex.Message), ex, bound, globalOptions, serviceProvider, cancellationToken)
+				.ConfigureAwait(false), false);
 		}
 		catch (OperationCanceledException)
 		{
@@ -582,23 +824,166 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 		catch (InvalidOperationException ex)
 		{
-			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
-			_ = await RenderOutputAsync(Results.Validation(ex.Message), globalOptions.OutputFormat, cancellationToken)
-				.ConfigureAwait(false);
-			return (1, false);
+			return (await RenderFailureAsync(
+					Results.Validation(ex.Message), ex, bound, globalOptions, serviceProvider, cancellationToken)
+				.ConfigureAwait(false), false);
 		}
 		catch (Exception ex)
 		{
-			await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
-			var errorMessage = ex is TargetInvocationException { InnerException: not null } tie
-				? tie.InnerException?.Message ?? ex.Message
-				: ex.Message;
-			_ = await RenderOutputAsync(
-					Results.Error("execution_error", errorMessage),
-					globalOptions.OutputFormat,
-					cancellationToken)
+			var unwrapped = ex is TargetInvocationException { InnerException: { } inner } ? inner : ex;
+			return (await RenderFailureAsync(
+					Results.Error("execution_error", unwrapped.Message), unwrapped, bound, globalOptions, serviceProvider, cancellationToken)
+				.ConfigureAwait(false), false);
+		}
+	}
+
+	/// <summary>
+	/// Renders a failure result and classifies it. An unknown requested output format outranks the
+	/// failure itself: the caller never saw the diagnostic, so the run is a usage mistake — the same rule
+	/// the success and enter-interactive paths follow — but the displaced exception still travels on the
+	/// outcome, or a caller-chosen output format could erase it from everything that observes the run.
+	/// Otherwise the failure is the handler's when binding had completed, and a binding failure when it
+	/// had not: the discriminator is whether argument binding finished, not whether the handler body ran,
+	/// so a validator or banner that throws after binding is a handler failure.
+	/// </summary>
+	private async ValueTask<ExecutionOutcome> RenderFailureAsync(
+		IReplResult failure,
+		Exception exception,
+		bool bound,
+		GlobalInvocationOptions globalOptions,
+		IServiceProvider serviceProvider,
+		CancellationToken cancellationToken)
+	{
+		await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
+		var report = await ReportFailureAsync(failure, globalOptions.OutputFormat, cancellationToken)
+			.ConfigureAwait(false);
+		return ClassifyFailure(report, failure, exception, bound);
+	}
+
+	/// <summary>
+	/// Shows a failure or refusal to the caller and reports how far it got. This is the single place the
+	/// framework renders something it is reporting <em>about</em> a failure, which is why the guards live
+	/// here rather than at each call site: the requested format is validated before the render, a
+	/// renderer that throws degrades to plain text instead of escaping, and cancellation is left alone.
+	/// </summary>
+	[SuppressMessage(
+		"Design",
+		"CA1031:Do not catch general exception types",
+		Justification = "An application transformer that fails is the very thing being reported; letting its second throw escape would leave the run with no classified outcome and no exit code.")]
+	private async ValueTask<FailureReport> ReportFailureAsync(
+		IReplResult failure,
+		string? requestedFormat,
+		CancellationToken cancellationToken)
+	{
+		var format = ResolveOutputFormat(requestedFormat);
+		if (!_options.Output.Transformers.ContainsKey(format))
+		{
+			await WriteUnknownFormatRefusalAsync(format).ConfigureAwait(false);
+			return FailureReport.FormatUnknown;
+		}
+
+		try
+		{
+			// Discarded deliberately: RenderOutputAsync's bool reports only whether the format was usable,
+			// and the check above already answered that. What it cannot report is the throw handled below.
+			_ = await RenderOutputAsync(failure, format, cancellationToken).ConfigureAwait(false);
+			return FailureReport.Rendered;
+		}
+		catch (Exception renderFailure) when (!IsCallerCancellation(renderFailure, cancellationToken))
+		{
+			// A custom transformer that throws consistently would throw again here, from inside the catch
+			// block that is reporting its first failure — escaping the pipeline and leaving the run with no
+			// outcome and no exit code. The message still has to reach the caller, so it degrades to an
+			// unformatted line.
+			//
+			// Only the caller's own cancellation is let through, because only that one belongs to the
+			// cancellation policy: converting it would report a failure for a run that was asked to stop,
+			// bypassing ExitCodes.Cancelled and marking an interactive command failed rather than
+			// interrupted. A transformer raising OperationCanceledException on its own account is just
+			// another failing transformer — RunUnderCancellationPolicyAsync could not convert it anyway,
+			// so letting it through would leave the run with no outcome at all.
+			await TryWriteUnformattedFailureAsync(failure, renderFailure).ConfigureAwait(false);
+			return FailureReport.Degraded;
+		}
+	}
+
+	// The seventh place this question is asked with its own predicate; see the follow-up on giving
+	// cancellation classification an owning type.
+	private static bool IsCallerCancellation(Exception exception, CancellationToken cancellationToken) =>
+		exception is OperationCanceledException && cancellationToken.IsCancellationRequested;
+
+	/// <summary>
+	/// Turns a reported failure into an outcome. Pure by design: every fallible step happened in
+	/// <see cref="ReportFailureAsync"/>, so the rule itself can be read — and tested — on its own.
+	/// </summary>
+	private static ExecutionOutcome ClassifyFailure(
+		FailureReport report,
+		IReplResult failure,
+		Exception exception,
+		bool bound) =>
+		report switch
+		{
+			// The caller saw only the format refusal, never this failure, so the usage mistake outranks it —
+			// while the displaced exception still travels, or a caller-chosen format could erase it.
+			FailureReport.FormatUnknown => ExecutionOutcome.UsageError(failure, exception),
+
+			// Rendered or degraded, the caller saw it. The discriminator is then whether argument binding
+			// finished, not whether the handler body ran, so a validator or banner that throws after
+			// binding is a handler failure.
+			_ => bound
+				? ExecutionOutcome.HandlerException(exception, failure)
+				: ExecutionOutcome.BindingError(exception, failure),
+		};
+
+	/// <summary>
+	/// Reports a framework refusal and classifies it. Every fate of the report is a
+	/// <see cref="ReplExecutionOutcomeKind.UsageError"/> — the caller mis-invoked the application, and how
+	/// well the diagnostic could be formatted does not change that — which is why the report value is
+	/// deliberately discarded here and inspected only where it can change the kind.
+	/// </summary>
+	/// <summary>
+	/// Reports the first global-option error as a refusal. Shared with the interactive loop, which parses
+	/// globals per command and so reaches this without passing through the one-shot diagnostics stage.
+	/// </summary>
+	internal async ValueTask<ExecutionOutcome> RefuseGlobalOptionErrorsAsync(
+		GlobalInvocationOptions globalOptions,
+		CancellationToken cancellationToken)
+	{
+		var firstError = globalOptions.Diagnostics
+			.First(diagnostic => diagnostic.Severity == ParseDiagnosticSeverity.Error);
+		return await RefuseAsync(
+				Results.Validation(firstError.Message),
+				globalOptions.OutputFormat,
+				cancellationToken)
+			.ConfigureAwait(false);
+	}
+
+	private async ValueTask<ExecutionOutcome> RefuseAsync(
+		IReplResult refusal,
+		string? requestedFormat,
+		CancellationToken cancellationToken)
+	{
+		_ = await ReportFailureAsync(refusal, requestedFormat, cancellationToken).ConfigureAwait(false);
+		return ExecutionOutcome.UsageError(refusal);
+	}
+
+	[SuppressMessage(
+		"Design",
+		"CA1031:Do not catch general exception types",
+		Justification = "The last-resort report of a failure must not itself fail the run: the error stream may be disposed or its transport already torn down.")]
+	private static async ValueTask TryWriteUnformattedFailureAsync(IReplResult failure, Exception renderFailure)
+	{
+		try
+		{
+			await ReplSessionIO.Error.WriteLineAsync($"Error: {failure.Message}").ConfigureAwait(false);
+			await ReplSessionIO.Error
+				.WriteLineAsync(
+					$"Error: the output transformer also failed ({renderFailure.GetType().Name}: {renderFailure.Message}); the message above is unformatted.")
 				.ConfigureAwait(false);
-			return (1, false);
+		}
+		catch
+		{
+			// Best-effort: the classified outcome is the contract, the text is a courtesy.
 		}
 	}
 
@@ -627,14 +1012,14 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 	}
 
-	private async ValueTask<(int ExitCode, bool EnterInteractive)> RenderTupleResultAsync(
+	private async ValueTask<(ExecutionOutcome Outcome, bool EnterInteractive)> RenderTupleResultAsync(
 		ITuple tuple,
 		List<string>? scopeTokens,
 		GlobalInvocationOptions globalOptions,
 		CancellationToken cancellationToken)
 	{
 		var isInteractive = scopeTokens is not null;
-		var exitCode = 0;
+		var outcome = ExecutionOutcome.Success;
 		var enterInteractive = false;
 
 		for (var i = 0; i < tuple.Length; i++)
@@ -673,42 +1058,41 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 
 			if (!rendered)
 			{
-				return (1, false);
+				return (ExecutionOutcome.UsageError(normalized), false);
 			}
 
 			if (isLast)
 			{
-				exitCode = ComputeExitCode(normalized);
+				outcome = ClassifyResult(normalized);
 			}
 		}
 
-		return (exitCode, enterInteractive);
+		return (outcome, enterInteractive);
 	}
 
-	private static int ComputeExitCode(object? result)
+	/// <summary>
+	/// Classifies a rendered handler result. Anything that is not an <see cref="IReplResult"/> — including a
+	/// bare <see cref="int"/> — is data and therefore a success; only <see cref="IExitResult"/> carries a code.
+	/// </summary>
+	private static ExecutionOutcome ClassifyResult(object? result)
 	{
 		if (result is IExitResult exitResult)
 		{
-			return exitResult.ExitCode;
+			return ExecutionOutcome.HandlerExitCode(exitResult);
 		}
 
 		if (result is not IReplResult replResult)
 		{
-			return 0;
+			return result is null ? ExecutionOutcome.Success : ExecutionOutcome.Success with { Result = result };
 		}
 
-		var kind = replResult.Kind.ToLowerInvariant();
-		if (kind is "text" or "success")
-		{
-			return 0;
-		}
-
-		if (kind is "error" or "validation" or "not_found")
-		{
-			return 1;
-		}
-
-		return 1;
+		// Compared case-insensitively rather than lowercased: every result now routes through here, and
+		// a per-classification string allocation buys nothing.
+		var kind = replResult.Kind;
+		return string.Equals(kind, "text", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(kind, "success", StringComparison.OrdinalIgnoreCase)
+			? ExecutionOutcome.Success with { Result = replResult }
+			: ExecutionOutcome.HandlerError(replResult);
 	}
 
 	internal async ValueTask<bool> RenderOutputAsync(
@@ -728,13 +1112,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			result = exitResult.Payload;
 		}
 
-		var format = string.IsNullOrWhiteSpace(requestedFormat)
-			? _options.Output.DefaultFormat
-			: requestedFormat;
+		var format = ResolveOutputFormat(requestedFormat);
 		if (!_options.Output.Transformers.TryGetValue(format, out var transformer))
 		{
-			// Unknown format is a user-facing validation issue; avoid silent failures from exception swallowing.
-			await ReplSessionIO.Output.WriteLineAsync($"Error: unknown output format '{format}'.").ConfigureAwait(false);
+			await WriteUnknownFormatRefusalAsync(format).ConfigureAwait(false);
 			return false;
 		}
 
@@ -863,7 +1244,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 	}
 
-	private async ValueTask<int?> TryHandleGlobalDiagnosticsAsync(
+	private async ValueTask<ExecutionOutcome?> TryHandleGlobalDiagnosticsAsync(
 		GlobalInvocationOptions globalOptions,
 		CancellationToken cancellationToken)
 	{
@@ -872,14 +1253,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			return null;
 		}
 
-		var firstError = globalOptions.Diagnostics
-			.First(diagnostic => diagnostic.Severity == ParseDiagnosticSeverity.Error);
-		_ = await RenderOutputAsync(
-				Results.Validation(firstError.Message),
-				globalOptions.OutputFormat,
-				cancellationToken)
-			.ConfigureAwait(false);
-		return 1;
+		return await RefuseGlobalOptionErrorsAsync(globalOptions, cancellationToken).ConfigureAwait(false);
 	}
 
 	private static ValueTask<string> TransformPagerPageAsync(
@@ -1148,7 +1522,6 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		IServiceProvider serviceProvider,
 		CancellationToken cancellationToken)
 	{
-		object? result = null;
 		var context = new ReplExecutionContext(serviceProvider, cancellationToken);
 		var index = -1;
 
@@ -1157,7 +1530,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			index++;
 			if (index == _middleware.Count)
 			{
-				result = await CommandInvoker
+				// Stored on the context so middleware can observe or replace it after awaiting next().
+				context.Result = await CommandInvoker
 					.InvokeAsync(handler, arguments)
 					.ConfigureAwait(false);
 				return;
@@ -1168,7 +1542,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 
 		await NextAsync().ConfigureAwait(false);
-		return result;
+		return context.Result;
 	}
 
 	private static object? ApplyNavigationResult(object? result, List<string>? scopeTokens)

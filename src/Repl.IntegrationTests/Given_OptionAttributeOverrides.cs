@@ -85,7 +85,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "--items", "ga", "--items", "bu", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("accepts at most one value");
 	}
 
@@ -127,7 +127,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["probe", "--mode", "zo", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Ambiguous option '--mode'");
 	}
 
@@ -140,7 +140,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["say", "--BU", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unknown option '--BU'");
 	}
 
@@ -181,7 +181,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "--Channel", "zo", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unknown option '--Channel'");
 	}
 
@@ -207,7 +207,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["wear", "--patches", "ga", "--patches", "bu", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("accepts at most one value");
 	}
 
@@ -220,7 +220,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["say", "--syllable", "Ga", "--syllable", "GA", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("received multiple enum values");
 	}
 
@@ -264,7 +264,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("requires at least one value");
 		invoked.Should().BeFalse();
 	}
@@ -296,7 +296,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["wear", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("requires at least one value");
 		invoked.Should().BeFalse();
 	}
@@ -310,7 +310,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["copy", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("requires at least one value");
 	}
 
@@ -336,7 +336,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("requires exactly one value");
 	}
 
@@ -349,7 +349,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Option '--item' requires");
 	}
 
@@ -393,7 +393,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["cfg", "--MODEs", "zo", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Did you mean '--MODE'");
 	}
 
@@ -431,7 +431,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "ga", "bu", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("accepts at most one value");
 	}
 
@@ -444,7 +444,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "ga", "bu", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("requires exactly one value");
 	}
 
@@ -457,7 +457,7 @@ public sealed class Given_OptionAttributeOverrides
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["wear", "ga", "bu", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("accepts at most one value");
 	}
 

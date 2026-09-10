@@ -203,6 +203,30 @@ public sealed class Given_TestingToolkit
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies the per-command timeout still surfaces as TimeoutException when the app maps ExitCodes.Cancelled so that a hung command is never reported as an ordinary exit code.")]
+	public async Task When_CommandExceedsTimeoutAndCancelledIsMapped_Then_RunCommandAsyncStillThrowsTimeoutException()
+	{
+		await using var host = ReplTestHost.Create(
+			() =>
+			{
+				var app = ReplApp.Create().UseDefaultInteractive();
+				app.Options(options => options.ExitCodes.Cancelled = 130);
+				app.Map("slow", async (CancellationToken ct) =>
+				{
+					await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+					return "done";
+				});
+				return app;
+			},
+			options => options.CommandTimeout = TimeSpan.FromMilliseconds(50));
+		await using var session = await host.OpenSessionAsync();
+
+		Func<Task> action = () => session.RunCommandAsync("slow --no-logo").AsTask();
+
+		await action.Should().ThrowAsync<TimeoutException>();
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies ANSI normalization defaults and can be disabled at host level.")]
 	public async Task When_OutputContainsAnsi_Then_NormalizationBehaviorIsConfigurable()
 	{

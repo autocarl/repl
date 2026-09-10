@@ -161,7 +161,7 @@ public sealed class Given_AdvancedRouteConstraints
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["target", "not-a-uri", "show", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Validation:");
 		output.Text.Should().Contain("parameter 'value'");
 		output.Text.Should().Contain("expected: uri");
@@ -221,7 +221,7 @@ public sealed class Given_AdvancedRouteConstraints
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["add", "test", "123", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Validation:");
 		output.Text.Should().Contain("parameter 'email'");
 		output.Text.Should().Contain("expected: email");
@@ -237,7 +237,7 @@ public sealed class Given_AdvancedRouteConstraints
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["add", "test", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Validation:");
 		output.Text.Should().Contain("Missing value for parameter 'email'");
 		output.Text.Should().Contain("expected: email");
@@ -253,7 +253,7 @@ public sealed class Given_AdvancedRouteConstraints
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["add", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Validation:");
 		output.Text.Should().Contain("Missing values for parameters: name, email.");
 	}

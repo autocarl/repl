@@ -28,7 +28,7 @@ public sealed class Given_ContextValidationAndDeeplinking
 
 		var exitCode = sut.Run(["contact", "99", "show"]);
 
-		exitCode.Should().Be(1);
+		exitCode.Should().Be(2);
 		handlerCalled.Should().BeFalse();
 	}
 
@@ -111,7 +111,7 @@ public sealed class Given_ContextValidationAndDeeplinking
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["contact", "99", "show"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Validation: Scope validation failed for 'contact {id:int}'.");
 		output.Text.Should().Contain("id: 99");
 	}
@@ -130,7 +130,7 @@ public sealed class Given_ContextValidationAndDeeplinking
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["contact", "99", "show"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Validation: Contact not found.");
 	}
 

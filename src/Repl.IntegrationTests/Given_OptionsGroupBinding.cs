@@ -293,7 +293,7 @@ public sealed class Given_OptionsGroupBinding
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["search", "--query", "alpha", "beta", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("cannot receive both named and positional values");
 	}
 

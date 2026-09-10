@@ -31,4 +31,11 @@ public sealed class ReplExecutionContext
 	/// Gets the cancellation token for the current execution.
 	/// </summary>
 	public CancellationToken CancellationToken { get; }
+
+	/// <summary>
+	/// Gets or sets the handler's return value. Populated once the pipeline reaches the handler, so a
+	/// middleware can inspect or replace it after awaiting <see cref="ReplNext"/>; a middleware that
+	/// short-circuits may set it to supply the result that is rendered and classified instead.
+	/// </summary>
+	public object? Result { get; set; }
 }

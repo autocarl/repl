@@ -13,7 +13,7 @@ public sealed class Given_OptionParsingDiagnostics
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "--txet", "hello", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unknown option '--txet'");
 		output.Text.Should().Contain("--text");
 	}
@@ -41,7 +41,7 @@ public sealed class Given_OptionParsingDiagnostics
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["echo", "--Text", "hello", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unknown option '--Text'");
 	}
 

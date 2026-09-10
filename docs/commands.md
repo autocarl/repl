@@ -372,9 +372,10 @@ Handlers can return any type. The framework renders the return value through the
 | `ReplPage<T>` | Rendered as the current page plus `PageInfo`; JSON uses `{ items, pageInfo }` |
 | `IReplResult` | Structured result with kind prefix (`Results.Ok`, `Error`, `NotFound`...) |
 | `ReplNavigationResult` | Renders payload and navigates scope (`Results.NavigateUp`, `NavigateTo`) |
-| `IExitResult` | Renders optional payload and sets process exit code (`Results.Exit`) |
-| `EnterInteractiveResult` | Renders optional payload and enters interactive REPL mode (`Results.EnterInteractive`) |
+| `IExitResult` | Renders optional payload and sets the process exit code verbatim (`Results.Exit`); the only return type that carries an exit code — bypasses the `ReplOptions.ExitCodes` table, still visible to `ExitCodes.Resolver` |
+| `EnterInteractiveResult` | Renders optional payload and enters interactive REPL mode (`Results.EnterInteractive`). A payload that cannot be rendered — an unknown `--output` format — is a `UsageError` and the loop is not entered |
 | `void` / `null` | No output |
+| `int` and other scalars | Rendered as data like any other value — **never** interpreted as an exit code (`int Count() => 3` prints `3`, exits `0`) |
 
 ### Result factory helpers
 
@@ -411,9 +412,21 @@ Tuple semantics:
 - each element is rendered as a separate output block
 - navigation results (`NavigateUp`, `NavigateTo`) are only applied on the **last** element
 - `EnterInteractive` as the last element enters interactive mode after rendering prior elements
-- exit code is determined by the last element
+- the execution outcome (and therefore the exit code) is determined by the last element
 - null elements are silently skipped
 - nested tuples are not flattened — use a flat tuple instead
+
+### Exit codes
+
+The process exit code is not read off the handler's return value; it is selected from the
+structured outcome of the whole run (`ReplExecutionOutcomeKind`) through `ReplOptions.ExitCodes`.
+By default a success or help invocation exits `0`, framework refusals — unknown command, invalid
+option, unbindable argument — exit `2`, and a handler failure (`Results.Error`, an exception)
+exits `1`. `Results.Exit(code)` is the only way for a handler to pick a code directly, and
+`ExitCodes.Resolver` is the one place an application can remap every final outcome. A middleware
+registered with `app.Use(...)` can read or replace the handler's return value through
+`ReplExecutionContext.Result` after awaiting `next()`. See
+[execution pipeline — exit code](execution-pipeline.md#12-exit-code) for the full table.
 
 ## Paging large results
 

@@ -8,22 +8,18 @@ public sealed partial class CoreReplApp
 	private bool ShouldEnterInteractive(GlobalInvocationOptions globalOptions, bool allowAuto) =>
 		Interactive.ShouldEnterInteractive(globalOptions, allowAuto);
 
-	private ValueTask<int> RunInteractiveSessionAsync(
+	private async ValueTask<ExecutionOutcome> RunInteractiveSessionAsync(
 		IReadOnlyList<string> initialScopeTokens,
 		IServiceProvider serviceProvider,
-		CancellationToken cancellationToken) =>
-		Interactive.RunInteractiveSessionAsync(initialScopeTokens, serviceProvider, cancellationToken);
+		CancellationToken cancellationToken)
+	{
+		await Interactive.RunInteractiveSessionAsync(initialScopeTokens, serviceProvider, cancellationToken)
+			.ConfigureAwait(false);
+		return ExecutionOutcome.Success;
+	}
 
 	private string[] GetDeepestContextScopePath(IReadOnlyList<string> matchedPathTokens) =>
 		Interactive.GetDeepestContextScopePath(matchedPathTokens);
-
-	private ValueTask<AmbientCommandOutcome> TryHandleAmbientCommandAsync(
-		IReadOnlyList<string> inputTokens,
-		List<string> scopeTokens,
-		IServiceProvider serviceProvider,
-		bool isInteractiveSession,
-		CancellationToken cancellationToken) =>
-		Interactive.TryHandleAmbientCommandAsync(inputTokens, scopeTokens, serviceProvider, isInteractiveSession, cancellationToken);
 
 	private static ValueTask<AmbientCommandOutcome> HandleUpAmbientCommandAsync(
 		List<string> scopeTokens,

@@ -54,7 +54,7 @@ public sealed class Given_ModulePresence
 		using var output = new StringWriter();
 		var hostedExitCode = sut.Run(["ops", "ping", "--no-logo"], new InMemoryHost(input, output));
 
-		hostedExitCode.Should().Be(1);
+		hostedExitCode.Should().Be(2);
 		output.ToString().Should().Contain("Unknown command");
 	}
 
@@ -73,7 +73,7 @@ public sealed class Given_ModulePresence
 		gate.Enabled = false;
 		sut.InvalidateRouting();
 		var disabled = ConsoleCaptureHelper.Capture(() => sut.Run(["feature", "ping", "--no-logo"]));
-		disabled.ExitCode.Should().Be(1);
+		disabled.ExitCode.Should().Be(2);
 		disabled.Text.Should().Contain("Unknown command");
 	}
 
@@ -94,7 +94,7 @@ public sealed class Given_ModulePresence
 		using var output = new StringWriter();
 		var hostedExitCode = sut.Run(["ops", "ping", "--no-logo"], new InMemoryHost(input, output));
 
-		hostedExitCode.Should().Be(1);
+		hostedExitCode.Should().Be(2);
 		output.ToString().Should().Contain("Unknown command");
 	}
 
@@ -117,7 +117,7 @@ public sealed class Given_ModulePresence
 		gate.Enabled = false;
 		sut.InvalidateRouting();
 		var disabled = ConsoleCaptureHelper.Capture(() => sut.Run(["tenant", "feature", "ping", "--no-logo"]));
-		disabled.ExitCode.Should().Be(1);
+		disabled.ExitCode.Should().Be(2);
 		disabled.Text.Should().Contain("Unknown command");
 	}
 

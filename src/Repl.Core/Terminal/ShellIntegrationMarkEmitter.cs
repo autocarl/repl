@@ -211,6 +211,14 @@ internal sealed class ShellIntegrationMarkEmitter
 	}
 
 	/// <summary>
+	/// Whether a <see cref="WriteCommandEndAsync"/> call right now would emit a mark — mirrors that
+	/// method's own guard. Lets the interactive loop skip work whose only consumer is the mark:
+	/// resolving a command's exit code runs the application's <c>ExitCodes.Resolver</c>, which must not
+	/// fire for a mark nobody writes.
+	/// </summary>
+	internal bool WillWriteCommandEnd => _enabled && _phase != Phase.Idle;
+
+	/// <summary>
 	/// Escapes a command line for the OSC 633;E payload per the VS Code shell-integration
 	/// contract: <c>\</c> becomes <c>\\</c>, <c>;</c> becomes <c>\x3b</c>, and every byte
 	/// that could break out of the OSC string — space and C0 controls (&lt;= 0x20), DEL

@@ -351,10 +351,15 @@ public sealed partial class Given_OutputFormatting
 		var sut = ReplApp.Create();
 		sut.Map("contact show", () => new Contact(42, "Alice"));
 
-		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["contact", "show", "--output:toml"]));
+		var output = ConsoleCaptureHelper.CaptureStdOutAndErr(
+			() => sut.Run(["contact", "show", "--output:toml"]));
 
-		output.ExitCode.Should().Be(1);
-		output.Text.Should().Contain("Error: unknown output format 'toml'.");
+		output.ExitCode.Should().Be(2);
+
+		// On stderr, not stdout: the refusal is a framework diagnostic, and a headless caller parses
+		// stdout as the payload it asked for.
+		output.StdErr.Should().Contain("Error: unknown output format 'toml'.");
+		output.StdOut.Should().NotContain("unknown output format");
 	}
 
 	[TestMethod]

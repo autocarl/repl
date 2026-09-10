@@ -44,7 +44,7 @@ public sealed class Given_ParameterSchemaBinding
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["set", "42", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unable to bind parameter 'value'");
 	}
 
@@ -59,7 +59,7 @@ public sealed class Given_ParameterSchemaBinding
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["set", "--value", "alpha", "beta", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("cannot receive both named and positional values");
 	}
 

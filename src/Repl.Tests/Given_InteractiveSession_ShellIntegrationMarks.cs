@@ -46,8 +46,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("An unknown command resolves to a route-resolution failure and reports exit code 1 in the command-end mark.")]
-	public void When_UnknownCommandIsEntered_Then_CommandEndReportsExitCodeOne()
+	[Description("An unknown command resolves to a route-resolution failure and reports the usage exit code (2) in the command-end mark.")]
+	public void When_UnknownCommandIsEntered_Then_CommandEndReportsUsageExitCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var sut = CreateMarkedApp();
@@ -56,12 +56,12 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 
 		var raw = RunInteractiveSession(harness, sut, "zorglub\rexit\r");
 
-		raw.Should().Contain("]133;D;1");
+		raw.Should().Contain("]133;D;2");
 	}
 
 	[TestMethod]
-	[Description("An ambiguous command prefix renders its error inside the normal lifecycle and reports exit code 1 in the command-end mark, like any other failed input.")]
-	public void When_AmbiguousPrefixIsCommitted_Then_CommandEndReportsExitCodeOne()
+	[Description("An ambiguous command prefix renders its error inside the normal lifecycle and reports the usage exit code (2) in the command-end mark, like any other failed input.")]
+	public void When_AmbiguousPrefixIsCommitted_Then_CommandEndReportsUsageExitCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var sut = CreateMarkedApp();
@@ -72,11 +72,181 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "ga\rexit\r");
 
 		raw.Should().Contain("Ambiguous command prefix");
-		raw.Should().Contain("]133;D;1");
+		raw.Should().Contain("]133;D;2");
 	}
 
 	[TestMethod]
-	[Description("Ambient commands such as help run inside the same command lifecycle: their output lands between output-start and a successful command-end mark.")]
+	[Description("Regression guard: verifies the command-end mark follows the configured exit-code table, so an application that remaps usage errors sees its own code in the terminal decoration.")]
+	public void When_UsageErrorIsRemapped_Then_CommandEndMarkFollowsTable()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.UsageError = 64);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "zorglub\rexit\r");
+
+		raw.Should().Contain("]133;D;64");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies the command-end mark goes through ExitCodes.Resolver, so an application-wide exit-code convention is visible in the terminal decoration too.")]
+	public void When_ResolverIsConfigured_Then_CommandEndMarkUsesItsReturnValue()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Resolver = outcome =>
+			outcome.Kind == ReplExecutionOutcomeKind.HandlerError ? 70 : outcome.ExitCode);
+		sut.Map("fail", () => Results.Error("boom", "failed"));
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "fail\rexit\r");
+
+		raw.Should().Contain("]133;D;70");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a configured ExitCodes.Cancelled replaces the conventional 130 in the command-end mark. The handler raises OperationCanceledException itself; the interactive loop deliberately treats that as an abort, unlike the one-shot path.")]
+	public void When_HandlerRaisesCancellationAndCancelledIsConfigured_Then_MarkUsesConfiguredCode()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Cancelled = 7);
+		sut.Map("boom", string () => throw new OperationCanceledException());
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "boom\rexit\r");
+
+		raw.Should().Contain("Cancelled.");
+		raw.Should().Contain("]133;D;7");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies interactive help is classified Help, not a generic success, so an application that maps ExitCodes.Help separately sees its own code in the command-end mark.")]
+	public void When_HelpIsRemapped_Then_InteractiveHelpCommandEndUsesTheHelpCode()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Help = 3);
+		sut.Map("ping", () => "pong").WithDescription("Answers with pong.");
+		var harness = new TerminalHarness(cols: 80, rows: 24);
+
+		var raw = RunInteractiveSession(harness, sut, "help\rexit\r");
+
+		// help reports the Help code; the exit ambient that follows still reports Success.
+		raw.Should().Contain("]133;D;3");
+		TerminalMarks.Count(raw, "]133;D;0").Should().Be(1);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a malformed global option is refused in the interactive loop as it is in a one-shot run, so the command-end mark carries the usage code instead of the help or success code. The loop parses globals per command and used to check them on no path at all.")]
+	public void When_InteractiveInputHasAMalformedGlobal_Then_MarkReportsUsageError()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Map("hello", () => "world");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "hello --help --result:page-size\rexit\r");
+
+		raw.Should().Contain("]133;D;2");
+		raw.Should().NotContain("]133;D;0\u001b]133;A", "the malformed global must not report a successful command");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a help invocation that cannot render is a refusal first: the usage code wins over the Help classification the ambient entry would otherwise report.")]
+	public void When_HelpIsRemappedAndHelpFailsToRender_Then_UsageCodeStillWins()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Help = 3);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "help --output:bogus\rexit\r");
+
+		raw.Should().Contain("]133;D;2");
+		raw.Should().NotContain("]133;D;3");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies the resolver sees Scope.ShellIntegrationMark for a command-end code and runs once per committed command, so a hook with side effects can tell a terminal decoration from a process exit.")]
+	public void When_MarksAreEnabled_Then_ResolverRunsPerCommandWithMarkScope()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var scopes = new List<ReplExitCodeScope>();
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Resolver = outcome =>
+		{
+			scopes.Add(outcome.Scope);
+			return outcome.ExitCode;
+		});
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		_ = RunInteractiveSession(harness, sut, "ping\rexit\r");
+
+		// ping and exit each carry a mark, then the session's own process exit code.
+		scopes.Should().Equal(
+			ReplExitCodeScope.ShellIntegrationMark,
+			ReplExitCodeScope.ShellIntegrationMark,
+			ReplExitCodeScope.Process);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: with shell integration off the loop emits no command-end codes, so the resolver runs once for the process exit instead of once per command.")]
+	public void When_MarksAreDisabled_Then_ResolverRunsOnlyForTheProcessExit()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var scopes = new List<ReplExitCodeScope>();
+		var sut = ReplApp.Create().UseDefaultInteractive();
+		sut.Options(options => options.ExitCodes.Resolver = outcome =>
+		{
+			scopes.Add(outcome.Scope);
+			return outcome.ExitCode;
+		});
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		_ = RunInteractiveSession(harness, sut, "ping\rexit\r");
+
+		scopes.Should().Equal(ReplExitCodeScope.Process);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies the failed-dispatch command-end mark goes through the exit-code table like every other mark, instead of hard-coding 1.")]
+	public void When_HandlerExceptionIsRemapped_Then_FailedDispatchCommandEndUsesTheConfiguredCode()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.HandlerException = 70);
+		sut.Map("ping", () => "pong");
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "history --limit abc\r", swallowRunExceptions: true);
+
+		raw.Should().Contain("]133;D;70");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: a resolver that throws on the command-end path must not replace the original dispatch exception, which is the signal that matters.")]
+	public void When_ResolverThrowsOnAFailedDispatch_Then_TheOriginalExceptionSurfaces()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		sut.Options(options => options.ExitCodes.Resolver = _ => throw new FormatException("resolver boom"));
+		sut.Map("ping", () => "pong");
+		using var writer = new StringWriter();
+
+		var captured = CaptureInteractiveRun(writer, sut, "history --limit abc\r");
+
+		captured.Should().NotBeNull();
+		captured!.Message.Should().Contain("--limit");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies ambient commands such as help run inside the same command lifecycle: their output lands between output-start and a successful command-end mark.")]
 	public void When_HelpAmbientCommandRuns_Then_MarksWrapHelpOutput()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
@@ -145,7 +315,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("A handler cancelled mid-command keeps the Cancelled. message and reports exit code 130 (128+SIGINT), the shell convention terminals interpret as an interrupted command.")]
+	[Description("Regression guard: verifies an OperationCanceledException escaping an interactive command keeps the Cancelled. message and reports 130 (128+SIGINT), the shell convention terminals read as interrupted. The handler raises it itself: interactively that is an abort by design, where a one-shot run would render it as a handler failure. Real Ctrl+C reaches the same arm.")]
 	public void When_HandlerThrowsOperationCanceled_Then_CancelledLineIsPrintedAndExitCodeIs130()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
@@ -301,8 +471,8 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 	}
 
 	[TestMethod]
-	[Description("A failed completion ambient command (complete without --target) reports exit code 1 in the command-end mark instead of decorating the failure as success.")]
-	public void When_CompleteAmbientCommandFails_Then_CommandEndReportsExitCodeOne()
+	[Description("A failed completion ambient command (complete without --target) reports the usage exit code (2) in the command-end mark instead of decorating the failure as success.")]
+	public void When_CompleteAmbientCommandFails_Then_CommandEndReportsUsageExitCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var sut = CreateMarkedApp();
@@ -312,12 +482,12 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 		var raw = RunInteractiveSession(harness, sut, "complete\rexit\r");
 
 		raw.Should().Contain("Error: complete requires --target");
-		raw.Should().Contain("]133;D;1");
+		raw.Should().Contain("]133;D;2");
 	}
 
 	[TestMethod]
-	[Description("An ambient help invocation that fails to render (unknown output format) reports exit code 1 in the command-end mark, matching the non-ambient --help path.")]
-	public void When_HelpAmbientCommandFailsToRender_Then_CommandEndReportsExitCodeOne()
+	[Description("An ambient help invocation that fails to render (unknown output format) reports the usage exit code (2) in the command-end mark, matching the non-ambient --help path.")]
+	public void When_HelpAmbientCommandFailsToRender_Then_CommandEndReportsUsageExitCode()
 	{
 		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
 		var sut = CreateMarkedApp();
@@ -326,7 +496,7 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 
 		var raw = RunInteractiveSession(harness, sut, "help --output:bogus\rexit\r");
 
-		raw.Should().Contain("]133;D;1");
+		raw.Should().Contain("]133;D;2");
 	}
 
 	[TestMethod]
@@ -486,6 +656,26 @@ public sealed class Given_InteractiveSession_ShellIntegrationMarks
 
 		TerminalMarks.Count(raw, "]133;C").Should().Be(2, because: "help rendering is normal terminal output, not a protocol payload");
 		TerminalMarks.Count(raw, "]133;D;0").Should().Be(2);
+	}
+
+	[TestMethod]
+	[Description("An interactive passthrough handler that cancels itself keeps the interactive cancellation semantics: a passthrough command carries no scope tokens whatever the mode, so the mode must come from the session, not from that argument.")]
+	public void When_InteractivePassthroughHandlerCancelsItself_Then_CancellationIsReportedNotAHandlerFailure()
+	{
+		using var env = new EnvironmentVariableScope(TerminalTestEnvironments.Neutral);
+		var sut = CreateMarkedApp();
+		// Takes IReplIoContext so the hosted-session passthrough guard lets it dispatch and the handler
+		// actually runs; without it the run stops at that guard instead of reaching the cancellation.
+		sut.Map("serve", string (IReplIoContext io) => throw new OperationCanceledException())
+			.AsProtocolPassthrough();
+		var harness = new TerminalHarness(cols: 80, rows: 12);
+
+		var raw = RunInteractiveSession(harness, sut, "serve\rexit\r");
+
+		// The interactive loop owns cancellation: it prints "Cancelled." and keeps the session alive,
+		// instead of the one-shot path rendering an execution_error and reporting a handler failure.
+		raw.Should().Contain("Cancelled.");
+		raw.Should().NotContain("execution_error");
 	}
 
 	[TestMethod]

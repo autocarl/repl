@@ -28,7 +28,7 @@ public sealed class Given_CommandAliases
 
 		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["ls", "list"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Unknown command");
 	}
 

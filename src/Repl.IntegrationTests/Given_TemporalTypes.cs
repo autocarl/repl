@@ -310,7 +310,7 @@ public sealed class Given_TemporalTypes
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["delay", "tomorrow", "show", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Validation:");
 		output.Text.Should().Contain("parameter 'value'");
 		output.Text.Should().Contain("expected: timespan");
@@ -326,7 +326,7 @@ public sealed class Given_TemporalTypes
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["day", "2026/02/19", "show", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Validation:");
 		output.Text.Should().Contain("parameter 'value'");
 		output.Text.Should().Contain("expected: date");
@@ -342,7 +342,7 @@ public sealed class Given_TemporalTypes
 		var output = ConsoleCaptureHelper.Capture(() =>
 			sut.Run(["delay", "PT", "show", "--no-logo"]));
 
-		output.ExitCode.Should().Be(1);
+		output.ExitCode.Should().Be(2);
 		output.Text.Should().Contain("Validation:");
 		output.Text.Should().Contain("parameter 'value'");
 		output.Text.Should().Contain("expected: timespan");

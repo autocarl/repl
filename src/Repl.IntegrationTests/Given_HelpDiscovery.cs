@@ -1029,10 +1029,10 @@ public sealed class Given_HelpDiscovery
 		var sut = ReplApp.Create();
 		sut.Map("contact list", () => "ok").WithDescription("List contacts");
 
-		var output = ConsoleCaptureHelper.Capture(() => sut.Run(["--help", "--output:toml"]));
+		var output = ConsoleCaptureHelper.CaptureStdOutAndErr(() => sut.Run(["--help", "--output:toml"]));
 
-		output.ExitCode.Should().Be(1);
-		output.Text.Should().Contain("Error: unknown output format 'toml'.");
+		output.ExitCode.Should().Be(2);
+		output.StdErr.Should().Contain("Error: unknown output format 'toml'.");
 	}
 
 	[TestMethod]
