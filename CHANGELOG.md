@@ -49,14 +49,15 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
   The interactive loop reports the same resolved codes in shell-integration `D;<code>` marks,
   including the mark for a command whose dispatch threw, which previously always reported `1`.
 - The `RunAsync` overloads that receive an already-built service provider now observe an
-  already-cancelled caller `CancellationToken` before doing any work of their own —
+  already-cancelled caller `CancellationToken` before touching that provider:
   `ReplApp.RunAsync(args, IServiceProvider, …)` before starting hosted services, and
-  `ReplApp.RunAsync(args, IReplHost, IServiceProvider, …)` before opening the session. A cancelled
-  token throws `OperationCanceledException` (or returns `ExitCodes.Cancelled` when mapped, and `130`
-  when only a `Resolver` is set). Previously only `CoreReplApp.RunAsync` performed that check. The
-  overloads that build the shared provider themselves (`Run(args)`, `RunAsync(args, options, …)`) or
-  that install a session and terminal overrides first (`RunAsync(args, IReplHost, …)`) do that work
-  before the check reached further down the chain; the guarantee is per-overload, not blanket.
+  `ReplApp.RunAsync(args, IReplHost, IServiceProvider, …)` before building the session overlay from
+  it. A cancelled token throws `OperationCanceledException` (or returns `ExitCodes.Cancelled` when
+  mapped, and `130` when only a `Resolver` is set). Previously only `CoreReplApp.RunAsync` performed
+  any such check. The guarantee is per-overload and scoped to the caller's provider, not blanket:
+  session setup and terminal overrides run before the check on the `IReplHost` overload, and the
+  overloads that build the shared provider themselves (`Run(args)`,
+  `RunAsync(args, options, …)`) construct it before the check is reached further down the chain.
 - A handler that raises `OperationCanceledException` without the caller having asked for cancellation
   is now a `HandlerException`: the message is rendered and the run exits `1`, where it previously
   either propagated silently or, with `ExitCodes.Cancelled` mapped, returned the cancellation code

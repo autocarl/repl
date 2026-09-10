@@ -255,10 +255,13 @@ it. See [Terminal & Shell Integration](terminal-shell-integration.md) and `ReplE
 The two modes draw the `Cancelled` line differently, deliberately. A one-shot run reserves it for the
 caller's own token: a handler that raises `OperationCanceledException` on its own account is a
 `HandlerException`, rendered and exiting `1`, so a real failure cannot pass for an operator abort. An
-interactive session treats **every** `OperationCanceledException` escaping a command as an abort —
+interactive session instead treats a **command-scoped** `OperationCanceledException` as an abort —
 Ctrl+C and a self-cancelling handler alike: it prints `Cancelled.`, decorates the mark with the
-`Cancelled` code, and does not render the exception. An abandoned prompt (empty line, Escape, end of
-input) is not `Cancelled` at all; it emits an aborted mark carrying no code.
+`Cancelled` code, and does not render the exception.
+
+Two interactive cases are not `Cancelled` at all, and neither carries a code: an abandoned prompt
+(empty line, Escape, end of input), and a cancellation of the session's own token — host shutdown —
+which closes the cycle with an aborted mark and then propagates out of the loop.
 
 A hosted-service failure is resolved once, after the whole lifecycle, and the outcome carries the
 exception. A shutdown that fails outranks everything the run had produced — including any exception

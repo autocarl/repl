@@ -54,11 +54,15 @@ public enum ReplExecutionOutcomeKind
 	/// One-shot and interactive runs draw the line differently, deliberately. In a one-shot run only the
 	/// caller's token yields this kind: a handler that raises <see cref="OperationCanceledException"/> on
 	/// its own account is a <see cref="HandlerException"/>, so a real failure cannot pass for an operator
-	/// abort. An interactive session treats <em>every</em> <see cref="OperationCanceledException"/>
-	/// escaping a command as an abort — Ctrl+C and a self-cancelling handler alike: it prints
-	/// <c>Cancelled.</c> and decorates the command-end mark with this kind's code rather than rendering
-	/// the exception. An abandoned prompt (empty line, Escape, end of input) is not this kind at all; it
-	/// emits an aborted mark carrying no code.
+	/// abort. An interactive session instead treats a <em>command-scoped</em>
+	/// <see cref="OperationCanceledException"/> as an abort — Ctrl+C and a self-cancelling handler alike:
+	/// it prints <c>Cancelled.</c> and decorates the command-end mark with this kind's code rather than
+	/// rendering the exception.
+	/// </para>
+	/// <para>
+	/// Two interactive cases are not this kind at all, and neither carries a code: an abandoned prompt
+	/// (empty line, Escape, end of input), and a cancellation of the session's own token — host
+	/// shutdown — which propagates out of the loop after closing the cycle with an aborted mark.
 	/// </para>
 	/// </summary>
 	Cancelled = 7,
