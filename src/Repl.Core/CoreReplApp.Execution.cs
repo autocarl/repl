@@ -932,7 +932,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 	}
 
 	// One of several places this question is asked with its own predicate; giving cancellation
-	// classification an owning type is tracked as a follow-up rather than done here.
+	// classification an owning type is tracked in #89 rather than done here.
 	private static bool IsCallerCancellation(Exception exception, CancellationToken cancellationToken) =>
 		exception is OperationCanceledException && cancellationToken.IsCancellationRequested;
 
