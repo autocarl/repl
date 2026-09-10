@@ -1,4 +1,5 @@
 using AwesomeAssertions;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Repl.Tests;
 
@@ -66,6 +67,65 @@ public sealed class Given_ProcessSignalExitCodePolicy
 		ExecutionOutcome.HandlerException(new FormatException("boom")).IsInterruptible.Should().BeFalse();
 		ExecutionOutcome.BindingError(new FormatException("boom")).IsInterruptible.Should().BeFalse();
 		ExecutionOutcome.FrameworkError(rendered: null).IsInterruptible.Should().BeFalse();
+	}
+
+	[TestMethod]
+	[DataRow(true, DisplayName = "with a cancellation policy configured")]
+	[DataRow(false, DisplayName = "with no cancellation policy configured")]
+	[Description("Regression guard: verifies a signal arriving while a hosted service is starting still reports the interruption. The coordinator wraps the cancellation in a HostedServiceLifecycleException, which used to be classified as a lifecycle failure and returned 1, and a non-zero code then defeated the signal's own.")]
+	public async Task When_ASignalInterruptsHostedStartup_Then_TheInterruptionIsStillReported(bool mapCancelled)
+	{
+		using var isolation = ProcessSignalCoordinator.IsolateRegistrationsForTesting();
+		ReplExecutionOutcome? observed = null;
+		var app = ReplApp.Create(services =>
+			services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService, SignallingHostedService>());
+		app.Options(options =>
+		{
+			options.Output.BannerEnabled = false;
+			options.Interactive.InteractivePolicy = InteractivePolicy.Prevent;
+			if (mapCancelled)
+			{
+				options.ExitCodes.Cancelled = 66;
+			}
+
+			options.ExitCodes.Resolver = outcome =>
+			{
+				observed = outcome;
+				return outcome.ExitCode;
+			};
+		});
+		app.Map("work", () => "unreachable");
+
+		using var writer = new StringWriter();
+		using var session = ReplSessionIO.SetSession(writer, TextReader.Null, commandOutput: writer, error: writer);
+
+		var exitCode = await app.RunAsync(
+				["work"],
+				new ReplRunOptions
+				{
+					ProcessSignalHandling = ProcessSignalHandlingMode.Automatic,
+					HostedServiceLifecycle = HostedServiceLifecycleMode.Head,
+				})
+			.ConfigureAwait(false);
+
+		// The signal decides, not the lifecycle wrapper and not ExitCodes.Cancelled: the run was
+		// interrupted, so it reports the conventional signal code either way.
+		observed!.Kind.Should().Be(ReplExecutionOutcomeKind.Interrupted);
+		exitCode.Should().Be(ProcessSignalCoordinator.SigIntExitCode);
+	}
+
+	// Raises the signal from inside StartAsync, so the cancellation surfaces while the coordinator is
+	// still starting services and gets wrapped in a HostedServiceLifecycleException.
+	private sealed class SignallingHostedService : Microsoft.Extensions.Hosting.IHostedService
+	{
+		public Task StartAsync(CancellationToken cancellationToken)
+		{
+			_ = ConsoleCancelKeyCoordinator.HandleCancelKeyForTesting();
+			cancellationToken.ThrowIfCancellationRequested();
+			return Task.CompletedTask;
+		}
+
+		public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 	}
 
 	private static ReplApp CreateSignalledApp(
