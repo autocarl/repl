@@ -582,6 +582,42 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies a HandlerException outcome carries the IReplResult the framework rendered on the handler's behalf, so a resolver can map on the framework's own diagnostic for a thrown failure exactly as it can for a refused one.")]
+	public void When_HandlerThrows_Then_OutcomeCarriesTheRenderedFailure()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("boom", string () => throw new FormatException("handler blew up"));
+
+		var exitCode = Run(sut, ["boom"], out _);
+
+		exitCode.Should().Be(1);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerException);
+		recorder.Last.Exception.Should().BeOfType<FormatException>();
+		recorder.Last.Result.Should().BeAssignableTo<IReplResult>()
+			.Which.Message.Should().Contain("handler blew up");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a consistently throwing output transformer cannot escape the pipeline. Reporting a failure re-invokes the very transformer that produced it, so a second throw used to leave the run with no classified outcome and no exit code at all.")]
+	public void When_TheOutputTransformerAlsoThrows_Then_TheRunStillReportsHandlerException()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder, options => options.Output.AddTransformer("broken", new ThrowingTransformer()));
+		sut.Map("work", () => "payload");
+		using var session = OpenSplitSession(out var output, out var error);
+
+		var exitCode = sut.Run(["work", "--output:broken"]);
+
+		exitCode.Should().Be(1);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.HandlerException);
+
+		// The caller still learns what happened, unformatted, and stdout stays clean.
+		error.ToString().Should().Contain("the output transformer also failed");
+		output.ToString().Should().NotContain("the output transformer also failed");
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies the hosted protocol-passthrough refusal is a FrameworkError when reached through the IReplHost facade, which builds its own session rather than inheriting an ambient one.")]
 	public void When_ProtocolPassthroughIsRefusedViaReplHost_Then_KindIsFrameworkError()
 	{
@@ -858,6 +894,15 @@ public sealed class Given_ExitCodes
 		public override void WriteLine(string? value) => throw new ObjectDisposedException(nameof(ThrowingWriter));
 
 		public override void Write(string? value) => throw new ObjectDisposedException(nameof(ThrowingWriter));
+	}
+
+	// An application-supplied transformer that always fails, so reporting its own failure re-enters it.
+	private sealed class ThrowingTransformer : IOutputTransformer
+	{
+		public string Name => "broken";
+
+		public ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default) =>
+			throw new InvalidOperationException("transformer is broken");
 	}
 
 	private sealed class InMemoryHost(TextReader input, TextWriter output) : IReplHost

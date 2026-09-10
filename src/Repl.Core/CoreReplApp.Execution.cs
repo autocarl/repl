@@ -819,7 +819,7 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		CancellationToken cancellationToken)
 	{
 		await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
-		var rendered = await RenderOutputAsync(failure, globalOptions.OutputFormat, cancellationToken)
+		var rendered = await TryRenderFailureOutputAsync(failure, globalOptions.OutputFormat, cancellationToken)
 			.ConfigureAwait(false);
 		if (!rendered)
 		{
@@ -827,8 +827,52 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 
 		return bound
-			? ExecutionOutcome.HandlerException(exception)
+			? ExecutionOutcome.HandlerException(exception, failure)
 			: ExecutionOutcome.BindingError(exception, failure);
+	}
+
+	[SuppressMessage(
+		"Design",
+		"CA1031:Do not catch general exception types",
+		Justification = "The transformer that produced the failure being reported is the one this render would use again; a second throw would escape the catch block handling the first and leave the run with no classified outcome.")]
+	private async ValueTask<bool> TryRenderFailureOutputAsync(
+		IReplResult failure,
+		string? requestedFormat,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			return await RenderOutputAsync(failure, requestedFormat, cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception renderFailure)
+		{
+			// A custom transformer that throws consistently would throw again here, from inside the catch
+			// block that is reporting its first failure — escaping the pipeline and leaving the run with no
+			// outcome and no exit code. The message still has to reach the caller, so it degrades to an
+			// unformatted line. Reported, hence rendered: the run keeps its classified failure.
+			await TryWriteUnformattedFailureAsync(failure, renderFailure).ConfigureAwait(false);
+			return true;
+		}
+	}
+
+	[SuppressMessage(
+		"Design",
+		"CA1031:Do not catch general exception types",
+		Justification = "The last-resort report of a failure must not itself fail the run: the error stream may be disposed or its transport already torn down.")]
+	private static async ValueTask TryWriteUnformattedFailureAsync(IReplResult failure, Exception renderFailure)
+	{
+		try
+		{
+			await ReplSessionIO.Error.WriteLineAsync($"Error: {failure.Message}").ConfigureAwait(false);
+			await ReplSessionIO.Error
+				.WriteLineAsync(
+					$"Error: the output transformer also failed ({renderFailure.GetType().Name}: {renderFailure.Message}); the message above is unformatted.")
+				.ConfigureAwait(false);
+		}
+		catch
+		{
+			// Best-effort: the classified outcome is the contract, the text is a courtesy.
+		}
 	}
 
 	private static async ValueTask TryClearProgressAsync(IServiceProvider serviceProvider)

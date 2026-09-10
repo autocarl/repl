@@ -71,8 +71,14 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
   lifecycle, so a failed shutdown outranks the command's own outcome and a resolver is handed exactly
   one outcome per run. An already-cancelled caller token also follows `ExitCodes.Cancelled` on that
   overload, without starting hosted services.
-- A binding failure carries the rendered refusal in `ReplExecutionOutcome.Result` alongside the
-  `Exception`, as routing refusals do.
+- A binding failure and a handler exception both carry the rendered refusal in
+  `ReplExecutionOutcome.Result` alongside the `Exception`, as routing refusals do, so a resolver can
+  map on the framework's own diagnostic for a thrown failure and not only for a refused invocation.
+- An output transformer that throws while the framework is reporting a failure no longer escapes the
+  run. Reporting a failure re-invokes the requested transformer, so one that fails consistently used
+  to throw a second time from inside the catch block handling its first failure, leaving the run with
+  no classified outcome and no exit code. The message now degrades to an unformatted line on stderr
+  and the run keeps its `HandlerException` classification.
 - A hosted-service failure carries its exception in the outcome, and a startup stopped by the
   caller's own token is a `Cancelled` outcome rather than a `FrameworkError`: it prints no startup
   error and, with no cancellation policy configured, propagates the `OperationCanceledException` like

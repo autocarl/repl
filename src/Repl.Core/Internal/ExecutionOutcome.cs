@@ -37,7 +37,13 @@ internal readonly record struct ExecutionOutcome(
 	public static ExecutionOutcome HandlerExitCode(IExitResult exitResult) =>
 		new(ReplExecutionOutcomeKind.HandlerExitCode, exitResult, ExplicitExitCode: exitResult.ExitCode);
 
-	public static ExecutionOutcome HandlerException(Exception exception) => new(ReplExecutionOutcomeKind.HandlerException, Exception: exception);
+	/// <summary>
+	/// A failure the framework reported on user code's behalf. <paramref name="rendered"/> is the
+	/// <see cref="IReplResult"/> shown to the caller, when the framework produced one, so the outcome
+	/// carries it like every other refusal; the interactive dispatch-failure path has none.
+	/// </summary>
+	public static ExecutionOutcome HandlerException(Exception exception, object? rendered = null) =>
+		new(ReplExecutionOutcomeKind.HandlerException, rendered, exception);
 
 	public static ExecutionOutcome Cancelled(Exception exception, int? conventionalExitCode = null) =>
 		new(ReplExecutionOutcomeKind.Cancelled, Exception: exception, ExplicitExitCode: conventionalExitCode);
