@@ -582,6 +582,60 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies a bare non-interactive invocation rejects an unknown --output format instead of printing help and exiting Help. That path writes human help directly, bypassing the renderer that reports the refusal everywhere else.")]
+	public void When_BareInvocationRequestsAnUnknownFormat_Then_KindIsUsageError()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("hello", () => "world");
+		using var session = OpenSplitSession(out var output, out var error);
+
+		var exitCode = sut.Run(["--output:toml"]);
+
+		exitCode.Should().Be(2);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+		error.ToString().Should().Contain("unknown output format 'toml'");
+		output.ToString().Should().NotContain("hello", "the help must not be printed as if the format were accepted");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a bare non-interactive invocation still prints human help for a valid --output format, since --output selects a format for a command result and a bare invocation produces none.")]
+	public void When_BareInvocationRequestsAKnownFormat_Then_HumanHelpIsStillPrinted()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder);
+		sut.Map("hello", () => "world");
+
+		var exitCode = Run(sut, ["--output:json"], out var output);
+
+		exitCode.Should().Be(0);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.Help);
+		output.Should().Contain("hello");
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies a cancellation raised while the framework reports a failure propagates to the cancellation policy instead of being reported as a handler failure, so ExitCodes.Cancelled still governs a run that was asked to stop.")]
+	public async Task When_TheFallbackRenderIsCancelled_Then_CancellationWins()
+	{
+		using var cts = new CancellationTokenSource();
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(
+			recorder,
+			options =>
+			{
+				options.ExitCodes.Cancelled = 75;
+				options.Output.AddTransformer("cancelling", new CancellingTransformer(cts));
+			});
+		sut.Map("work", () => "payload");
+		using var session = OpenSession(out _);
+
+		var exitCode = await sut.RunAsync(["work", "--output:cancelling"], cts.Token).ConfigureAwait(false);
+
+		exitCode.Should().Be(75);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.Cancelled);
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies a HandlerException outcome carries the IReplResult the framework rendered on the handler's behalf, so a resolver can map on the framework's own diagnostic for a thrown failure exactly as it can for a refused one.")]
 	public void When_HandlerThrows_Then_OutcomeCarriesTheRenderedFailure()
 	{
@@ -903,6 +957,27 @@ public sealed class Given_ExitCodes
 
 		public ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default) =>
 			throw new InvalidOperationException("transformer is broken");
+	}
+
+	// Fails the first render, then cancels the caller's token and observes it on the fallback render —
+	// the window in which a blanket catch would have reported a handler failure for a cancelled run.
+	private sealed class CancellingTransformer(CancellationTokenSource cts) : IOutputTransformer
+	{
+		private bool _firstCallDone;
+
+		public string Name => "cancelling";
+
+		public async ValueTask<string> TransformAsync(object? value, CancellationToken cancellationToken = default)
+		{
+			if (!_firstCallDone)
+			{
+				_firstCallDone = true;
+				throw new InvalidOperationException("transformer is broken");
+			}
+
+			await cts.CancelAsync().ConfigureAwait(false);
+			throw new OperationCanceledException(cts.Token);
+		}
 	}
 
 	private sealed class InMemoryHost(TextReader input, TextWriter output) : IReplHost

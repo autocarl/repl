@@ -78,7 +78,9 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
   run. Reporting a failure re-invokes the requested transformer, so one that fails consistently used
   to throw a second time from inside the catch block handling its first failure, leaving the run with
   no classified outcome and no exit code. The message now degrades to an unformatted line on stderr
-  and the run keeps its `HandlerException` classification.
+  and the run keeps its `HandlerException` classification. A cancellation raised while that fallback
+  runs is excluded and propagates to the cancellation policy, so `ExitCodes.Cancelled` still governs a
+  run that was asked to stop.
 - A hosted-service failure carries its exception in the outcome, and a startup stopped by the
   caller's own token is a `Cancelled` outcome rather than a `FrameworkError`: it prints no startup
   error and, with no cancellation policy configured, propagates the `OperationCanceledException` like
@@ -93,8 +95,11 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
   reportable shutdown failure into an escaping write with no exit code at all. A test asserting these
   lines on a merged stdout capture needs to read stderr.
 - An unknown `--output` format is a `UsageError` on every path, including while a failure was being
-  reported, for an `EnterInteractive` payload — the interactive loop is then not entered — and for a
-  hosted protocol-passthrough refusal. A diagnostic the caller never saw cannot stand as the run's
+  reported, for an `EnterInteractive` payload — the interactive loop is then not entered — for a
+  hosted protocol-passthrough refusal, and for a bare non-interactive invocation, which used to print
+  help and exit `Help` without reporting the format at all. A bare invocation with a *valid* format
+  still prints the human help: `--output` selects a format for a command result, and a bare
+  invocation produces none. A diagnostic the caller never saw cannot stand as the run's
   outcome. When the usage error displaces a
   failure that was already being reported, `ReplExecutionOutcome.Exception` now carries that original
   failure, so a caller-chosen output format cannot erase why the run ended.

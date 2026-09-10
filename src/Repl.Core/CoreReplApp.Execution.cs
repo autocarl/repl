@@ -505,10 +505,30 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			return await RunInteractiveSessionAsync([], serviceProvider, cancellationToken).ConfigureAwait(false);
 		}
 
+		// This path writes human help directly rather than going through RenderOutputAsync, so the
+		// requested format would otherwise never be validated and a bare `--output:bogus` would exit
+		// Help. Only the refusal is handled here: `--output` selects a format for a command result, and
+		// a bare invocation produces none, so a valid format still yields the human help.
+		var format = ResolveOutputFormat(globalOptions.OutputFormat);
+		if (!_options.Output.Transformers.ContainsKey(format))
+		{
+			await WriteUnknownFormatRefusalAsync(format).ConfigureAwait(false);
+			return ExecutionOutcome.UsageError();
+		}
+
 		var helpText = BuildHumanHelp([]);
 		await ReplSessionIO.Output.WriteLineAsync(helpText).ConfigureAwait(false);
 		return ExecutionOutcome.Help;
 	}
+
+	private string ResolveOutputFormat(string? requestedFormat) =>
+		string.IsNullOrWhiteSpace(requestedFormat) ? _options.Output.DefaultFormat : requestedFormat;
+
+	// A framework refusal, not command output: it goes to Error so a headless run's stdout keeps
+	// carrying only the payload a parent process parses. Reported rather than swallowed, because this
+	// refusal is what makes the run a UsageError.
+	private static ValueTask WriteUnknownFormatRefusalAsync(string format) =>
+		new(ReplSessionIO.Error.WriteLineAsync($"Error: unknown output format '{format}'."));
 
 	private async ValueTask<ExecutionOutcome?> TryHandleCompletionCommandAsync(
 		GlobalInvocationOptions options,
@@ -844,12 +864,17 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		{
 			return await RenderOutputAsync(failure, requestedFormat, cancellationToken).ConfigureAwait(false);
 		}
-		catch (Exception renderFailure)
+		catch (Exception renderFailure) when (renderFailure is not OperationCanceledException)
 		{
 			// A custom transformer that throws consistently would throw again here, from inside the catch
 			// block that is reporting its first failure — escaping the pipeline and leaving the run with no
 			// outcome and no exit code. The message still has to reach the caller, so it degrades to an
 			// unformatted line. Reported, hence rendered: the run keeps its classified failure.
+			//
+			// Cancellation is excluded and propagates: converting it here would report a handler failure
+			// for a run that was asked to stop, bypassing ExitCodes.Cancelled and, interactively, marking
+			// the command as failed instead of interrupted. It reaches the cancellation policy in
+			// RunUnderCancellationPolicyAsync like any other, which is why nothing is reported for it.
 			await TryWriteUnformattedFailureAsync(failure, renderFailure).ConfigureAwait(false);
 			return true;
 		}
@@ -1000,15 +1025,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			result = exitResult.Payload;
 		}
 
-		var format = string.IsNullOrWhiteSpace(requestedFormat)
-			? _options.Output.DefaultFormat
-			: requestedFormat;
+		var format = ResolveOutputFormat(requestedFormat);
 		if (!_options.Output.Transformers.TryGetValue(format, out var transformer))
 		{
-			// A framework refusal, not command output: it goes to Error so a headless run's stdout keeps
-			// carrying only the payload a parent process parses. Reported rather than swallowed, because
-			// this refusal is what makes the run a UsageError.
-			await ReplSessionIO.Error.WriteLineAsync($"Error: unknown output format '{format}'.").ConfigureAwait(false);
+			await WriteUnknownFormatRefusalAsync(format).ConfigureAwait(false);
 			return false;
 		}
 
