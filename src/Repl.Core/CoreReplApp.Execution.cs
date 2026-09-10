@@ -163,14 +163,14 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			var contractFailure = Results.Validation(
 				"The programmatic invocation adapter is incompatible with this Repl.Core version. "
 				+ "Update Repl.Mcp to the same package version.");
-			// requestedFormat: null, so this render is the session default and cannot be refused for an
-			// unknown format — the bool is consumed anyway, so the rule holds at every FrameworkError site
-			// rather than only at the ones a reader can prove safe.
-			var contractRendered = await RenderOutputAsync(contractFailure, requestedFormat: null, cancellationToken)
+			// requestedFormat: null resolves to the session default, which always exists, so FormatUnknown
+			// is unreachable here. Routed through the reporter regardless: the guard against a throwing
+			// transformer belongs at every site, not only the ones a reader can prove need it.
+			var contractReport = await ReportFailureAsync(contractFailure, requestedFormat: null, cancellationToken)
 				.ConfigureAwait(false);
-			return contractRendered
-				? ExecutionOutcome.FrameworkError(contractFailure)
-				: ExecutionOutcome.UsageError(contractFailure);
+			return contractReport == FailureReport.FormatUnknown
+				? ExecutionOutcome.UsageError(contractFailure)
+				: ExecutionOutcome.FrameworkError(contractFailure);
 		}
 
 		var globalOptions = GlobalOptionParser.Parse(args, _options.Output, _options.Parsing);
@@ -351,9 +351,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		}
 
 		var ambiguous = CreateAmbiguousPrefixResult(prefixResolution);
-		_ = await RenderOutputAsync(ambiguous, globalOptions.OutputFormat, cancellationToken)
+		return await RefuseAsync(ambiguous, globalOptions.OutputFormat, cancellationToken)
 			.ConfigureAwait(false);
-		return ExecutionOutcome.UsageError(ambiguous);
 	}
 
 	private static bool ShouldSuppressGlobalBanner(
@@ -455,13 +454,14 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			var refusal = Results.Error(
 				"protocol_passthrough_hosted_not_supported",
 				$"Command '{match.Route.Template.Template}' is protocol passthrough and requires a handler parameter of type IReplIoContext in hosted sessions.");
-			var rendered = await RenderOutputAsync(refusal, globalOptions.OutputFormat, cancellationToken)
-				.ConfigureAwait(false);
 			// An unknown --output format outranks the refusal: a diagnostic the caller never saw cannot
-			// stand as the run's outcome, and here the format is the caller's own mistake.
-			return rendered
-				? ExecutionOutcome.FrameworkError(refusal)
-				: ExecutionOutcome.UsageError(refusal);
+			// stand as the run's outcome, and here the format is the caller's own mistake. A degraded report
+			// still reached the caller, so that stays a hosting defect.
+			var report = await ReportFailureAsync(refusal, globalOptions.OutputFormat, cancellationToken)
+				.ConfigureAwait(false);
+			return report == FailureReport.FormatUnknown
+				? ExecutionOutcome.UsageError(refusal)
+				: ExecutionOutcome.FrameworkError(refusal);
 		}
 
 		using var protocolPassthroughScope = ReplSessionIO.PushProtocolPassthrough();
@@ -636,21 +636,18 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				tokens: globalOptions.RemainingTokens,
 				constraintFailure,
 				missingArgumentsFailure);
-			_ = await RenderOutputAsync(failure, globalOptions.OutputFormat, cancellationToken)
+			return await RefuseAsync(failure, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return ExecutionOutcome.UsageError(failure);
 		}
 
 		var contextValidation = await ValidateContextAsync(contextMatch, serviceProvider, cancellationToken)
 			.ConfigureAwait(false);
-		if (!contextValidation.IsValid)
+		// Matched rather than null-forgiven: ContextValidationOutcome's only producers are Success, which
+		// is valid, and FromFailure, which requires a failure — so an invalid outcome always carries one.
+		if (contextValidation is { IsValid: false, Failure: { } contextValidationFailure })
 		{
-			_ = await RenderOutputAsync(
-					contextValidation.Failure,
-					globalOptions.OutputFormat,
-					cancellationToken)
+			return await RefuseAsync(contextValidationFailure, globalOptions.OutputFormat, cancellationToken)
 				.ConfigureAwait(false);
-			return ExecutionOutcome.UsageError(contextValidation.Failure);
 		}
 
 		if (!ShouldEnterInteractive(globalOptions, allowAuto: true))
@@ -685,9 +682,9 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		if (TryFindGlobalCommandOptionCollision(globalOptions, knownOptionNames, out var collidingOption))
 		{
 			var collision = Results.Validation($"Ambiguous option '{collidingOption}'. It is defined as both global and command option.");
-			_ = await RenderOutputAsync(collision, globalOptions.OutputFormat, cancellationToken)
-				.ConfigureAwait(false);
-			return (ExecutionOutcome.UsageError(collision), false);
+			return (
+				await RefuseAsync(collision, globalOptions.OutputFormat, cancellationToken).ConfigureAwait(false),
+				false);
 		}
 
 		var parsedOptions = InvocationOptionParser.Parse(
@@ -700,9 +697,9 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			var firstError = parsedOptions.Diagnostics
 				.First(diagnostic => diagnostic.Severity == ParseDiagnosticSeverity.Error);
 			var optionFailure = Results.Validation(firstError.Message);
-			_ = await RenderOutputAsync(optionFailure, globalOptions.OutputFormat, cancellationToken)
-				.ConfigureAwait(false);
-			return (ExecutionOutcome.UsageError(optionFailure), false);
+			return (
+				await RefuseAsync(optionFailure, globalOptions.OutputFormat, cancellationToken).ConfigureAwait(false),
+				false);
 		}
 		var matchedPathLength = globalOptions.RemainingTokens.Count - match.RemainingTokens.Count;
 		var matchedPathTokens = globalOptions.RemainingTokens.Take(matchedPathLength).ToArray();
@@ -732,9 +729,10 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 				.ConfigureAwait(false);
 			if (contextFailure is not null)
 			{
-				_ = await RenderOutputAsync(contextFailure, globalOptions.OutputFormat, cancellationToken)
-					.ConfigureAwait(false);
-				return (ExecutionOutcome.UsageError(contextFailure), false);
+				return (
+					await RefuseAsync(contextFailure, globalOptions.OutputFormat, cancellationToken)
+						.ConfigureAwait(false),
+					false);
 			}
 
 			await TryRenderCommandBannerAsync(match.Route.Command, globalOptions.OutputFormat, serviceProvider, cancellationToken)
@@ -839,30 +837,39 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		CancellationToken cancellationToken)
 	{
 		await TryClearProgressAsync(serviceProvider).ConfigureAwait(false);
-		var rendered = await TryRenderFailureOutputAsync(failure, globalOptions.OutputFormat, cancellationToken)
+		var report = await ReportFailureAsync(failure, globalOptions.OutputFormat, cancellationToken)
 			.ConfigureAwait(false);
-		if (!rendered)
-		{
-			return ExecutionOutcome.UsageError(failure, exception);
-		}
-
-		return bound
-			? ExecutionOutcome.HandlerException(exception, failure)
-			: ExecutionOutcome.BindingError(exception, failure);
+		return ClassifyFailure(report, failure, exception, bound);
 	}
 
+	/// <summary>
+	/// Shows a failure or refusal to the caller and reports how far it got. This is the single place the
+	/// framework renders something it is reporting <em>about</em> a failure, which is why the guards live
+	/// here rather than at each call site: the requested format is validated before the render, a
+	/// renderer that throws degrades to plain text instead of escaping, and cancellation is left alone.
+	/// </summary>
 	[SuppressMessage(
 		"Design",
 		"CA1031:Do not catch general exception types",
-		Justification = "The transformer that produced the failure being reported is the one this render would use again; a second throw would escape the catch block handling the first and leave the run with no classified outcome.")]
-	private async ValueTask<bool> TryRenderFailureOutputAsync(
+		Justification = "An application transformer that fails is the very thing being reported; letting its second throw escape would leave the run with no classified outcome and no exit code.")]
+	private async ValueTask<FailureReport> ReportFailureAsync(
 		IReplResult failure,
 		string? requestedFormat,
 		CancellationToken cancellationToken)
 	{
+		var format = ResolveOutputFormat(requestedFormat);
+		if (!_options.Output.Transformers.ContainsKey(format))
+		{
+			await WriteUnknownFormatRefusalAsync(format).ConfigureAwait(false);
+			return FailureReport.FormatUnknown;
+		}
+
 		try
 		{
-			return await RenderOutputAsync(failure, requestedFormat, cancellationToken).ConfigureAwait(false);
+			// Discarded deliberately: RenderOutputAsync's bool reports only whether the format was usable,
+			// and the check above already answered that. What it cannot report is the throw handled below.
+			_ = await RenderOutputAsync(failure, format, cancellationToken).ConfigureAwait(false);
+			return FailureReport.Rendered;
 		}
 		catch (Exception renderFailure) when (renderFailure is not OperationCanceledException)
 		{
@@ -876,8 +883,46 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 			// the command as failed instead of interrupted. It reaches the cancellation policy in
 			// RunUnderCancellationPolicyAsync like any other, which is why nothing is reported for it.
 			await TryWriteUnformattedFailureAsync(failure, renderFailure).ConfigureAwait(false);
-			return true;
+			return FailureReport.Degraded;
 		}
+	}
+
+	/// <summary>
+	/// Turns a reported failure into an outcome. Pure by design: every fallible step happened in
+	/// <see cref="ReportFailureAsync"/>, so the rule itself can be read — and tested — on its own.
+	/// </summary>
+	private static ExecutionOutcome ClassifyFailure(
+		FailureReport report,
+		IReplResult failure,
+		Exception exception,
+		bool bound) =>
+		report switch
+		{
+			// The caller saw only the format refusal, never this failure, so the usage mistake outranks it —
+			// while the displaced exception still travels, or a caller-chosen format could erase it.
+			FailureReport.FormatUnknown => ExecutionOutcome.UsageError(failure, exception),
+
+			// Rendered or degraded, the caller saw it. The discriminator is then whether argument binding
+			// finished, not whether the handler body ran, so a validator or banner that throws after
+			// binding is a handler failure.
+			_ => bound
+				? ExecutionOutcome.HandlerException(exception, failure)
+				: ExecutionOutcome.BindingError(exception, failure),
+		};
+
+	/// <summary>
+	/// Reports a framework refusal and classifies it. Every fate of the report is a
+	/// <see cref="ReplExecutionOutcomeKind.UsageError"/> — the caller mis-invoked the application, and how
+	/// well the diagnostic could be formatted does not change that — which is why the report value is
+	/// deliberately discarded here and inspected only where it can change the kind.
+	/// </summary>
+	private async ValueTask<ExecutionOutcome> RefuseAsync(
+		IReplResult refusal,
+		string? requestedFormat,
+		CancellationToken cancellationToken)
+	{
+		_ = await ReportFailureAsync(refusal, requestedFormat, cancellationToken).ConfigureAwait(false);
+		return ExecutionOutcome.UsageError(refusal);
 	}
 
 	[SuppressMessage(
@@ -1169,9 +1214,8 @@ public sealed partial class CoreReplApp : ISubInvocableReplApp
 		var firstError = globalOptions.Diagnostics
 			.First(diagnostic => diagnostic.Severity == ParseDiagnosticSeverity.Error);
 		var globalFailure = Results.Validation(firstError.Message);
-		_ = await RenderOutputAsync(globalFailure, globalOptions.OutputFormat, cancellationToken)
+		return await RefuseAsync(globalFailure, globalOptions.OutputFormat, cancellationToken)
 			.ConfigureAwait(false);
-		return ExecutionOutcome.UsageError(globalFailure);
 	}
 
 	private static ValueTask<string> TransformPagerPageAsync(

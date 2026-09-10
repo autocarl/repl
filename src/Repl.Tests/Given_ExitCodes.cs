@@ -582,6 +582,37 @@ public sealed class Given_ExitCodes
 	}
 
 	[TestMethod]
+	[Description("Regression guard: verifies an ambiguous-prefix refusal survives a throwing output transformer. Every framework refusal is rendered through the requested format, so an application transformer that fails used to escape the pipeline from a site outside any catch, leaving the run with no classified outcome.")]
+	public void When_AnAmbiguousPrefixRefusalCannotBeRendered_Then_KindIsStillUsageError()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder, options => options.Output.AddTransformer("broken", new ThrowingTransformer()));
+		sut.Map("contact list", () => "list");
+		sut.Map("contact load", () => "load");
+		using var session = OpenSession(out _);
+
+		var exitCode = sut.Run(["contact", "l", "--output:broken"]);
+
+		exitCode.Should().Be(2);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+	}
+
+	[TestMethod]
+	[Description("Regression guard: verifies an option-parse refusal survives a throwing output transformer, on the second of the six refusal sites that sat outside any catch before the failure reporter was centralised.")]
+	public void When_AnOptionRefusalCannotBeRendered_Then_KindIsStillUsageError()
+	{
+		var recorder = new OutcomeRecorder();
+		var sut = CreateApp(recorder, options => options.Output.AddTransformer("broken", new ThrowingTransformer()));
+		sut.Map("hello", (string? name) => name ?? "world");
+		using var session = OpenSession(out _);
+
+		var exitCode = sut.Run(["hello", "--bogus", "x", "--output:broken"]);
+
+		exitCode.Should().Be(2);
+		recorder.Last!.Kind.Should().Be(ReplExecutionOutcomeKind.UsageError);
+	}
+
+	[TestMethod]
 	[Description("Regression guard: verifies a bare non-interactive invocation rejects an unknown --output format instead of printing help and exiting Help. That path writes human help directly, bypassing the renderer that reports the refusal everywhere else.")]
 	public void When_BareInvocationRequestsAnUnknownFormat_Then_KindIsUsageError()
 	{

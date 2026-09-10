@@ -74,6 +74,13 @@ this file cannot name the build; the PR and issue numbers are the durable anchor
 - A binding failure and a handler exception both carry the rendered refusal in
   `ReplExecutionOutcome.Result` alongside the `Exception`, as routing refusals do, so a resolver can
   map on the framework's own diagnostic for a thrown failure and not only for a refused invocation.
+- Every framework refusal and failure is now reported through one guarded path, so an
+  application-supplied `IOutputTransformer` that throws can no longer escape the pipeline from any of
+  them. Six refusal sites (ambiguous prefix, option collision, option parse error, context
+  deep-link, context validation, global option diagnostics) sat outside any exception handler and
+  ended the run with no classified outcome and no exit code; they are all guarded now, and each still
+  reports `UsageError` whether the diagnostic was rendered, refused for an unknown format, or written
+  unformatted because the transformer failed.
 - An output transformer that throws while the framework is reporting a failure no longer escapes the
   run. Reporting a failure re-invokes the requested transformer, so one that fails consistently used
   to throw a second time from inside the catch block handling its first failure, leaving the run with
