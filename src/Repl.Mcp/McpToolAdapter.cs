@@ -570,6 +570,12 @@ internal sealed partial class McpToolAdapter
 				throw new InvalidOperationException(
 					$"The MCP argument '{requestedKey}' duplicates the schema field '{key}'.");
 			}
+			if (field.Kind == McpArgumentFieldKind.Command
+				&& value.ValueKind == JsonValueKind.Array && collectionOptionNames?.Contains(key) == true)
+			{
+				stringArgs.Add(key, GetCollectionValues(key, value));
+				continue;
+			}
 			var strValue = value.ValueKind == JsonValueKind.String
 				? value.GetString() ?? ""
 				: value.GetRawText();
@@ -590,12 +596,6 @@ internal sealed partial class McpToolAdapter
 					resultFlowTokens.Add(strValue);
 					break;
 				default:
-					if (value.ValueKind == JsonValueKind.Array && collectionOptionNames?.Contains(key) == true)
-					{
-						stringArgs.Add(key, GetCollectionValues(key, value));
-						break;
-					}
-
 					ValidateCommandArgumentValue(strValue);
 					stringArgs.Add(key, strValue);
 					break;
