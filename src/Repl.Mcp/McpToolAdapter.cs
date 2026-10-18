@@ -612,7 +612,7 @@ internal sealed partial class McpToolAdapter
 		{
 			JsonValueKind.String => item.GetString() ?? "",
 			JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False => item.GetRawText(),
-			_ => throw new InvalidOperationException($"The MCP collection argument '{name}' must contain only non-null scalar values."),
+			_ => throw new McpException($"The MCP collection argument '{name}' must contain only non-null scalar values."),
 		}).ToArray();
 
 	private static void ValidateResultCursor(string cursor)

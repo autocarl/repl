@@ -1,4 +1,7 @@
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
+using Repl.Mcp;
 using Repl.Parameters;
 
 namespace Repl.McpTests;
@@ -133,21 +136,78 @@ public sealed class Given_McpCollectionArguments
 	}
 
 	[TestMethod]
-	[DataRow("null")]
-	[DataRow("{}")]
-	[DataRow("[]")]
-	[Description("Null, object and nested-array elements are rejected before invoking the collection handler.")]
-	public async Task When_AnArrayContainsANonScalar_Then_TheCallFails(string itemJson)
+	[DataRow("null", false)]
+	[DataRow("{}", false)]
+	[DataRow("[]", false)]
+	[DataRow("null", true)]
+	[DataRow("{}", true)]
+	[DataRow("[]", true)]
+	[Description("Both tool dispatch paths expose actionable collection validation without invoking the handler.")]
+	public async Task When_AnArrayContainsANonScalar_Then_TheClientReceivesGuidance(string itemJson, bool usePrebuiltTools)
 	{
 		var invoked = false;
-		await using var fixture = await McpTestFixture.CreateAsync(app =>
-			app.Map("search", (SearchOptions options) => { invoked = true; return "ok"; }));
+		var app = ReplApp.Create();
+		app.UseMcpServer();
+		app.Map("search", (SearchOptions options) => { invoked = true; return "ok"; });
+		await using var session = await StartSessionAsync(app, usePrebuiltTools).ConfigureAwait(false);
 		using var document = System.Text.Json.JsonDocument.Parse($"[\"raw\",{itemJson}]");
-		var result = await fixture.Client.CallToolAsync(
+		var result = await session.Client.CallToolAsync(
 			"search", new Dictionary<string, object?>(StringComparer.Ordinal) { ["layer"] = document.RootElement }).ConfigureAwait(false);
 
 		result.IsError.Should().BeTrue();
 		invoked.Should().BeFalse();
+		var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text));
+		text.Should().Contain("'layer'").And.Contain("non-null scalar values");
+	}
+
+	[TestMethod]
+	[DataRow(false)]
+	[DataRow(true)]
+	[Description("Exposing deliberate collection refusals does not expose unexpected application exception details.")]
+	public async Task When_TheHandlerThrows_Then_PrivateDetailsRemainWithheld(bool usePrebuiltTools)
+	{
+		var invoked = false;
+		var app = ReplApp.Create();
+		app.UseMcpServer();
+		app.Map("search", string (SearchOptions options) =>
+		{
+			invoked = true;
+			throw new InvalidOperationException("private application detail");
+		});
+		await using var session = await StartSessionAsync(app, usePrebuiltTools).ConfigureAwait(false);
+		var result = await session.Client.CallToolAsync(
+			"search", new Dictionary<string, object?>(StringComparer.Ordinal) { ["layer"] = Layers }).ConfigureAwait(false);
+
+		result.IsError.Should().BeTrue();
+		invoked.Should().BeTrue();
+		var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(static block => block.Text));
+		text.Should().NotContain("private application detail");
+	}
+
+	private static Task<McpPipeSession> StartSessionAsync(ReplApp app, bool usePrebuiltTools)
+	{
+		if (!usePrebuiltTools)
+		{
+			var handler = new McpServerHandler(app.Core,
+				new ReplMcpServerOptions { TransportFactory = McpTestFixture.PipeTransportFactory }, app.Services);
+			return McpPipeSession.StartAsync(handler.RunAsync, clientOptions: null, CancellationToken.None);
+		}
+
+		var options = app.BuildMcpServerOptions();
+		return McpPipeSession.StartAsync(async (io, token) =>
+		{
+			var transport = new StreamServerTransport(io.InputStream, io.OutputStream, "collection-options-server");
+			var server = McpServer.Create(transport, options);
+			try
+			{
+				await server.RunAsync(token).ConfigureAwait(false);
+			}
+			finally
+			{
+				await server.DisposeAsync().ConfigureAwait(false);
+				await transport.DisposeAsync().ConfigureAwait(false);
+			}
+		}, clientOptions: null, CancellationToken.None);
 	}
 
 	[ReplOptionsGroup]
